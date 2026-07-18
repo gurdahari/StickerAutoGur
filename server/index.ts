@@ -7,7 +7,6 @@ import {
   generateBrainResponse,
   getOpenAIKeyHint,
   getOpenAIKeySource,
-  getOpenAILastSuccessfulRequestAt,
   getOpenAIModel,
   isOpenAIConfigured
 } from './providers/openaiBrain.js';
@@ -15,7 +14,6 @@ import {
   generateSeedreamImage,
   getSeedreamKeyHint,
   getSeedreamKeySource,
-  getSeedreamLastSuccessfulRequestAt,
   getSeedreamModel,
   isSeedreamConfigured
 } from './providers/seedream.js';
@@ -32,8 +30,15 @@ const openAIKeyLocation = openAIKeyWasInProcessEnvironment
       : null;
 
 const port = Number(process.env.PORT || 8787);
+const loopbackHost = '127.0.0.1';
 const bodyLimitBytes = 50 * 1024 * 1024;
 const distDirectory = resolve(process.cwd(), 'dist');
+const allowedBrowserOrigins = new Set([
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+  `http://localhost:${port}`,
+  `http://127.0.0.1:${port}`
+]);
 
 const mimeTypes: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
@@ -52,8 +57,19 @@ const sendJson = (response: ServerResponse, statusCode: number, body: unknown) =
   if (response.headersSent || response.writableEnded) return;
 
   const payload = JSON.stringify(body);
-  response.writeHead(statusCode, { 'Content-Type': 'application/json; charset=utf-8' });
+  response.writeHead(statusCode, {
+    'Cache-Control': 'no-store',
+    'Content-Type': 'application/json; charset=utf-8'
+  });
   response.end(payload);
+};
+
+const applySecurityHeaders = (response: ServerResponse) => {
+  response.setHeader('Content-Security-Policy', "frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
+  response.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  response.setHeader('Referrer-Policy', 'no-referrer');
+  response.setHeader('X-Content-Type-Options', 'nosniff');
+  response.setHeader('X-Frame-Options', 'DENY');
 };
 
 const readJsonBody = async <T>(request: IncomingMessage): Promise<T> => {
@@ -103,27 +119,33 @@ const serveFrontend = async (request: IncomingMessage, response: ServerResponse)
 };
 
 const server = createServer(async (request, response) => {
+  applySecurityHeaders(response);
   const pathname = new URL(request.url || '/', 'http://localhost').pathname;
 
   try {
+    if (pathname.startsWith('/api/')) {
+      const origin = request.headers.origin;
+      const fetchSite = request.headers['sec-fetch-site'];
+      const isCrossSite = fetchSite === 'cross-site';
+      const hasDisallowedOrigin = Boolean(origin && !allowedBrowserOrigins.has(origin));
+
+      if (isCrossSite || hasDisallowedOrigin) {
+        sendJson(response, 403, { error: 'Cross-origin API requests are not allowed.' });
+        return;
+      }
+    }
+
     if (request.method === 'GET' && pathname === '/api/health') {
       sendJson(response, 200, {
         status: 'ok',
         providers: {
           openai: {
             configured: isOpenAIConfigured(),
-            model: getOpenAIModel(),
-            keyHint: getOpenAIKeyHint(),
-            keySource: getOpenAIKeySource(),
-            keyLocation: openAIKeyLocation,
-            lastSuccessfulRequestAt: getOpenAILastSuccessfulRequestAt()
+            model: getOpenAIModel()
           },
           seedream: {
             configured: isSeedreamConfigured(),
-            model: getSeedreamModel(),
-            keyHint: getSeedreamKeyHint(),
-            keySource: getSeedreamKeySource(),
-            lastSuccessfulRequestAt: getSeedreamLastSuccessfulRequestAt()
+            model: getSeedreamModel()
           }
         }
       });
@@ -163,7 +185,7 @@ const server = createServer(async (request, response) => {
   }
 });
 
-server.listen(port, '0.0.0.0', () => {
+server.listen(port, loopbackHost, () => {
   console.log(`StickerOS API listening on http://localhost:${port}`);
   console.log(`OpenAI key loaded from ${openAIKeyLocation || 'no environment file'} as ${getOpenAIKeySource() || 'no environment variable'} (${getOpenAIKeyHint() || 'not configured'}).`);
   console.log(`Seedream key loaded from ${getSeedreamKeySource() || 'no environment variable'} (${getSeedreamKeyHint() || 'not configured'}).`);

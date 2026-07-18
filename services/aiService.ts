@@ -452,6 +452,82 @@ const getCoverCopy = (rawNiche: string) => {
   };
 };
 
+interface CoverCreativeBrief {
+  headline: string;
+  subtitle: string;
+  visualConcept: string;
+  palette: string;
+  composition: string;
+  typography: string;
+}
+
+const coverBriefCache = new Map<string, Promise<CoverCreativeBrief>>();
+
+const getCoverCreativeBrief = async (niche: string, stickerUrls: string[]): Promise<CoverCreativeBrief> => {
+  const fallback = getCoverCopy(niche);
+  const fallbackBrief: CoverCreativeBrief = {
+    headline: fallback.title,
+    subtitle: fallback.subtitle,
+    visualConcept: 'Bold editorial sticker collage with dramatic depth and a clear emotional focal point.',
+    palette: 'High-contrast colors sampled from the supplied sticker artwork.',
+    composition: 'One oversized hero, three strong anchors and a lively layered supporting cluster.',
+    typography: 'Expressive niche-matched display type with excellent small-thumbnail readability.'
+  };
+  const cacheKey = `${niche}|${stickerUrls.slice(0, 6).join('|')}`;
+  const cached = coverBriefCache.get(cacheKey);
+  if (cached) return cached;
+
+  const request = (async () => {
+    try {
+      const images = await Promise.all(stickerUrls.slice(0, 6).map(url => imageUrlToDataUrl(url, 512)));
+      const response = await generateBrainText({
+        images: images.map(dataUrl => ({ dataUrl, detail: 'low' as const })),
+        prompt: `You are the creative director for a top-performing Etsy digital sticker shop. Study the supplied real stickers and create a bold first-thumbnail brief for this product theme: "${niche}".
+
+The cover must stop scrolling at tiny search-result size. Avoid safe corporate catalog design, beige dashboards, generic templates and long descriptive titles.
+
+Write:
+- headline: an emotionally appealing, meaningful 2-4 word product headline, maximum 24 characters. It must stand alone naturally. Never use filler such as "A Complete Everyday", "Ultimate", "Premium Collection" or a long feature list.
+- subtitle: maximum 34 characters; either a short buyer benefit or three compact niche words.
+- visualConcept: one concise niche-specific art direction with atmosphere and emotional appeal.
+- palette: a concise high-impact palette based on the supplied art.
+- composition: a dynamic hero composition, not a grid or information panel.
+- typography: expressive type direction appropriate for the niche.
+
+Do not invent product quantities, file claims or protected brands.`,
+        schemaName: 'cover_creative_brief',
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            headline: { type: 'string' },
+            subtitle: { type: 'string' },
+            visualConcept: { type: 'string' },
+            palette: { type: 'string' },
+            composition: { type: 'string' },
+            typography: { type: 'string' }
+          },
+          required: ['headline', 'subtitle', 'visualConcept', 'palette', 'composition', 'typography']
+        }
+      });
+      const brief = JSON.parse(response.text) as CoverCreativeBrief;
+      const headline = clampCoverPhrase(brief.headline, 24, 4);
+      const subtitle = clampCoverPhrase(brief.subtitle, 34, 6);
+      if (headline.split(' ').length < 2 || headline.length < 6) return fallbackBrief;
+      return {
+        ...brief,
+        headline: headline.toUpperCase(),
+        subtitle: (subtitle || fallback.subtitle).toUpperCase()
+      };
+    } catch (error) {
+      console.warn('Cover creative-direction call failed; using concise local copy.', error);
+      return fallbackBrief;
+    }
+  })();
+  coverBriefCache.set(cacheKey, request);
+  return request;
+};
+
 const getCoverTitleLayout = (
   context: CanvasRenderingContext2D,
   title: string,
@@ -1719,49 +1795,41 @@ export const generateSeedreamMockup = async (
     if (type === 'preview' || id.includes('preview')) return createGridComposite(uniqueUrls);
     if (type === 'cover') {
       const variant = id.endsWith('_b') ? 1 : id.endsWith('_c') ? 2 : 0;
-      const coverCopy = getCoverCopy(niche);
       const stickerCount = Math.max(uniqueUrls.length, totalStickerCount);
-      const coverReferenceCount = Math.min(12, uniqueUrls.length);
+      const coverReferenceCount = Math.min(10, uniqueUrls.length);
+      const creative = await getCoverCreativeBrief(niche, uniqueUrls);
       const artDirections = [
-        'A cinematic high-conversion hero cover: bold niche-specific color, luminous focal glow, layered depth, one unmistakable hero sticker and a rich supporting collage. Exciting and premium, never dull beige or generic corporate brown.',
-        'A vibrant boutique editorial cover: sophisticated complementary colors sampled from the supplied stickers, tactile paper-collage depth, energetic asymmetry and a premium handmade marketplace feel.',
-        'A dramatic luxury catalog cover: deep niche-matched atmosphere, crisp high-contrast hierarchy, elegant geometry and polished advertising art direction. Dense and impressive without clutter or dead space.'
+        'Cinematic editorial poster: oversized hero, radiant focal light, dramatic depth and bold layered motion.',
+        'Joyful scrapbook explosion: energetic diagonals, tactile cut-paper depth, playful scale and irresistible color.',
+        'Luxury magazine campaign: sophisticated atmosphere, surprising asymmetry, rich contrast and polished visual drama.'
       ];
-      const fullCoverPrompt = `Create the COMPLETE finished first-listing thumbnail for a premium Etsy digital sticker bundle. This is a final commercial advertisement, not a background template. Use the supplied ${coverReferenceCount} reference images as the actual products.
+      const fullCoverPrompt = `Design a scroll-stopping, finished Etsy hero thumbnail—not a catalog, dashboard or template.
 
-VISUAL THEME ONLY — NEVER PRINT THIS BRIEF: ${niche}
-ART DIRECTION: ${artDirections[variant]}
+Creative concept: ${creative.visualConcept}
+Palette: ${creative.palette}
+Composition: ${creative.composition} ${artDirections[variant]}
+Type style: ${creative.typography}
 
-REFERENCE-STICKER RULES:
-- Display all ${coverReferenceCount} supplied sticker references exactly once each.
-- Make reference image 1 the largest central hero. Make references 2-4 strong secondary anchors and arrange the rest as a dense, exciting supporting collage.
-- Preserve each supplied sticker's recognizable subject, palette, internal artwork, white die-cut edge and proportions.
-- Do not invent, duplicate, merge or substitute any sticker. Do not add background stickers, ghost stickers or partially hidden fake designs.
-- Keep every sticker fully visible, uncropped and inside the composition.
-
-RENDER THIS TEXT EXACTLY, LETTER FOR LETTER:
-"DIGITAL STICKER BUNDLE"
-"${coverCopy.title}"
-"${coverCopy.subtitle}"
+Render only this exact text:
+"${creative.headline}"
+"${creative.subtitle}"
 "${stickerCount} STICKERS"
-"TRANSPARENT PNG • INSTANT DOWNLOAD"
+"DIGITAL DOWNLOAD"
 
-TYPOGRAPHY AND SALES DESIGN:
-- Seedream must create all typography, badges, panels, lighting, background and layout as one cohesive finished image.
-- Reserve the upper 25% for typography. Render "${coverCopy.title}" as the strongest headline in no more than two centered lines.
-- The exact headline is only ${coverCopy.title.length} characters. Never replace it with the long visual-theme brief.
-- Put "${stickerCount} STICKERS" in one clear premium quantity badge.
-- Let the sticker collage fill most of the middle and lower image, with large readable products and minimal empty space.
-- Keep every word at least 7% away from the left and right edges. No text may be clipped, overflow, run behind the quantity badge or touch the frame.
-- Use excellent spacing, hierarchy and contrast. Typography must match the niche and feel expensive, not like a generic dashboard template.
-- Do not add any other words, prices, logos, watermarks, repeated headlines, faint background text or misspellings.
+Use the ${coverReferenceCount} supplied stickers as the real products, each once. Preserve their artwork and white cut edges. Image 1 is the oversized hero; images 2-4 are strong anchors; the rest create a lively layered collage. No invented or duplicate stickers.
 
-Landscape 4:3 render. All important text and products stay inside the central 86% safe area for a slight 5:4 center crop. Judge the design at tiny Etsy search-result size: the title, 100 quantity and strongest stickers must read instantly. Outstanding high-conversion marketplace thumbnail, cohesive niche-specific art direction, polished professional advertising quality.`;
+Full-bleed 4:3 advertising art. Large emotional focal point, strong depth, bold niche-specific atmosphere and instant small-thumbnail readability. No three-column footer, feature table, beige corporate brochure, empty dead space, clipped text, extra words, logos or watermark. Keep text and products inside an 8% safe margin.`;
       try {
         const referenceImages = await Promise.all(
           uniqueUrls.slice(0, coverReferenceCount).map(url => imageUrlToDataUrl(url, 768))
         );
-        const generatedCover = await generateSeedreamImage(fullCoverPrompt, '1K_LANDSCAPE', referenceImages);
+        let generatedCover: string;
+        try {
+          generatedCover = await generateSeedreamImage(fullCoverPrompt, '2K_LANDSCAPE', referenceImages);
+        } catch (highResolutionError) {
+          console.warn('2K landscape cover request was unavailable; retrying the same Seedream direction at standard landscape resolution.', highResolutionError);
+          generatedCover = await generateSeedreamImage(fullCoverPrompt, '1K_LANDSCAPE', referenceImages);
+        }
         return finalizeGeneratedCover(generatedCover);
       } catch (error) {
         console.warn('Full Seedream cover generation failed; using the deterministic exact-pixel fallback.', error);

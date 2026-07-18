@@ -1,0 +1,29 @@
+{
+  "name": "stickeros-2026",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c cyan,magenta \"tsx watch server/index.ts\" \"vite\"",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && vite build && tsc -p tsconfig.server.json",
+    "start": "node server-dist/index.js",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "lucide-react": "^0.563.0",
+    "dotenv": "^17.2.3",
+    "openai": "^6.25.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "jszip": "^3.10.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "concurrently": "^9.2.1",
+    "tsx": "^4.21.0",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.0"
+  }
+}

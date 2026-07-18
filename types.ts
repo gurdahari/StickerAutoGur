@@ -117,9 +117,12 @@ export interface StickerBatch {
 
 export interface NicheVisualAnalysis {
   archetype: 'CHARACTER' | 'FRAME_OVERLAY' | 'FUNCTIONAL_LABEL' | 'TEXT_QUOTE' | 'OBJECT';
+  visualStyle: string;
   keywords: string;
   negativeKeywords: string;
   safeGenerics: string;
+  themeUniverse?: string;
+  subthemes?: string;
   intentAndUse?: string;
   customerSearchBehavior?: string;
 }

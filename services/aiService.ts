@@ -7,11 +7,11 @@ interface BrainResult {
   sources: { title: string; uri: string }[];
 }
 
-interface ProviderHealth {
+export interface ProviderHealth {
   status: string;
   providers: {
     openai: { configured: boolean; model: string };
-    seedream: { configured: boolean; model: string };
+    seedream: { configured: boolean; model: string; maxConcurrency: number };
   };
 }
 
@@ -152,6 +152,7 @@ Reject only a clear buyer-facing defect:
 - unexpected or misspelled text, fake logo, watermark or signature;
 - obvious background rectangle, dirty gray halo, broken white cutline or unintended transparent damage;
 - a physically expected opening is visibly filled when the concept explicitly requires an opening;
+- any large solid-black void, wedge or patch inside a normally solid subject, including missing anatomy, broken animal bodies, empty faces, black clothing holes or corrupted object interiors;
 - the design is off-theme or clearly breaks the shared visual style;
 - it is a near-duplicate of another supplied sticker.
 
@@ -416,10 +417,15 @@ const createCoverComposite = async (
   stickerUrls: string[],
   nicheName: string,
   totalStickerCount: number,
-  variant = 0
+  variant = 0,
+  artDirectedBackgroundUrl?: string
 ): Promise<string> => {
   const uniqueUrls = uniqueStickerUrls(stickerUrls).slice(0, 15);
-  const images = (await Promise.all(uniqueUrls.map(loadCanvasImage)))
+  const [loadedImages, artDirectedBackground] = await Promise.all([
+    Promise.all(uniqueUrls.map(loadCanvasImage)),
+    artDirectedBackgroundUrl ? loadCanvasImage(artDirectedBackgroundUrl) : Promise.resolve(null)
+  ]);
+  const images = loadedImages
     .filter((image): image is HTMLImageElement => Boolean(image?.width));
   if (!images.length) throw new Error('No valid stickers are available for the cover.');
 
@@ -449,8 +455,24 @@ const createCoverComposite = async (
   background.addColorStop(0, palette.start);
   background.addColorStop(0.50, palette.middle);
   background.addColorStop(1, palette.end);
+  if (artDirectedBackground) {
+    const scale = Math.max(width / artDirectedBackground.width, height / artDirectedBackground.height);
+    const renderedWidth = artDirectedBackground.width * scale;
+    const renderedHeight = artDirectedBackground.height * scale;
+    context.drawImage(
+      artDirectedBackground,
+      (width - renderedWidth) / 2,
+      (height - renderedHeight) / 2,
+      renderedWidth,
+      renderedHeight
+    );
+    // A translucent brand gradient keeps headline/badge contrast predictable
+    // while preserving Seedream's art-directed depth and retail energy.
+    context.globalAlpha = 0.38;
+  }
   context.fillStyle = background;
   context.fillRect(0, 0, width, height);
+  context.globalAlpha = 1;
 
   const centerGlow = context.createRadialGradient(1500, 1280, 120, 1500, 1280, 1500);
   centerGlow.addColorStop(0, 'rgba(255, 255, 255, 0.34)');
@@ -1611,6 +1633,15 @@ export const generateSeedreamMockup = async (
     if (type === 'preview' || id.includes('preview')) return createGridComposite(uniqueUrls);
     if (type === 'cover') {
       const variant = id.endsWith('_b') ? 1 : id.endsWith('_c') ? 2 : 0;
+      if (variant === 0) {
+        const coverBackgroundPrompt = `Create only the abstract background art for a premium, high-converting Etsy digital sticker bundle thumbnail. Outstanding maximalist retail energy, sophisticated layered gradients, luminous paper-cut curves, subtle starbursts, sparkle highlights, depth, contrast and a polished editorial finish. Reserve a calmer high-contrast headline zone across the top 30 percent and a bright energetic product-collage stage through the center and lower area. Background only: no stickers, decals, clipart, products, animals, people, characters, objects, devices, paper sheets, text, letters, numbers, badges, logos, watermarks, UI or frames. Square-ish commercial cover background, crisp and premium, never muddy or dark.`;
+        try {
+          const artDirectedBackground = await generateSeedreamImage(coverBackgroundPrompt, '1K');
+          return createCoverComposite(uniqueUrls, niche, totalStickerCount, variant, artDirectedBackground);
+        } catch (error) {
+          console.warn('Seedream cover art direction failed; using the deterministic retail background.', error);
+        }
+      }
       return createCoverComposite(uniqueUrls, niche, totalStickerCount, variant);
     }
     if (type === 'closeup' || id.includes('quality_proof')) return createQualityProofComposite(uniqueUrls, niche);

@@ -54,8 +54,8 @@ The production server serves both the compiled React app and `/api/*` on `PORT` 
 
 ## Asset integrity
 
-- Production Mode is a hard-gated 100-sticker workflow. It cannot report completion unless exactly 100 unique PNGs pass local and OpenAI visual QA and are packaged as five valid ZIPs of 20 PNGs. Test Mode produces a smaller 10-sticker validation run.
-- Every completed sticker receives local alpha/crop/dimension checks, perceptual duplicate hashing, and a numbered contact-sheet review by OpenAI vision. Definite failures are replaced with new non-repeating concepts within a bounded request budget; Seedream remains the only image generator.
+- Production Mode targets exactly 100 unique PNGs packaged as five valid ZIPs of 20 PNGs. Test Mode produces a smaller 10-sticker validation run.
+- Fast seller QC is the default: every sticker receives free local PNG/alpha/crop/dimension checks and conservative near-exact duplicate detection. Only severe objective failures trigger a paid Seedream replacement. OpenAI visual judgment is not part of the automatic rejection gate, so usable art is not regenerated because of subjective scoring.
 - Active runs are checkpointed in browser IndexedDB. Refreshes, browser crashes and restarts can resume missing/rejected stickers without regenerating approved inventory. A saved run must be resumed or explicitly discarded before starting another run.
 - A current-market niche preflight scores demand, catalog variety, saturation and potential brand/franchise risk. High-risk niches are blocked unless the seller explicitly confirms a manual rights review; this is decision support, not legal clearance.
 - Sticker PNGs are generated against a flat matte, cleaned with edge-connected background removal plus conservative enclosed-hole detection for rings, frames, tubes and similar shapes, decontaminated at the cut line, and tightly cropped to the artwork's real aspect ratio with only a minimal transparent safety margin. A local repair action can reprocess an existing completed PNG without another image-model request.
@@ -75,7 +75,7 @@ The production server serves both the compiled React app and `/api/*` on `PORT` 
 1. Choose **TEST · 10** to validate a new provider/model/style inexpensively, or **PRODUCTION · 100** for a sellable bundle.
 2. The market/rights preflight runs before any paid Seedream request.
 3. Seedream generates with adaptive concurrency. Rate-limit pressure automatically lowers the worker count and successful requests gradually restore it.
-4. Local inspection and OpenAI contact-sheet QA approve or reject every image. Rejected slots receive distinct replacement concepts until the target is met or the safety budget stops the run.
+4. Free local inspection approves normal sellable variation and rejects only severe technical defects or near-exact duplicates. Only those failed slots receive replacement concepts.
 5. Only QA-approved or explicitly manually accepted files reach ZIP packaging, covers, mockups, listing copy and the final download.
 6. **PAUSE SAFELY** finishes active requests and saves the run. **RESUME SAVED RUN** continues only unfinished work.
 7. If the replacement budget ends but all target PNGs exist, **FINISH WITH 100 GENERATED** explicitly accepts the remaining rejected images for manual seller review and continues directly to ZIPs, mockups and listing copy without another replacement loop.

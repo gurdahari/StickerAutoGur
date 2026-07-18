@@ -27,8 +27,11 @@ const mimeTypes: Record<string, string> = {
 };
 
 const sendJson = (response: ServerResponse, statusCode: number, body: unknown) => {
+  if (response.headersSent || response.writableEnded) return;
+
+  const payload = JSON.stringify(body);
   response.writeHead(statusCode, { 'Content-Type': 'application/json; charset=utf-8' });
-  response.end(JSON.stringify(body));
+  response.end(payload);
 };
 
 const readJsonBody = async <T>(request: IncomingMessage): Promise<T> => {
@@ -59,8 +62,9 @@ const serveFrontend = async (request: IncomingMessage, response: ServerResponse)
 
   try {
     if ((await stat(resolvedPath)).isFile()) {
+      const file = await readFile(resolvedPath);
       response.writeHead(200, { 'Content-Type': mimeTypes[extname(resolvedPath)] || 'application/octet-stream' });
-      response.end(await readFile(resolvedPath));
+      response.end(file);
       return;
     }
   } catch {
@@ -68,8 +72,9 @@ const serveFrontend = async (request: IncomingMessage, response: ServerResponse)
   }
 
   try {
+    const indexHtml = await readFile(resolve(distDirectory, 'index.html'));
     response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    response.end(await readFile(resolve(distDirectory, 'index.html')));
+    response.end(indexHtml);
   } catch {
     sendJson(response, 404, { error: 'Frontend build not found. Run npm run build first.' });
   }
@@ -115,7 +120,11 @@ const server = createServer(async (request, response) => {
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unexpected server error.';
     console.error(`[${request.method}] ${pathname}: ${message}`);
-    sendJson(response, 500, { error: message });
+    if (!response.headersSent && !response.writableEnded) {
+      sendJson(response, 500, { error: message });
+    } else if (!response.writableEnded) {
+      response.end();
+    }
   }
 });
 

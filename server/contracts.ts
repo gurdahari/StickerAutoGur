@@ -10,6 +10,11 @@ export interface BrainMessage {
   content: string;
 }
 
+export interface BrainImageInput {
+  dataUrl: string;
+  detail?: 'low' | 'high' | 'original' | 'auto';
+}
+
 export interface BrainRequest {
   prompt?: string;
   messages?: BrainMessage[];
@@ -17,6 +22,7 @@ export interface BrainRequest {
   schema?: JsonSchema;
   schemaName?: string;
   webSearch?: boolean;
+  images?: BrainImageInput[];
 }
 
 export interface BrainResult {

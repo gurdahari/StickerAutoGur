@@ -45,6 +45,11 @@ const estimateBackground = (data: Uint8ClampedArray, width: number, height: numb
   return { r: median(reds), g: median(greens), b: median(blues) };
 };
 
+// Only concepts with a real physical opening are eligible for enclosed-matte
+// removal. A large black patch on an animal or another solid subject is model
+// corruption and must be rejected/replaced, never carved into a new hole.
+export const expectsTransparentOpening = (itemPrompt = '') => /\b(frame|window|tube|hose|ring|hoop|loop|coil|chain|link|scissors|glasses|eyeglasses|stethoscope|wheel|tire|bracelet|necklace|keyring|carabiner|handle|mug|cup|teapot|basket|bag|bucket|padlock|lock|keyhole|door|doorway|arch|archway|tunnel|portal|tent|teepee|tipi|canopy|hood|helmet|mask|visor|cave|wreath|donut|doughnut|opening|cutout|negative space)\b/i.test(itemPrompt);
+
 /**
  * Turns Seedream's flat matte background into a clean transparent PNG.
  * Exterior background is removed first. A second conservative pass removes
@@ -117,7 +122,7 @@ export const processStickerImage = async (source: string, itemPrompt = ''): Prom
   // similar enclosed opening. Detect those separately using a strict matte-
   // color component test. The high density/core-ratio requirements protect
   // black outlines, lettering, eyes and textured dark artwork.
-  const expectsNaturalOpening = /\b(frame|window|tube|hose|ring|hoop|loop|coil|chain|link|scissors|glasses|eyeglasses|stethoscope|wheel|tire|bracelet|necklace|keyring|carabiner)\b/i.test(itemPrompt);
+  const expectsNaturalOpening = expectsTransparentOpening(itemPrompt);
   const holeSeedTolerance = backgroundLuma < 70 ? 24 : 20;
   const holeGrowTolerance = backgroundLuma < 70 ? 80 : 58;
   const holeVisited = new Uint8Array(pixelCount);
@@ -179,7 +184,8 @@ export const processStickerImage = async (source: string, itemPrompt = ''): Prom
     const componentHeight = maxHoleY - minHoleY + 1;
     const density = componentArea / Math.max(1, componentWidth * componentHeight);
     const coreRatio = corePixels / Math.max(1, componentArea);
-    const isConfidentHole = !touchesCanvasEdge
+    const isConfidentHole = expectsNaturalOpening
+      && !touchesCanvasEdge
       && componentArea >= minimumHoleArea
       && Math.min(componentWidth, componentHeight) >= minimumHoleSpan
       && density >= (expectsNaturalOpening ? 0.45 : 0.62)

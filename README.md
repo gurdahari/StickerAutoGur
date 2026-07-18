@@ -57,7 +57,8 @@ The production server serves both the compiled React app and `/api/*` on `PORT` 
 - Sticker PNGs are generated against a flat matte, cleaned with edge-connected background removal, decontaminated at the cut line, and tightly cropped to the artwork's real aspect ratio with only a minimal transparent safety margin.
 - Downloadable sticker files never contain a baked-in drop shadow. Shadows are added only while composing marketing images.
 - Main covers and grid previews are built deterministically in browser Canvas from the completed sticker files. The image model cannot invent, redraw, or duplicate cover stickers.
-- Lifestyle mockups send up to eight completed sticker PNGs to Seedream as reference images for natural placement on tablets, laptops, and journals. If reference generation fails, the app falls back to generic scenery with clipped exact-pixel placement.
+- Lifestyle mockups send up to five completed sticker PNGs to Seedream as reference images for natural placement on tablets, laptops, and journals. They render at 1K and are finalized locally at 2K; four lifestyle requests can run in parallel. If reference generation fails, the app falls back to generic scenery with clipped exact-pixel placement.
+- Preview-grid count adapts to the number of completed stickers, and the customer-facing how-to image is composed locally without another model request.
 - Niche analysis expands narrow phrases into a broader theme universe and 10–12 subject families. Direct motifs are capped while the selected visual style remains locked across the pack.
 - Cover badges and listing copy use the actual number of completed stickers, including partial test runs.
 

@@ -2,7 +2,7 @@
 
 StickerOS is an autonomous digital-sticker production app for Etsy. This version replaces the original Google AI Studio integration with:
 
-- **OpenAI Responses API** for niche analysis, prompt creation, structured listing copy, chat, and live trend research.
+- **OpenAI Responses API** for niche analysis, prompt creation, multimodal visual QA, structured listing copy, chat, and live trend research.
 - **BytePlus ModelArk / Seedream 5.0 Pro** for sticker images and marketing mockups.
 - A small server layer that keeps both API keys out of the browser bundle.
 
@@ -54,16 +54,30 @@ The production server serves both the compiled React app and `/api/*` on `PORT` 
 
 ## Asset integrity
 
+- Production Mode is a hard-gated 100-sticker workflow. It cannot report completion unless exactly 100 unique PNGs pass local and OpenAI visual QA and are packaged as five valid ZIPs of 20 PNGs. Test Mode produces a smaller 10-sticker validation run.
+- Every completed sticker receives local alpha/crop/dimension checks, perceptual duplicate hashing, and a numbered contact-sheet review by OpenAI vision. Definite failures are replaced with new non-repeating concepts within a bounded request budget; Seedream remains the only image generator.
+- Active runs are checkpointed in browser IndexedDB. Refreshes, browser crashes and restarts can resume missing/rejected stickers without regenerating approved inventory. A saved run must be resumed or explicitly discarded before starting another run.
+- A current-market niche preflight scores demand, catalog variety, saturation and potential brand/franchise risk. High-risk niches are blocked unless the seller explicitly confirms a manual rights review; this is decision support, not legal clearance.
 - Sticker PNGs are generated against a flat matte, cleaned with edge-connected background removal plus conservative enclosed-hole detection for rings, frames, tubes and similar shapes, decontaminated at the cut line, and tightly cropped to the artwork's real aspect ratio with only a minimal transparent safety margin. A local repair action can reprocess an existing completed PNG without another image-model request.
 - Downloadable sticker files never contain a baked-in drop shadow. Shadows are added only while composing marketing images.
 - Main covers and grid previews are built deterministically in browser Canvas from the completed sticker files. The image model cannot invent, redraw, or duplicate cover stickers.
 - Lifestyle mockups send up to five completed sticker PNGs to Seedream as reference images for natural placement on tablets, laptops, and journals. They render at 1K and are finalized locally at 2K; four lifestyle requests can run in parallel. If reference generation fails, the app falls back to generic scenery with clipped exact-pixel placement.
-- A 100-sticker product is delivered as five ZIPs of 20 PNGs. Original dimensions are preserved when possible; oversized batches are resized together with lossless PNG encoding to stay below 19 MB and target roughly 18–19 MB without adding filler data.
-- OpenAI selects 15 representative real designs for a high-impact, crop-safe landscape thumbnail; Canvas preserves the exact sticker pixels and prevents invented product art.
+- A 100-sticker product is delivered as five ZIPs of 20 PNGs. Original dimensions are preserved when possible; oversized batches are resized together with lossless PNG encoding to stay below 19 MB and target roughly 18–19 MB without adding filler data. Every volume includes a CSV manifest with dimensions, byte size and SHA-256 checksums; Volume 1 also includes a buyer-facing `START_HERE.txt` guide.
+- OpenAI selects 15 representative real designs for three high-impact crop-safe cover variants; Canvas preserves the exact sticker pixels and prevents invented product art. The listing set also includes a deterministic “What You Receive” infographic and enlarged transparency/edge-quality proof.
 - Preview-grid count adapts to the number of completed stickers, and the customer-facing four-step Etsy download/unzip/import guide is composed locally without another image-model request.
 - Niche analysis expands narrow phrases into a broader theme universe and 10–12 subject families. Direct motifs are capped while the selected visual style remains locked across the pack.
 - Cover badges and listing copy use the actual number of completed stickers, including partial test runs.
 - Listing copy follows a structured buyer-first format with an accurate file inventory, use cases, download steps, important digital-product details, and 13 validated Etsy tags.
+- Where supported by the browser, the app creates a short listing-preview video from the actual completed listing images. The master kit also contains a production QA report and a blank performance-tracking CSV for feeding real listing results back into future product decisions.
+
+## Production workflow
+
+1. Choose **TEST · 10** to validate a new provider/model/style inexpensively, or **PRODUCTION · 100** for a sellable bundle.
+2. The market/rights preflight runs before any paid Seedream request.
+3. Seedream generates with adaptive concurrency. Rate-limit pressure automatically lowers the worker count and successful requests gradually restore it.
+4. Local inspection and OpenAI contact-sheet QA approve or reject every image. Rejected slots receive distinct replacement concepts until the target is met or the safety budget stops the run.
+5. Only approved files reach ZIP packaging, covers, mockups, listing copy and the final download.
+6. **PAUSE SAFELY** finishes active requests and saves the run. **RESUME SAVED RUN** continues only unfinished work.
 
 ## Configuration
 

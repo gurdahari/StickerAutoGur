@@ -2,9 +2,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { AutopilotState, NicheIdea, StylePreset, Sticker, MarketingAsset, TrendResult, DiscoveredTrend, NicheVisualAnalysis, ProductionRunMode, QualityReport } from '../types';
 import { NICHE_IDEAS, STYLE_PRESETS } from '../data/presets';
-import { ensureProvidersConfigured, generateStickerPrompts, generateAutopilotSticker, generateAutopilotListing, generateSeedreamMockup, findViralNiche, getTrendAnalysis, discoverTopTrends, analyzeNicheVisuals, selectCoverStickerIds, assessNicheForProduction, generateReplacementStickerPrompts, generateStickerQualityReport, createListingPreviewVideo } from '../services/aiService';
+import { ensureProvidersConfigured, generateStickerPrompts, generateAutopilotSticker, generateAutopilotListing, generateSeedreamMockup, findViralNiche, getTrendAnalysis, discoverTopTrends, analyzeNicheVisuals, selectCoverStickerIds, assessNicheForProduction, generateReplacementStickerPrompts, createListingPreviewVideo } from '../services/aiService';
 import { expectsTransparentOpening, processStickerImage } from '../services/stickerProcessing';
-import { createQaContactSheets, findVisualDuplicateGroups, inspectStickerLocally } from '../services/qualityControl';
+import { findVisualDuplicateGroups, inspectStickerLocally } from '../services/qualityControl';
 import { clearRunCheckpoint, loadRunCheckpoint, saveRunCheckpointMeta, saveStickerCheckpoint, saveStickerCheckpoints, type RunCheckpointMeta } from '../services/runPersistence';
 import { Play, Pause, RefreshCw, CheckCircle, Download, FileText, Image as ImageIcon, Box, Archive, Zap, Gauge, Copy, FastForward, RotateCcw, Beaker, DollarSign, AlertCircle, Scissors, Eye, Globe, Search, ExternalLink, X, ArrowRight, BarChart3, Plus, Palette, ShoppingBag, Loader2, Wand2, Laptop, Tablet, Grid, BookOpen, Layers, ShieldCheck, Save, Video } from 'lucide-react';
 import JSZip from 'jszip';
@@ -802,7 +802,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
   ): Promise<{ stickers: Sticker[]; report: QualityReport }> => {
     setState(prev => ({ ...prev, status: 'quality_control', progress: 65 }));
     const candidates = currentStickers.filter(sticker => sticker.status === 'completed' && sticker.blob && sticker.qaStatus !== 'approved');
-    addLog(`Quality control: inspecting ${candidates.length} new sticker${candidates.length === 1 ? '' : 's'} locally...`);
+    addLog(`Fast seller QC: checking ${candidates.length} sticker${candidates.length === 1 ? '' : 's'} for technical defects and near-exact duplicates...`);
     updateMetrics({ qaRuns: metricsRef.current.qaRuns + 1 });
     const working = currentStickers.map(sticker => ({ ...sticker }));
     const localIssues = new Map<number, string[]>();
@@ -822,7 +822,8 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
     // with one another. Keep a previously approved image, otherwise keep the
     // lowest ID so the rule is deterministic.
     const localDuplicateGroups = findVisualDuplicateGroups(
-      working.filter(sticker => sticker.status === 'completed' && sticker.perceptualHash)
+      working.filter(sticker => sticker.status === 'completed' && sticker.perceptualHash),
+      1
     );
     const locallyRejectedDuplicateIds = new Set<number>();
     localDuplicateGroups.forEach(group => {
@@ -831,43 +832,25 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       group.filter(id => id !== keeper).forEach(id => locallyRejectedDuplicateIds.add(id));
     });
 
-    const visionCandidates = working.filter(sticker =>
-      candidates.some(candidate => candidate.id === sticker.id)
-      && !localIssues.has(sticker.id)
-      && !locallyRejectedDuplicateIds.has(sticker.id)
-    );
-    let visionReport = { results: [] as Awaited<ReturnType<typeof generateStickerQualityReport>>['results'], duplicateGroups: [] as number[][] };
-    if (visionCandidates.length) {
-      addLog(`OpenAI visual QA: reviewing ${visionCandidates.length} locally valid sticker${visionCandidates.length === 1 ? '' : 's'}...`);
-      const sheets = await createQaContactSheets(visionCandidates);
-      visionReport = await generateStickerQualityReport(
-        sheets,
-        visionCandidates.map(sticker => ({ id: sticker.id, prompt: sticker.prompt }))
-      );
+    const locallyApprovedCount = candidates.filter(candidate =>
+      !localIssues.has(candidate.id) && !locallyRejectedDuplicateIds.has(candidate.id)
+    ).length;
+    if (locallyApprovedCount) {
+      addLog(`Fast seller QC: ${locallyApprovedCount} locally valid design${locallyApprovedCount === 1 ? '' : 's'} approved without paid OpenAI vision or Seedream replacement.`);
     }
-    const visionById = new Map(visionReport.results.map(result => [result.id, result]));
-    const visionDuplicateRejects = new Set<number>();
-    visionReport.duplicateGroups.forEach(group => {
-      const keeper = [...group]
-        .sort((left, right) => (visionById.get(right)?.coverScore || 0) - (visionById.get(left)?.coverScore || 0))[0];
-      group.filter(id => id !== keeper).forEach(id => visionDuplicateRejects.add(id));
-    });
 
     candidates.forEach(candidate => {
       const index = working.findIndex(sticker => sticker.id === candidate.id);
       if (index === -1) return;
       const issues = [
         ...(localIssues.get(candidate.id) || []),
-        ...(locallyRejectedDuplicateIds.has(candidate.id) ? ['Perceptual duplicate of another catalog sticker.'] : []),
-        ...(visionDuplicateRejects.has(candidate.id) ? ['Visual duplicate identified during contact-sheet review.'] : [])
+        ...(locallyRejectedDuplicateIds.has(candidate.id) ? ['Near-exact duplicate of another catalog sticker.'] : [])
       ];
-      const vision = visionById.get(candidate.id);
-      if (vision?.decision === 'reject') issues.push(...vision.issues);
       working[index] = {
         ...working[index],
         qaStatus: issues.length ? 'rejected' : 'approved',
         qaIssues: [...new Set(issues)],
-        qaScore: vision?.coverScore ?? working[index].qaScore ?? 50
+        qaScore: working[index].qaScore ?? 50
       };
     });
 
@@ -879,7 +862,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       checked: working.filter(sticker => sticker.status === 'completed').length,
       approved,
       rejected,
-      duplicateGroups: [...localDuplicateGroups, ...visionReport.duplicateGroups],
+      duplicateGroups: localDuplicateGroups,
       generatedAt: new Date().toISOString()
     };
     stickersRef.current = working;
@@ -891,7 +874,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
     }));
     if (runIdRef.current) await saveStickerCheckpoints(runIdRef.current, working);
     await persistCheckpointMeta(niche, style, mode, targetCount, analysis, preflightRef.current, report);
-    addLog(`Quality report: ${approved}/${targetCount} approved • ${rejected} rejected.`);
+    addLog(`Fast QC report: ${approved}/${targetCount} approved • ${rejected} severe technical failure${rejected === 1 ? '' : 's'}.`);
     return { stickers: working, report };
   };
 
@@ -2087,7 +2070,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
                  <div className="flex items-center gap-1 ml-1">
                      <DollarSign className="w-3 h-3 text-emerald-400" />
                      <span className="text-[10px] text-slate-400 font-mono">
-                        {targetStickerCount} base images + up to {runMode === 'production' ? PRODUCTION_REPLACEMENT_BUDGET : TEST_REPLACEMENT_BUDGET} safe replacements
+                        {targetStickerCount} base images • replacements only for severe technical failures
                      </span>
                  </div>
                  <div className="flex items-center gap-1 mt-2 bg-slate-900 border border-slate-700 rounded-lg p-1">
@@ -2244,7 +2227,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
                         <div className="text-[9px] text-slate-500">{state.metrics.seedreamRequests} stickers + {state.metrics.seedreamMockupRequests} mockups</div>
                       </div>
                       <div className="bg-slate-900 rounded p-3 border border-slate-700">
-                        <div className="text-slate-500 uppercase">QA rejected</div>
+                        <div className="text-slate-500 uppercase">Severe rejects</div>
                         <div className="text-amber-400 font-bold text-lg">{state.metrics.rejectedImages}</div>
                       </div>
                     </div>

@@ -155,7 +155,7 @@ export interface DiscoveredTrend {
   stylePrompt: string;
 }
 
-export type ImageSize = '1K' | '1K_LANDSCAPE' | '2K' | '4K';
+export type ImageSize = '1K' | '1K_LANDSCAPE' | '2K' | '2K_LANDSCAPE' | '4K';
 
 export interface RoadmapStep {
   day: string;

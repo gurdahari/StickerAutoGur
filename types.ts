@@ -141,6 +141,15 @@ export interface DiscoveredTrend {
   name: string;
   category: string;
   description: string;
+  scope: 'broad' | 'micro';
+  parentNiche: string;
+  productionNiche: string;
+  targetBuyer: string;
+  whyItSells: string;
+  evidenceSummary: string;
+  demandScore: number;
+  varietyScore: number;
+  competition: 'low' | 'medium' | 'high';
   styleName: string;
   stylePrompt: string;
 }

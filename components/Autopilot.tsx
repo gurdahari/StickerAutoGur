@@ -38,6 +38,8 @@ const TEST_STICKER_COUNT = 10;
 const PRODUCTION_REPLACEMENT_BUDGET = 25;
 const TEST_REPLACEMENT_BUDGET = 5;
 
+const getNicheGenerationBrief = (niche: NicheIdea) => niche.generationBrief?.trim() || niche.name;
+
 const formatFileSizeMb = (bytes: number) => `${(bytes / 1_000_000).toFixed(1)} MB`;
 
 const loadBlobImage = (blob: Blob): Promise<HTMLImageElement> => new Promise((resolve, reject) => {
@@ -473,7 +475,8 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       
       const newNiche: NicheIdea = {
           id: Date.now(),
-          name: productionName,
+          name: trend.name,
+          generationBrief: productionName,
           category: `${trend.scope === 'broad' ? '💰 Broad Market' : '⚡ Micro Trend'} · ${dateStr}`,
           isNew: true
       };
@@ -509,7 +512,8 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
          
          const newNiche: NicheIdea = {
               id: timestamp,
-              name: productionName,
+              name: trend.name,
+              generationBrief: productionName,
               category: `${trend.scope === 'broad' ? '💰 Broad Market' : '⚡ Micro Trend'} · ${dateStr}`,
               isNew: true
           };
@@ -743,7 +747,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
           replacementImages: metricsRef.current.replacementImages + (isReplacement ? 1 : 0)
         });
         try {
-          const base64 = await generateAutopilotSticker(sticker.prompt, style.prompt, turboMode, niche.name, analysis);
+          const base64 = await generateAutopilotSticker(sticker.prompt, style.prompt, turboMode, getNicheGenerationBrief(niche), analysis);
           const processedBlob = await processStickerImage(base64, sticker.prompt);
           const previous = stickersRef.current.find(item => item.id === sticker.id);
           if (previous?.url?.startsWith('blob:')) URL.revokeObjectURL(previous.url);
@@ -903,7 +907,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
 
       addLog(`Creating ${rejectedSlots.length} distinct replacement concept${rejectedSlots.length === 1 ? '' : 's'}...`);
       const replacementPrompts = await generateReplacementStickerPrompts(
-        niche.name,
+        getNicheGenerationBrief(niche),
         style,
         rejectedSlots.length,
         quality.stickers.map(sticker => sticker.prompt),
@@ -977,7 +981,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
 
       try {
            const replacementPrompts = await generateReplacementStickerPrompts(
-             state.currentNiche.name,
+             getNicheGenerationBrief(state.currentNiche),
              state.currentStyle,
              2,
              stickersRef.current.map(item => item.prompt),
@@ -993,7 +997,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
                  seedreamRequests: metricsRef.current.seedreamRequests + 1,
                  replacementImages: metricsRef.current.replacementImages + 1
                });
-               const base64 = await generateAutopilotSticker(freshPrompt, state.currentStyle.prompt, useTurbo, state.currentNiche.name, visualAnalysisRef.current);
+               const base64 = await generateAutopilotSticker(freshPrompt, state.currentStyle.prompt, useTurbo, getNicheGenerationBrief(state.currentNiche), visualAnalysisRef.current);
                const processedBlob = await processStickerImage(base64, freshPrompt);
                const localResult = await inspectStickerLocally({
                  ...sticker,
@@ -1131,12 +1135,12 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
 
     try {
         // 1. Generate a new prompt on the fly (or just use a generic one based on niche)
-        const prompts = await generateStickerPrompts(state.currentNiche.name, state.currentStyle, 1, visualAnalysisRef.current);
+        const prompts = await generateStickerPrompts(getNicheGenerationBrief(state.currentNiche), state.currentStyle, 1, visualAnalysisRef.current);
         const freshPrompt = prompts[0] || placeholder.prompt;
         
         // 2. Generate Image
         updateMetrics({ seedreamRequests: metricsRef.current.seedreamRequests + 1 });
-        const base64 = await generateAutopilotSticker(freshPrompt, state.currentStyle.prompt, useTurbo, state.currentNiche.name, visualAnalysisRef.current);
+        const base64 = await generateAutopilotSticker(freshPrompt, state.currentStyle.prompt, useTurbo, getNicheGenerationBrief(state.currentNiche), visualAnalysisRef.current);
         const processedBlob = await processStickerImage(base64, freshPrompt);
         const finalUrl = URL.createObjectURL(processedBlob);
 
@@ -1619,7 +1623,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       addLog(`Resuming saved ${meta.runMode} run from ${new Date(meta.updatedAt).toLocaleString()}...`);
       if (audioRef.current) audioRef.current.play().catch(error => console.warn('Audio play blocked', error));
       await requestWakeLock();
-      const analysis = meta.analysis || await analyzeNicheVisuals(meta.currentNiche.name);
+      const analysis = meta.analysis || await analyzeNicheVisuals(getNicheGenerationBrief(meta.currentNiche));
       visualAnalysisRef.current = analysis;
       const missing = stickersRef.current.filter(sticker => sticker.status !== 'completed' || !sticker.blob);
       if (missing.length) {
@@ -1720,6 +1724,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
 
       if (!niche) throw new Error("Selected Niche not found");
       if (!rawStyle) throw new Error("Selected Style not found");
+      const generationBrief = getNicheGenerationBrief(niche);
 
       // --- AUTO-STYLE RESOLUTION ---
       let style = rawStyle;
@@ -1740,7 +1745,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       setState(prev => ({ ...prev, currentNiche: niche!, currentStyle: style }));
 
       addLog(`Market and rights preflight for "${niche.name}"...`);
-      const preflight = await assessNicheForProduction(niche.name);
+      const preflight = await assessNicheForProduction(generationBrief);
       preflightRef.current = preflight;
       setState(prev => ({ ...prev, preflight }));
       addLog(`Preflight: demand ${preflight.demandScore}/100 • variety ${preflight.variationScore}/100 • IP risk ${preflight.ipRisk}.`);
@@ -1751,13 +1756,13 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       // --- STEP 0: ANALYZE NICHE VISUALS ---
       setState(prev => ({ ...prev, status: 'researching' }));
       addLog(`🧠 Analyzing buyer intent for "${niche.name}"...`);
-      const analysis = await analyzeNicheVisuals(niche.name);
+      const analysis = await analyzeNicheVisuals(generationBrief);
       visualAnalysisRef.current = analysis;
       addLog(`Visual Archetype Detected: ${analysis.archetype}`);
 
       addLog(`Brainstorming sticker concepts (${activeTarget})...`);
       // Pass the analysis to prompt generation so it knows to make Frames if needed
-      const prompts = await generateStickerPrompts(niche.name, style, activeTarget, analysis);
+      const prompts = await generateStickerPrompts(generationBrief, style, activeTarget, analysis);
       
       const stickerObjects: Sticker[] = prompts.map((p, i) => ({
         id: i + 1, prompt: p, url: null, status: 'pending', regenCount: 0, qaStatus: 'pending', qaIssues: [], replacementCount: 0

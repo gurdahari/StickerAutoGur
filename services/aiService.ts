@@ -1864,7 +1864,13 @@ export const generateStickerImage = async (prompt: string, size: ImageSize = '2K
 
 export const getTrendAnalysis = async (query: string): Promise<TrendResult> => {
   const response = await generateBrainText({
-    prompt: `Research current Etsy and broader consumer trends for: ${query}. Focus on evidence useful for a digital sticker seller.`,
+    prompt: `Research current Etsy and broader consumer trends for: ${query}.
+
+Analyze two different opportunity lanes for a seller of 100-piece digital sticker bundles:
+1. BROAD MONEY MARKETS: durable, recognizable buyer markets that can support at least 100 genuinely different designs, repeat purchases, and multiple product angles.
+2. EMERGING MICRO TRENDS: timely, specific angles with visible momentum, each mapped to a broader parent market so the finished bundle does not become 100 repetitions of one tiny idea.
+
+Use current public evidence such as marketplace activity, search interest, recent trend reports, social discovery signals, buyer use cases, and visible competition. Never invent sales figures, revenue, bestseller status, or trend evidence. Distinguish demand signals from guaranteed profit. Prefer generic, commercially usable subjects and flag trademark, fandom, celebrity, character, logo, or other IP risk. Summarize which broad markets look strongest, which micro angles can refresh them, who buys them, why they buy, competition pressure, and whether each has enough visual variety for 100 stickers.`,
     webSearch: true
   });
   return { answer: response.text || "No data.", sources: response.sources };
@@ -1872,7 +1878,8 @@ export const getTrendAnalysis = async (query: string): Promise<TrendResult> => {
 
 export const findViralNiche = async (): Promise<string> => {
   const response = await generateBrainText({
-    prompt: "Research the hottest current viral digital-sticker niche with credible demand signals. Return ONLY the niche name.",
+    prompt: `Research the strongest current production opportunity for a 100-piece digital sticker bundle.
+Choose a BROAD buyer market with credible current demand signals, not a single meme, object, phrase, character, brand, or ultra-specific aesthetic. It must naturally support 100 distinct designs and multiple subthemes. It may include 3-5 timely micro-angles in parentheses to make the product current. Avoid protected brands, fandoms, celebrities, logos, and unsupported revenue claims. Return ONLY the concise production-ready niche name.`,
     webSearch: true
   });
   return response.text.trim().replace(/^["']|["']$/g, '') || "Trending";
@@ -1880,7 +1887,28 @@ export const findViralNiche = async (): Promise<string> => {
 
 export const discoverTopTrends = async (): Promise<DiscoveredTrend[]> => {
   const response = await generateBrainText({
-    prompt: "Research and identify exactly 5 breakout digital-sticker trends with current demand evidence. Give each trend a production-ready art direction.",
+    prompt: `Act as a cautious digital-product market researcher. Research current digital-sticker demand and return exactly 10 opportunities in this fixed balance:
+- exactly 5 BROAD proven buyer markets
+- exactly 5 EMERGING micro-trends
+
+Broad markets must be recognizable shopping categories, have recurring buyer use cases, and comfortably support a coherent 100-sticker collection with high visual variety. Do not merely list five aesthetics.
+
+Every micro-trend must name a broader parent niche and provide a productionNiche that expands the small trend into a sellable 100-design universe. For example, a single object, joke, phrase, or aesthetic is only one angle inside a broader buyer subject; it must not become the entire repetitive bundle.
+
+Base demand on current public marketplace/search/trend evidence. evidenceSummary must state the observed signal without inventing unit sales, revenue, bestseller labels, or exact volume. Scores are comparative research judgments, not promises. Penalize saturated generic markets unless there is a distinct buyer/use-case angle. Exclude brands, copyrighted characters, celebrities, fandom names, logos, and unsafe trademark-dependent ideas.
+
+For each opportunity:
+- name is the concise trend or market label shown in the UI.
+- scope is broad or micro.
+- parentNiche is the durable umbrella buyer market (for broad items it may equal name).
+- productionNiche is the exact rich niche passed to the 100-sticker generator; it must contain enough subthemes to prevent repetition.
+- demandScore estimates strength of current evidence from 0-100.
+- varietyScore estimates ability to create 100 distinct designs from 0-100; never return below 70.
+- competition is low, medium, or high.
+- whyItSells explains the buyer/use-case logic, not a guarantee.
+- stylePrompt preserves one cohesive visual system while allowing varied subjects.
+
+Order each lane from strongest opportunity to weakest.`,
     webSearch: true,
     schemaName: 'sticker_trends',
     schema: {
@@ -1889,8 +1917,8 @@ export const discoverTopTrends = async (): Promise<DiscoveredTrend[]> => {
       properties: {
         trends: {
           type: 'array',
-          minItems: 5,
-          maxItems: 5,
+          minItems: 10,
+          maxItems: 10,
           items: {
             type: 'object',
             additionalProperties: false,
@@ -1898,10 +1926,19 @@ export const discoverTopTrends = async (): Promise<DiscoveredTrend[]> => {
               name: { type: 'string' },
               category: { type: 'string' },
               description: { type: 'string' },
+              scope: { type: 'string', enum: ['broad', 'micro'] },
+              parentNiche: { type: 'string' },
+              productionNiche: { type: 'string' },
+              targetBuyer: { type: 'string' },
+              whyItSells: { type: 'string' },
+              evidenceSummary: { type: 'string' },
+              demandScore: { type: 'integer', minimum: 0, maximum: 100 },
+              varietyScore: { type: 'integer', minimum: 70, maximum: 100 },
+              competition: { type: 'string', enum: ['low', 'medium', 'high'] },
               styleName: { type: 'string' },
               stylePrompt: { type: 'string' }
             },
-            required: ['name', 'category', 'description', 'styleName', 'stylePrompt']
+            required: ['name', 'category', 'description', 'scope', 'parentNiche', 'productionNiche', 'targetBuyer', 'whyItSells', 'evidenceSummary', 'demandScore', 'varietyScore', 'competition', 'styleName', 'stylePrompt']
           }
         },
       },

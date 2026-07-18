@@ -68,276 +68,236 @@ export const ensureProvidersConfigured = async (): Promise<ProviderHealth> => {
   return health;
 };
 
-// Helper to convert URL to efficient Base64 for AI Input (Resize + Compress)
-const prepareImageForAI = async (url: string, maxDim: number = 1280): Promise<string> => {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      
-      let w = img.width;
-      let h = img.height;
-      
-      if (w > h) {
-          if (w > maxDim) {
-              h = Math.round(h * (maxDim / w));
-              w = maxDim;
-          }
-      } else {
-          if (h > maxDim) {
-              w = Math.round(w * (maxDim / h));
-              h = maxDim;
-          }
-      }
+const uniqueStickerUrls = (urls: string[]) => [...new Set(urls.filter(Boolean))];
 
-      canvas.width = w;
-      canvas.height = h;
-      const ctx = canvas.getContext('2d');
-      if(!ctx) {
-          reject(new Error('Canvas ctx failed'));
-          return;
-      }
-      
-      // Preserve Transparency (No White Fill)
-      ctx.clearRect(0, 0, w, h);
-      
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'high';
-      ctx.drawImage(img, 0, 0, w, h);
-      
-      // Use PNG to keep alpha channel
-      const dataUrl = canvas.toDataURL('image/png');
-      resolve(dataUrl.split(',')[1]);
-    };
-    img.onerror = (e) => reject(new Error("Failed to load image for resizing"));
-    img.src = url;
-  });
+const loadCanvasImage = (url: string): Promise<HTMLImageElement | null> => new Promise(resolve => {
+  const image = new Image();
+  image.crossOrigin = 'anonymous';
+  image.onload = () => resolve(image);
+  image.onerror = () => resolve(null);
+  image.src = url;
+});
+
+const drawContainedSticker = (
+  context: CanvasRenderingContext2D,
+  image: HTMLImageElement,
+  centerX: number,
+  centerY: number,
+  maxWidth: number,
+  maxHeight: number,
+  rotation = 0,
+  shadowScale = 1
+) => {
+  const scale = Math.min(maxWidth / image.width, maxHeight / image.height);
+  const width = image.width * scale;
+  const height = image.height * scale;
+  context.save();
+  context.translate(centerX, centerY);
+  context.rotate(rotation);
+  context.shadowColor = 'rgba(3, 7, 18, 0.42)';
+  context.shadowBlur = 34 * shadowScale;
+  context.shadowOffsetY = 18 * shadowScale;
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = 'high';
+  context.drawImage(image, -width / 2, -height / 2, width, height);
+  context.restore();
 };
 
-// --- HYBRID COMPOSITOR ENGINE ---
-// USES GEMINI 3 PRO GENERATED BACKGROUNDS + CODE COMPOSITED STICKERS
-const createHybridMockup = async (backgroundBase64: string, stickerUrls: string[], type: string, nicheName: string): Promise<string> => {
-    return new Promise((resolve, reject) => {
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
-        if (!ctx) { reject(new Error("No canvas")); return; }
+const fitText = (
+  context: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number,
+  maxFontSize: number,
+  minFontSize: number,
+  weight = 900
+) => {
+  let fontSize = maxFontSize;
+  do {
+    context.font = `${weight} ${fontSize}px Inter, Arial, sans-serif`;
+    fontSize -= 4;
+  } while (fontSize > minFontSize && context.measureText(text).width > maxWidth);
+};
 
-        const bgImg = new Image();
-        bgImg.src = `data:image/png;base64,${backgroundBase64}`;
-        
-        bgImg.onload = async () => {
-            // Set canvas to high res 2K
-            canvas.width = 2048;
-            canvas.height = 2048;
-            
-            // Draw Background
-            ctx.drawImage(bgImg, 0, 0, 2048, 2048);
-            
-            // Load all stickers
-            const stickerImages = await Promise.all(stickerUrls.map(url => new Promise<HTMLImageElement>((res) => {
-                const img = new Image();
-                img.crossOrigin = "anonymous";
-                img.onload = () => res(img);
-                img.onerror = () => res(new Image()); // Skip broken
-                img.src = url;
-            })));
+const createCoverComposite = async (stickerUrls: string[], nicheName: string, totalStickerCount: number): Promise<string> => {
+  const uniqueUrls = uniqueStickerUrls(stickerUrls).slice(0, 15);
+  const images = (await Promise.all(uniqueUrls.map(loadCanvasImage)))
+    .filter((image): image is HTMLImageElement => Boolean(image?.width));
+  if (!images.length) throw new Error('No valid stickers are available for the cover.');
 
-            const validStickers = stickerImages.filter(img => img.width > 0);
-            if (validStickers.length === 0) {
-                resolve(canvas.toDataURL('image/jpeg', 0.9));
-                return;
-            }
+  const canvas = document.createElement('canvas');
+  const size = 3000;
+  canvas.width = size;
+  canvas.height = size;
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Canvas is unavailable for cover generation.');
 
-            // Compositing Logic based on Type
-            if (type === 'goodnotes' || type === 'journal') {
-                 // --- IPAD / JOURNAL LAYOUT ---
-                 const centerX = 1024;
-                 const centerY = 1024;
-                 
-                 validStickers.forEach((img, i) => {
-                     const scale = 0.3 + (Math.random() * 0.1); // Random size
-                     const w = img.width * scale;
-                     const h = img.height * scale;
-                     
-                     // Spiral placement
-                     const angle = i * 0.8; 
-                     const radius = 200 + (i * 20); 
-                     
-                     const x = centerX + Math.cos(angle) * radius - (w/2);
-                     const y = centerY + Math.sin(angle) * radius - (h/2);
-                     const rot = (Math.random() - 0.5) * 0.5;
+  const background = context.createLinearGradient(0, 0, size, size);
+  background.addColorStop(0, '#071827');
+  background.addColorStop(0.52, '#123b55');
+  background.addColorStop(1, '#321b4d');
+  context.fillStyle = background;
+  context.fillRect(0, 0, size, size);
 
-                     ctx.save();
-                     ctx.translate(x + w/2, y + h/2);
-                     ctx.rotate(rot);
-                     ctx.shadowColor = "rgba(0,0,0,0.3)";
-                     ctx.shadowBlur = 15;
-                     ctx.shadowOffsetY = 10;
-                     ctx.drawImage(img, -w/2, -h/2, w, h);
-                     ctx.restore();
-                 });
+  const glowLeft = context.createRadialGradient(400, 1200, 0, 400, 1200, 1200);
+  glowLeft.addColorStop(0, 'rgba(34, 211, 238, 0.25)');
+  glowLeft.addColorStop(1, 'rgba(34, 211, 238, 0)');
+  context.fillStyle = glowLeft;
+  context.fillRect(0, 0, size, size);
 
-            } else if (type === 'laptop') {
-                 // --- LAPTOP STICKER BOMB ---
-                 const centerX = 1024;
-                 const centerY = 1024;
-                 
-                 validStickers.forEach((img) => {
-                     const scale = 0.25 + (Math.random() * 0.15);
-                     const w = img.width * scale;
-                     const h = img.height * scale;
-                     
-                     const x = centerX + (Math.random() - 0.5) * 800 - (w/2);
-                     const y = centerY + (Math.random() - 0.5) * 600 - (h/2);
-                     const rot = (Math.random() - 0.5) * 1.0; 
+  const glowRight = context.createRadialGradient(2600, 1500, 0, 2600, 1500, 1300);
+  glowRight.addColorStop(0, 'rgba(244, 114, 182, 0.22)');
+  glowRight.addColorStop(1, 'rgba(244, 114, 182, 0)');
+  context.fillStyle = glowRight;
+  context.fillRect(0, 0, size, size);
 
-                     ctx.save();
-                     ctx.translate(x + w/2, y + h/2);
-                     ctx.rotate(rot);
-                     ctx.shadowColor = "rgba(0,0,0,0.4)";
-                     ctx.shadowBlur = 10;
-                     ctx.drawImage(img, -w/2, -h/2, w, h);
-                     ctx.restore();
-                 });
+  context.textAlign = 'center';
+  context.textBaseline = 'middle';
+  context.fillStyle = '#F8FAFC';
+  const title = (nicheName || 'Premium').trim().toUpperCase();
+  fitText(context, title, 2600, 220, 92);
+  context.shadowColor = 'rgba(0, 0, 0, 0.45)';
+  context.shadowBlur = 24;
+  context.fillText(title, size / 2, 220);
+  context.shadowBlur = 0;
+  context.fillStyle = '#67E8F9';
+  context.font = '800 105px Inter, Arial, sans-serif';
+  context.fillText('DIGITAL STICKER BUNDLE', size / 2, 430);
 
-            } else {
-                 // --- MAIN COVER / MARKETING (CURATED SPREAD) ---
-                 // IMPROVED: Not a random pile. A curated spread of the best 18 stickers.
-                 
-                 // 1. Select distinct stickers (limit to ~18 to prevent garbage look)
-                 const coverStickers = validStickers.slice(0, 18);
-                 // Shuffle them slightly to mix shapes
-                 coverStickers.sort(() => 0.5 - Math.random());
-                 
-                 const centerX = 1024;
-                 const centerY = 1024;
-
-                 // "Fanned Ring" Layout
-                 // Place stickers in a wide oval ring around the center to leave space for text
-                 coverStickers.forEach((img, i) => {
-                     const total = coverStickers.length;
-                     const angle = (i / total) * Math.PI * 2; 
-                     
-                     // Radius: 700-850px from center (Wide ring)
-                     const radiusX = 800 + (Math.random() * 150 - 75); 
-                     const radiusY = 650 + (Math.random() * 150 - 75);
-                     
-                     const x = centerX + Math.cos(angle) * radiusX - (img.width/2);
-                     const y = centerY + Math.sin(angle) * radiusY - (img.height/2);
-                     
-                     // Rotation: Random but slightly outward facing often looks dynamic
-                     const rot = (Math.random() - 0.5) * 1.0;
-
-                     // Scaling: Varied sizes
-                     const scale = 0.6 + (Math.random() * 0.25); 
-                     const w = img.width * scale;
-                     const h = img.height * scale;
-
-                     ctx.save();
-                     ctx.translate(x + w/2, y + h/2);
-                     ctx.rotate(rot);
-                     
-                     // High quality drop shadow for "pop"
-                     ctx.shadowColor = "rgba(0,0,0,0.5)";
-                     ctx.shadowBlur = 40;
-                     ctx.shadowOffsetY = 20;
-                     
-                     ctx.drawImage(img, -w/2, -h/2, w, h);
-                     ctx.restore();
-                 });
-                 
-                 // --- COVER OVERLAY UI ---
-                 if (type === 'cover') {
-                     // 1. Central Title Box (Semi-transparent Glass)
-                     const boxW = 1500;
-                     const boxH = 500;
-                     const boxX = (2048 - boxW) / 2;
-                     const boxY = (2048 - boxH) / 2;
-                     
-                     ctx.shadowColor = "rgba(0,0,0,0.4)";
-                     ctx.shadowBlur = 30;
-                     
-                     ctx.fillStyle = "rgba(255, 255, 255, 0.92)";
-                     ctx.strokeStyle = "#171717";
-                     ctx.lineWidth = 6;
-                     
-                     ctx.beginPath();
-                     try { ctx.roundRect(boxX, boxY, boxW, boxH, 40); } catch(e) { ctx.rect(boxX, boxY, boxW, boxH); }
-                     ctx.fill();
-                     ctx.stroke();
-
-                     // 2. Title Text
-                     ctx.shadowBlur = 0; // Reset shadow for text
-                     ctx.fillStyle = "#171717";
-                     ctx.textAlign = "center";
-                     ctx.textBaseline = "middle";
-                     
-                     let fontSize = 150;
-                     ctx.font = `900 ${fontSize}px Inter, sans-serif`;
-                     // Dynamic font scaling to fit box
-                     while (ctx.measureText(nicheName.toUpperCase()).width > (boxW - 100)) {
-                         fontSize -= 10;
-                         ctx.font = `900 ${fontSize}px Inter, sans-serif`;
-                     }
-                     ctx.fillText(nicheName.toUpperCase() + " STICKERS", 1024, 1024 - 50);
-                     
-                     // 3. Subtitle
-                     ctx.font = "700 70px Inter, sans-serif";
-                     ctx.fillStyle = "#E11D48"; // Rose Red
-                     ctx.fillText("DIGITAL DOWNLOAD • 100+ PNGs", 1024, 1024 + 90);
-                     
-                     // 4. "100+ Stickers" Circular Badge (Top Right)
-                     const badgeX = 1750;
-                     const badgeY = 250;
-                     ctx.fillStyle = "#FACC15"; // Yellow
-                     ctx.beginPath();
-                     ctx.arc(badgeX, badgeY, 160, 0, Math.PI * 2);
-                     ctx.fill();
-                     ctx.strokeStyle = "white";
-                     ctx.lineWidth = 12;
-                     ctx.stroke();
-                     
-                     ctx.fillStyle = "black";
-                     ctx.font = "900 80px Inter, sans-serif";
-                     ctx.fillText("100+", badgeX, badgeY - 20);
-                     ctx.font = "700 50px Inter, sans-serif";
-                     ctx.fillText("STICKERS", badgeX, badgeY + 50);
-                     
-                     // 5. "Pre-Cropped" Badge (Bottom Left)
-                     const pillW = 500;
-                     const pillH = 120;
-                     const pillX = 100;
-                     const pillY = 1800;
-                     
-                     ctx.fillStyle = "#ffffff";
-                     ctx.strokeStyle = "black";
-                     ctx.lineWidth = 4;
-                     ctx.beginPath();
-                     try { ctx.roundRect(pillX, pillY, pillW, pillH, 60); } catch(e) { ctx.rect(pillX, pillY, pillW, pillH); }
-                     ctx.fill();
-                     ctx.stroke();
-                     
-                     ctx.fillStyle = "black";
-                     ctx.font = "800 50px Inter, sans-serif";
-                     ctx.fillText("✅ PRE-CROPPED", pillX + pillW/2, pillY + pillH/2 + 5);
-
-                     // 6. "Goodnotes Ready" Badge (Bottom Right)
-                     const gnX = 1448;
-                     ctx.fillStyle = "#ffffff";
-                     ctx.beginPath();
-                     try { ctx.roundRect(gnX, pillY, pillW, pillH, 60); } catch(e) { ctx.rect(gnX, pillY, pillW, pillH); }
-                     ctx.fill();
-                     ctx.stroke();
-                     
-                     ctx.fillStyle = "black";
-                     ctx.fillText("📱 GOODNOTES", gnX + pillW/2, pillY + pillH/2 + 5);
-                 }
-            }
-            resolve(canvas.toDataURL('image/jpeg', 0.9));
-        };
-        bgImg.onerror = () => reject(new Error("Failed to load generated background"));
+  const stickerCount = Math.max(images.length, totalStickerCount);
+  if (images.length <= 6) {
+    const slots = [
+      { x: 1500, y: 1660, w: 1160, h: 1160, r: 0 },
+      { x: 590, y: 1110, w: 760, h: 760, r: -0.12 },
+      { x: 2380, y: 1110, w: 760, h: 760, r: 0.12 },
+      { x: 630, y: 2150, w: 760, h: 760, r: 0.1 },
+      { x: 2370, y: 2150, w: 760, h: 760, r: -0.1 },
+      { x: 1500, y: 2380, w: 650, h: 650, r: 0.05 }
+    ];
+    for (let index = images.length - 1; index >= 1; index--) {
+      const slot = slots[index];
+      drawContainedSticker(context, images[index], slot.x, slot.y, slot.w, slot.h, slot.r, 1.25);
+    }
+    const hero = slots[0];
+    drawContainedSticker(context, images[0], hero.x, hero.y, hero.w, hero.h, hero.r, 1.45);
+  } else {
+    const columns = images.length >= 13 ? 5 : 4;
+    const rows = Math.ceil(images.length / columns);
+    const regionX = 190;
+    const regionY = 690;
+    const regionWidth = 2620;
+    const regionHeight = 1840;
+    const cellWidth = regionWidth / columns;
+    const cellHeight = regionHeight / rows;
+    const rotations = [-0.1, 0.06, -0.04, 0.09, -0.07];
+    images.forEach((image, index) => {
+      const column = index % columns;
+      const row = Math.floor(index / columns);
+      drawContainedSticker(
+        context,
+        image,
+        regionX + cellWidth * (column + 0.5),
+        regionY + cellHeight * (row + 0.5),
+        cellWidth * 0.94,
+        cellHeight * 0.94,
+        rotations[index % rotations.length],
+        1.05
+      );
     });
+  }
+
+  // Draw the quantity badge last so sticker art can never obscure its text.
+  context.save();
+  context.translate(2570, 655);
+  context.shadowColor = 'rgba(0, 0, 0, 0.35)';
+  context.shadowBlur = 24;
+  context.fillStyle = '#FDE047';
+  context.strokeStyle = '#FFFFFF';
+  context.lineWidth = 18;
+  context.beginPath();
+  context.arc(0, 0, 225, 0, Math.PI * 2);
+  context.fill();
+  context.stroke();
+  context.shadowBlur = 0;
+  context.fillStyle = '#111827';
+  context.font = '900 130px Inter, Arial, sans-serif';
+  context.fillText(String(stickerCount), 0, -35);
+  context.font = '800 54px Inter, Arial, sans-serif';
+  context.fillText(stickerCount === 1 ? 'STICKER' : 'STICKERS', 0, 70);
+  context.restore();
+
+  context.fillStyle = 'rgba(2, 6, 23, 0.88)';
+  context.fillRect(0, 2700, size, 300);
+  context.fillStyle = '#FFFFFF';
+  context.font = '900 74px Inter, Arial, sans-serif';
+  context.fillText('ACTUAL DESIGNS SHOWN • NO DUPLICATES', size / 2, 2790);
+  context.fillStyle = '#CBD5E1';
+  context.font = '700 56px Inter, Arial, sans-serif';
+  context.fillText('HIGH-RES TRANSPARENT PNG • INSTANT DOWNLOAD', size / 2, 2900);
+
+  return canvas.toDataURL('image/jpeg', 0.94);
+};
+
+// Seedream creates only the empty lifestyle scene. Exact sticker pixels are
+// composited afterward in Canvas so the model cannot redraw or duplicate them.
+const createHybridMockup = async (backgroundUrl: string, stickerUrls: string[], type: string): Promise<string> => {
+  const [backgroundImage, loadedStickers] = await Promise.all([
+    loadCanvasImage(backgroundUrl),
+    Promise.all(uniqueStickerUrls(stickerUrls).map(loadCanvasImage))
+  ]);
+  if (!backgroundImage) throw new Error('Failed to load the mockup background.');
+
+  const stickers = loadedStickers.filter((image): image is HTMLImageElement => Boolean(image?.width));
+  const canvas = document.createElement('canvas');
+  canvas.width = 2048;
+  canvas.height = 2048;
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Canvas is unavailable for mockup generation.');
+
+  const backgroundScale = Math.max(canvas.width / backgroundImage.width, canvas.height / backgroundImage.height);
+  const backgroundWidth = backgroundImage.width * backgroundScale;
+  const backgroundHeight = backgroundImage.height * backgroundScale;
+  context.drawImage(
+    backgroundImage,
+    (canvas.width - backgroundWidth) / 2,
+    (canvas.height - backgroundHeight) / 2,
+    backgroundWidth,
+    backgroundHeight
+  );
+
+  const region = type === 'laptop'
+    ? { x: 500, y: 620, width: 1040, height: 760, columns: 3 }
+    : type === 'goodnotes' || type === 'journal'
+      ? { x: 470, y: 500, width: 1110, height: 1050, columns: 3 }
+      : { x: 300, y: 360, width: 1448, height: 1320, columns: 3 };
+  const rows = Math.max(1, Math.ceil(stickers.length / region.columns));
+  const cellWidth = region.width / region.columns;
+  const cellHeight = region.height / rows;
+  const rotations = [-0.08, 0.04, 0.09, -0.05, 0.02];
+
+  stickers.forEach((sticker, index) => {
+    const column = index % region.columns;
+    const row = Math.floor(index / region.columns);
+    drawContainedSticker(
+      context,
+      sticker,
+      region.x + cellWidth * (column + 0.5),
+      region.y + cellHeight * (row + 0.5),
+      cellWidth * 0.88,
+      cellHeight * 0.88,
+      rotations[index % rotations.length],
+      0.55
+    );
+  });
+
+  context.fillStyle = 'rgba(15, 23, 42, 0.78)';
+  context.fillRect(0, 1900, 2048, 148);
+  context.fillStyle = '#FFFFFF';
+  context.textAlign = 'center';
+  context.textBaseline = 'middle';
+  context.font = '800 48px Inter, Arial, sans-serif';
+  context.fillText('ACTUAL STICKER DESIGNS', 1024, 1974);
+
+  return canvas.toDataURL('image/jpeg', 0.92);
 };
 
 // --- GRID PREVIEW ---
@@ -361,7 +321,7 @@ const createGridComposite = async (stickerUrls: string[]): Promise<string> => {
             ctx.fillStyle = '#FFFFFF';
             ctx.fillRect(0, 0, CTX_SIZE, CTX_SIZE);
 
-            const validUrls = stickerUrls.filter(u => !!u);
+            const validUrls = uniqueStickerUrls(stickerUrls);
             const count = validUrls.length;
 
             if (count === 0) {
@@ -451,7 +411,7 @@ const createGridComposite = async (stickerUrls: string[]): Promise<string> => {
                 
                 ctx.fillStyle = "rgba(0,0,0,0.4)";
                 ctx.font = "50px Inter, sans-serif";
-                ctx.fillText("100% VECTOR QUALITY • HIGH RES PNG", CTX_SIZE/2, CTX_SIZE - 180);
+                ctx.fillText("HIGH-RES TRANSPARENT PNG • INSTANT DOWNLOAD", CTX_SIZE/2, CTX_SIZE - 180);
 
                 resolve(canvas.toDataURL('image/jpeg', 0.90));
             }).catch(e => {
@@ -584,8 +544,9 @@ export const generateStickerPrompts = async (niche: string, style: StylePreset, 
 
     DESIGN RULES:
     1. RELEVANCE: Generate items highly specific to "${niche}".
-    2. VARIETY: Do not repeat the same object more than twice.
-    3. STYLE CONSISTENCY: All items must look like they belong in the same pack.
+    2. VARIETY: Every concept must have a different primary subject. Do not repeat the same object, character, quote, pose, or composition.
+    3. SEMANTIC UNIQUENESS: Rewording an existing idea does not make it new. Each design must be visibly distinguishable at thumbnail size.
+    4. STYLE CONSISTENCY: All items must look like they belong in the same pack.
 
     OUTPUT FORMAT:
     Return a JSON object with a "prompts" array containing exactly ${COUNT} strings.
@@ -612,10 +573,21 @@ export const generateStickerPrompts = async (niche: string, style: StylePreset, 
         }
       });
       const parsed = JSON.parse(response.text.trim()) as { prompts: string[] };
-      return parsed.prompts.slice(0, COUNT);
+      const seen = new Set<string>();
+      const uniquePrompts = parsed.prompts.filter(candidate => {
+        const normalized = candidate.toLowerCase().replace(/\s+/g, ' ').trim();
+        if (!normalized || seen.has(normalized)) return false;
+        seen.add(normalized);
+        return true;
+      });
+      while (uniquePrompts.length < COUNT) {
+        const variation = uniquePrompts.length + 1;
+        uniquePrompts.push(`TYPE: Object-Only | SUBJECT: A unique ${niche} concept number ${variation} with a primary subject not used elsewhere | COMPOSITION: Centered isolated design | TEXT: NONE`);
+      }
+      return uniquePrompts.slice(0, COUNT);
   } catch (e) {
       console.error(`Failed to parse prompts`, e);
-      return Array(COUNT).fill(`TYPE: Object-Only | SUBJECT: ${niche} Item | COMPOSITION: Simple | TEXT: NONE`);
+      return Array.from({ length: COUNT }, (_, index) => `TYPE: Object-Only | SUBJECT: A unique ${niche} concept number ${index + 1} | COMPOSITION: Centered isolated design | TEXT: NONE`);
   }
 };
 
@@ -650,7 +622,7 @@ export const generateAutopilotSticker = async (
   let visualDescription = "";
   let strictConstraints = "";
 
-  const isFrame = cleanType.includes('FRAME') || (analysis?.archetype === 'FRAME_OVERLAY');
+  const isFrame = cleanType.toUpperCase().includes('FRAME') || (analysis?.archetype === 'FRAME_OVERLAY');
   
   if (isFrame) {
       // IF FRAME: Force center to be PURE WHITE. The Luma Keyer (set to > 65) will NOT delete white.
@@ -665,12 +637,17 @@ export const generateAutopilotSticker = async (
   // Determine aesthetic vibe from analysis or default
   const aestheticKeywords = analysis ? analysis.keywords : "clean, vector, commercial";
   const negativeKeywords = analysis ? analysis.negativeKeywords : "blurry, low quality";
+  const textInstruction = cleanText && cleanText.toUpperCase() !== 'NONE'
+    ? `Render exactly this text and no other words: "${cleanText}". Spelling must be exact.`
+    : 'NO TEXT: Do not render any words, letters, numbers, labels, logos, signatures, or watermarks anywhere in the sticker.';
 
   const fullPrompt = `
   GENERATE A RAW VECTOR STICKER ASSET (NOT A PHOTO OF A STICKER).
   
   SUBJECT: ${visualDescription}
   NICHE CONTEXT: "${nicheContext}"
+  COMPOSITION: ${cleanComp || 'Centered, isolated, and fully visible'}
+  TEXT REQUIREMENT: ${textInstruction}
   
   ART STYLE INSTRUCTIONS (STRICT):
   - ${stylePrompt}
@@ -680,6 +657,7 @@ export const generateAutopilotSticker = async (
   1. **SINGLE OBJECT ONLY**: Generate ONE single sticker subject in the center. Do NOT generate a sticker sheet, a grid, a pattern, or a collection of small items.
   2. **BACKGROUND**: SOLID BLACK HEX #000000. DO NOT USE DARK GRAY. DO NOT USE GRADIENTS. MUST BE FLAT BLACK.
   3. **BORDER**: MANDATORY THICK WHITE DIE-CUT BORDER surrounding the object. This border protects the sticker content.
+  3A. **EDGE QUALITY**: The outside of the white border must be perfectly clean, continuous, and crisp. NO gray rim, NO dotted/dashed cut line, NO glow, NO texture, NO drop shadow, and NO second outline.
   4. **NO CROPPING**: The object must be floating in the center with padding on all sides.
   5. **NO CARDS**: Do NOT place the sticker on a paper card or square backing. It must be floating in void.
   6. **NO INTERNAL HOLES**: The object MUST be completely solid. NO rings, NO chains, NO empty gaps inside. Fill any natural holes with solid white or a matching color.
@@ -687,7 +665,7 @@ export const generateAutopilotSticker = async (
   
   ${strictConstraints}
   
-  NEGATIVE PROMPT (AVOID): ${negativeKeywords}, sticker sheet, sticker set, grid, pattern, multiple items, collection, cropping, blurry, text watermark, gray background, complex background, square crop, photo of a sticker on a table, realistic lighting on background, dark card backing, square paper behind sticker, holes, loops, empty space inside, transparent gaps, rings, chains.
+  NEGATIVE PROMPT (AVOID): ${negativeKeywords}, sticker sheet, sticker set, grid, pattern, multiple items, collection, cropping, blurry, text watermark, gray background, complex background, square crop, photo of a sticker on a table, realistic lighting on background, dark card backing, square paper behind sticker, holes, loops, empty space inside, transparent gaps, rings, chains, shadow, drop shadow, glow, gray fringe, dotted outline, dashed cut line, textured edge.
   `;
 
   return generateSeedreamImage(fullPrompt, useTurbo ? '1K' : '2K');
@@ -697,13 +675,15 @@ export const generateMockupBackground = async (type: string, niche: string): Pro
     return ""; // Deprecated
 };
 
-export const generateAutopilotListing = async (niche: string, styleName: string, useTurbo: boolean): Promise<string> => {
+export const generateAutopilotListing = async (niche: string, styleName: string, useTurbo: boolean, stickerCount = 100): Promise<string> => {
   const fileSpecs = useTurbo ? "High Resolution 1024px (300 DPI)" : "Ultra High Resolution 2048px (300 DPI)";
 
   const userPrompt = `
-    You are an Etsy SEO Expert. Create a listing for a "100-Pack Digital Sticker Bundle".
+    You are an Etsy SEO Expert. Create a listing for a digital sticker bundle containing exactly ${stickerCount} finished stickers.
     NICHE/THEME: "${niche}" (${styleName} style).
     
+    ACCURACY RULE: Never claim that the bundle contains more than ${stickerCount} stickers.
+
     OUTPUT FORMAT REQUIREMENTS:
     <<<TITLE>>> [SEO Title] <<<END_TITLE>>>
     <<<TAGS>>> [13 Tags] <<<END_TAGS>>>
@@ -718,130 +698,34 @@ export const generateSeedreamMockup = async (
     assetId: string,
     assetType: string,
     stickerUrls: string[], 
-    niche: string
+    niche: string,
+    totalStickerCount = stickerUrls.length
 ): Promise<string> => {
     const id = assetId.toLowerCase();
     const type = assetType.toLowerCase();
+    const uniqueUrls = uniqueStickerUrls(stickerUrls);
 
-    // 1. FAST GRID PREVIEW
-    if (type === 'preview' || id.includes('preview')) return createGridComposite(stickerUrls);
+    if (!uniqueUrls.length) throw new Error('No unique stickers are available for this marketing asset.');
+    if (type === 'preview' || id.includes('preview')) return createGridComposite(uniqueUrls);
+    if (type === 'cover') return createCoverComposite(uniqueUrls, niche, totalStickerCount);
 
-    // 2. GENERATE A HIGH-QUALITY COMPOSITE WITH SEEDREAM 5.0 PRO
-    let bgPrompt = "";
-    
-    // Random Seed for Layout Variation
-    const randomSeed = Math.floor(Math.random() * 1000);
-
-    if (type === 'cover') {
-        bgPrompt = `
-        ACT AS A STRICT COMPOSITOR.
-        CREATE AN OUTSTANDING, PREMIUM MAIN COVER IMAGE FOR ETSY.
-        
-        INPUTS: You are provided with ${stickerUrls.length} sticker images.
-        THEME: "${niche}".
-        
-        CRITICAL COMPOSITING RULES (DO NOT IGNORE):
-        1. **EXACT MATCH**: You MUST ONLY use the exact stickers provided in the input images. DO NOT invent, hallucinate, or generate any new stickers that are not in the inputs.
-        2. **NO DUPLICATES**: Use each provided sticker asset exactly ONCE. DO NOT duplicate or clone any sticker.
-        3. **ARRANGEMENT**: Arrange ALL input stickers in a highly aesthetic, dynamic floating composition. They should be well-spaced, clearly visible, and NOT messy. Do not overlap them heavily. Make it look premium and outstanding.
-        4. **BADGE**: Overlay a large, high-contrast CIRCULAR WHITE BADGE in the top-right or center. Text inside badge: "100+ STICKERS".
-        5. **TITLE**: Add a bold, readable title text overlay: "${niche.toUpperCase()}".
-        6. **BACKGROUND**: Use a professional abstract gradient background that matches the sticker colors.
-        7. **SHADOWS**: Add strong drop shadows to each sticker to make them pop off the screen.
-        
-        STYLE: High Saturation, Commercial Product Photography, 8K Resolution.
-        Seed: ${randomSeed}
-        `;
-    } else if (type === 'goodnotes' || id.includes('goodnotes')) {
-        bgPrompt = `
-        ACT AS A STRICT COMPOSITOR.
-        Create an iPad Mockup for Digital Planning.
-        
-        SCENE: A top-down view of an iPad Pro on a desk.
-        SCREEN CONTENT: Display the provided sticker images arranged neatly on a digital planner page grid.
-        
-        CRITICAL COMPOSITING RULES:
-        - **EXACT MATCH**: You MUST ONLY use the exact stickers provided in the inputs. DO NOT invent or hallucinate new stickers.
-        - **NO DUPLICATES**: Use each provided sticker exactly ONCE. DO NOT duplicate or clone any sticker.
-        - Arrange the stickers neatly, well-spaced, and NOT overlapping.
-        - Add 'GoodNotes' UI elements (toolbar) to the screen.
-        - Props: Coffee cup, Apple Pencil.
-        `;
+    let backgroundPrompt: string;
+    if (type === 'goodnotes' || id.includes('goodnotes')) {
+      backgroundPrompt = `Create a premium square product photo of a tablet on a tidy modern desk, viewed directly from above. The tablet screen must be a large blank warm-white planner page with no UI, no writing, no icons, no logos, no images, and no stickers. Keep the central screen fully unobstructed. Soft daylight, subtle coffee cup and stylus near the outer edges. Theme mood: ${niche}.`;
     } else if (type === 'laptop' || id.includes('laptop')) {
-        bgPrompt = `
-        ACT AS A STRICT COMPOSITOR.
-        Create a Laptop Skin Mockup.
-        
-        SCENE: A MacBook lid covered in stickers.
-        ACTION: Place the provided sticker images onto the laptop surface.
-        
-        CRITICAL COMPOSITING RULES:
-        - **EXACT MATCH**: You MUST ONLY use the exact stickers provided in the inputs. DO NOT invent or hallucinate new stickers.
-        - **NO DUPLICATES**: Use each provided sticker exactly ONCE. DO NOT duplicate or clone any sticker.
-        - Arrange the stickers neatly, well-spaced, and NOT overlapping in a messy way.
-        - Realistic placement (angles, but well-spaced).
-        - Laptop is on a cafe table. Blurred background.
-        `;
+      backgroundPrompt = `Create a premium square product photo of an open laptop viewed from a slightly elevated angle in a stylish cafe. The back of the laptop lid must be a large blank matte neutral surface, completely empty: no logo, no text, no art, no decals, and absolutely no stickers. Keep the lid centered and unobstructed. Soft realistic lighting and shallow depth of field. Theme mood: ${niche}.`;
     } else if (type === 'journal' || id.includes('journal')) {
-        bgPrompt = `
-        ACT AS A STRICT COMPOSITOR.
-        Create a Physical Journal Mockup.
-        
-        SCENE: An open notebook with stickers applied to the paper pages.
-        
-        CRITICAL COMPOSITING RULES:
-        - **EXACT MATCH**: You MUST ONLY use the exact stickers provided in the inputs. DO NOT invent or hallucinate new stickers.
-        - **NO DUPLICATES**: Use each provided sticker exactly ONCE. DO NOT duplicate or clone any sticker.
-        - Arrange the stickers neatly, well-spaced, and NOT overlapping.
-        - Stickers should look like they are adhered to the paper (paper texture overlay).
-        - Warm, cozy lighting.
-        `;
+      backgroundPrompt = `Create a premium square top-down product photo of an open journal on a warm wooden desk. Both pages must be completely blank and unobstructed: no text, no drawings, no photos, no labels, and absolutely no stickers. Keep a large clean page area in the center. Cozy natural lighting with minimal props only at the outer edges. Theme mood: ${niche}.`;
     } else {
-        bgPrompt = `
-        ACT AS A STRICT COMPOSITOR.
-        Create a Professional Product Photography Mockup.
-        
-        SCENE: Clean, soft-textured white surface. Blurred background.
-        
-        CRITICAL COMPOSITING RULES:
-        - **EXACT MATCH**: You MUST ONLY use the exact stickers provided in the inputs. DO NOT invent or hallucinate new stickers.
-        - **NO DUPLICATES**: Use each provided sticker exactly ONCE. DO NOT duplicate or clone any sticker.
-        - Arrange ALL input stickers neatly, well-spaced, and NOT overlapping.
-        - Create a clean, organized layout (like a grid or spread).
-        - Add soft drop shadows to the stickers.
-        `;
+      backgroundPrompt = `Create a premium square product-photo background for a digital sticker bundle. Use a clean softly textured neutral surface with a large empty central area. Do not include stickers, labels, illustrations, text, logos, badges, icons, or product artwork. Theme mood: ${niche}.`;
     }
 
     try {
-        // PREPARE IMAGE PARTS
-        // Limit to prevent payload issues, but enough for a dense pile (10)
-        const safeStickerUrls = stickerUrls.slice(0, 10);
-        const parts: any[] = [{ text: bgPrompt }];
-
-        for (const url of safeStickerUrls) {
-            try {
-                // Resize to 512px to prevent payload too large errors which cause the grid fallback
-                const base64Data = await prepareImageForAI(url, 512);
-                parts.push({
-                    inlineData: {
-                        data: base64Data,
-                        mimeType: 'image/png' 
-                    }
-                });
-            } catch (e) {
-                console.warn("Skipping invalid image for mockup", e);
-            }
-        }
-
-        const inputImages = parts
-          .filter(part => part.inlineData?.data)
-          .map(part => `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`);
-
-        return await generateSeedreamImage(bgPrompt, '2K', inputImages);
-
+        const backgroundUrl = await generateSeedreamImage(backgroundPrompt, '2K');
+        return await createHybridMockup(backgroundUrl, uniqueUrls, type);
     } catch (e: any) {
-        console.warn("Mockup gen failed, falling back to grid", e);
-        return await createGridComposite(stickerUrls);
+        console.warn('Lifestyle mockup generation failed; falling back to an exact grid.', e);
+        return await createGridComposite(uniqueUrls);
     }
 };
 

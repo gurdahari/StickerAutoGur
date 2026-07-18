@@ -12,10 +12,21 @@ interface SeedreamResponse {
 }
 
 const DEFAULT_BASE_URL = 'https://ark.ap-southeast.bytepluses.com/api/v3';
+let lastSuccessfulRequestAt: string | null = null;
 
 const getApiKey = () => (process.env.SEEDREAM_API_KEY || process.env.ARK_API_KEY)?.trim();
 export const getSeedreamModel = () => process.env.SEEDREAM_MODEL?.trim() || 'dola-seedream-5-0-pro-260628';
 export const isSeedreamConfigured = () => Boolean(getApiKey());
+export const getSeedreamKeyHint = () => {
+  const key = getApiKey();
+  return key ? `...${key.slice(-4)}` : null;
+};
+export const getSeedreamKeySource = () => process.env.SEEDREAM_API_KEY?.trim()
+  ? 'SEEDREAM_API_KEY'
+  : process.env.ARK_API_KEY?.trim()
+    ? 'ARK_API_KEY'
+    : null;
+export const getSeedreamLastSuccessfulRequestAt = () => lastSuccessfulRequestAt;
 
 const sizeToPixels = (size: ImageSize = '2K') => ({
   '1K': '1024x1024',
@@ -92,8 +103,15 @@ export const generateSeedreamImage = async (request: ImageRequest): Promise<Imag
   const image = payload.data?.[0];
   const base64 = image?.b64_json || image?.base64;
 
-  if (base64) return { dataUrl: `data:image/png;base64,${base64}` };
-  if (image?.url) return { dataUrl: await remoteImageToDataUrl(image.url) };
+  if (base64) {
+    lastSuccessfulRequestAt = new Date().toISOString();
+    return { dataUrl: `data:image/png;base64,${base64}` };
+  }
+  if (image?.url) {
+    const dataUrl = await remoteImageToDataUrl(image.url);
+    lastSuccessfulRequestAt = new Date().toISOString();
+    return { dataUrl };
+  }
 
   throw new Error(payload.error?.message || 'Seedream returned no image data.');
 };

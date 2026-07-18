@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { AutopilotState, NicheIdea, StylePreset, Sticker, MarketingAsset, TrendResult, DiscoveredTrend, NicheVisualAnalysis } from '../types';
 import { NICHE_IDEAS, STYLE_PRESETS } from '../data/presets';
-import { ensureProvidersConfigured, generateStickerPrompts, generateAutopilotSticker, generateAutopilotListing, generateSeedreamMockup, findViralNiche, getTrendAnalysis, discoverTopTrends, analyzeNicheVisuals } from '../services/aiService';
+import { ensureProvidersConfigured, generateStickerPrompts, generateAutopilotSticker, generateAutopilotListing, generateSeedreamMockup, findViralNiche, getTrendAnalysis, discoverTopTrends, analyzeNicheVisuals, selectCoverStickerIds } from '../services/aiService';
 import { processStickerImage } from '../services/stickerProcessing';
 import { Play, Pause, RefreshCw, CheckCircle, Download, FileText, Image as ImageIcon, Box, Archive, Zap, Gauge, Copy, FastForward, RotateCcw, Beaker, DollarSign, AlertCircle, Scissors, Eye, Globe, Search, ExternalLink, X, ArrowRight, BarChart3, Plus, Palette, ShoppingBag, Loader2, Wand2, Laptop, Tablet, Grid, BookOpen, Layers } from 'lucide-react';
 import JSZip from 'jszip';
@@ -27,6 +27,119 @@ const dataURLToBlob = (dataURL: string): Blob => {
     console.error("Failed to convert Data URL to Blob", e);
     return new Blob([], { type: 'image/png' }); // Fallback empty blob
   }
+};
+
+const ETSY_ZIP_TARGET_BYTES = 18_600_000;
+const ETSY_ZIP_MAX_BYTES = 19_000_000;
+
+const formatFileSizeMb = (bytes: number) => `${(bytes / 1_000_000).toFixed(1)} MB`;
+
+const loadBlobImage = (blob: Blob): Promise<HTMLImageElement> => new Promise((resolve, reject) => {
+  const url = URL.createObjectURL(blob);
+  const image = new Image();
+  image.onload = () => {
+    URL.revokeObjectURL(url);
+    resolve(image);
+  };
+  image.onerror = () => {
+    URL.revokeObjectURL(url);
+    reject(new Error('Failed to load a PNG while optimizing its Etsy ZIP.'));
+  };
+  image.src = url;
+});
+
+const resizePngBlob = async (blob: Blob, scale: number): Promise<Blob> => {
+  if (scale >= 0.995) return blob;
+  const image = await loadBlobImage(blob);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(image.width * scale));
+  canvas.height = Math.max(1, Math.round(image.height * scale));
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Canvas is unavailable for Etsy ZIP optimization.');
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = 'high';
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(result => {
+      if (result) resolve(result);
+      else reject(new Error('Failed to encode an optimized sticker PNG.'));
+    }, 'image/png');
+  });
+};
+
+const buildStickerZip = async (
+  batch: Sticker[],
+  pngBlobs: Blob[],
+  nicheName: string,
+  startIndex: number
+): Promise<Blob> => {
+  const zip = new JSZip();
+  const safeNiche = nicheName.replace(/[^a-zA-Z0-9]/g, '_');
+  batch.forEach((sticker, index) => {
+    zip.file(`${safeNiche}_${startIndex + index + 1}.png`, pngBlobs[index] || sticker.blob!);
+  });
+  return zip.generateAsync({
+    type: 'blob',
+    compression: 'DEFLATE',
+    compressionOptions: { level: 6 }
+  });
+};
+
+const buildEtsySizedStickerZip = async (
+  batch: Sticker[],
+  nicheName: string,
+  startIndex: number
+): Promise<{ blob: Blob; scale: number }> => {
+  const originals = batch.map(sticker => sticker.blob!);
+  const originalZip = await buildStickerZip(batch, originals, nicheName, startIndex);
+  if (originalZip.size <= ETSY_ZIP_MAX_BYTES) return { blob: originalZip, scale: 1 };
+
+  // Find the highest common pixel scale whose PNG payload lands near 18.6 MB.
+  // We never pad a smaller archive with junk data; original quality is retained
+  // whenever the source batch is already below Etsy's limit.
+  let lowerScale = 0.24;
+  let upperScale = 0.995;
+  let best: { blobs: Blob[]; scale: number } | null = null;
+  const payloadTarget = ETSY_ZIP_TARGET_BYTES - 120_000;
+
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const scale = (lowerScale + upperScale) / 2;
+    const blobs = await Promise.all(originals.map(blob => resizePngBlob(blob, scale)));
+    const payloadBytes = blobs.reduce((total, blob) => total + blob.size, 0);
+    if (payloadBytes <= payloadTarget) {
+      best = { blobs, scale };
+      lowerScale = scale;
+    } else {
+      upperScale = scale;
+    }
+  }
+
+  if (!best) {
+    const emergencyScale = 0.18;
+    const blobs = await Promise.all(originals.map(blob => resizePngBlob(blob, emergencyScale)));
+    best = {
+      blobs,
+      scale: emergencyScale
+    };
+  }
+
+  let zipBlob = await buildStickerZip(batch, best.blobs, nicheName, startIndex);
+  if (zipBlob.size > ETSY_ZIP_MAX_BYTES) {
+    const saferScale = Math.max(0.15, best.scale * 0.96);
+    const saferBlobs = await Promise.all(originals.map(blob => resizePngBlob(blob, saferScale)));
+    zipBlob = await buildStickerZip(batch, saferBlobs, nicheName, startIndex);
+    best = {
+      blobs: saferBlobs,
+      scale: saferScale
+    };
+  }
+
+  if (zipBlob.size > ETSY_ZIP_MAX_BYTES) {
+    throw new Error(`A 20-sticker ZIP is still ${formatFileSizeMb(zipBlob.size)} after optimization.`);
+  }
+  return { blob: zipBlob, scale: best.scale };
 };
 
 const parseListingText = (text: string) => {
@@ -348,24 +461,30 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
   });
 
   const packageStickers = async (currentStickers: Sticker[], nicheName: string) => {
-      const successfulStickers = currentStickers.filter(s => s.status === 'completed' && s.blob);
+      const allSuccessfulStickers = currentStickers.filter(s => s.status === 'completed' && s.blob);
+      const successfulStickers = allSuccessfulStickers.slice(0, TARGET_STICKER_COUNT);
       const zips: { name: string; blob: Blob }[] = [];
       const chunkSize = 20; 
       const numberOfZips = Math.ceil(successfulStickers.length / chunkSize);
 
+      if (successfulStickers.length < TARGET_STICKER_COUNT) {
+        addLog(`Publication check: ${successfulStickers.length}/100 finished stickers. This test package is not yet a complete 100-sticker product.`);
+      } else if (allSuccessfulStickers.length > TARGET_STICKER_COUNT) {
+        addLog(`${allSuccessfulStickers.length - TARGET_STICKER_COUNT} extra completed sticker(s) were excluded to keep the Etsy product at exactly 100 files.`);
+      }
+
       for (let i = 0; i < numberOfZips; i++) {
-        const zip = new JSZip();
         const start = i * chunkSize;
         const end = start + chunkSize;
         const batch = successfulStickers.slice(start, end);
         
         if (batch.length > 0) {
-            batch.forEach((s, idx) => {
-                const fileName = `${nicheName.replace(/[^a-zA-Z0-9]/g, '_')}_${start + idx + 1}.png`; 
-                zip.file(fileName, s.blob!);
-            });
-            const zipBlob = await zip.generateAsync({ type: 'blob' });
-            zips.push({ name: `StickerPack_Vol${i+1}_${nicheName.replace(/[^a-zA-Z0-9]/g, '')}.zip`, blob: zipBlob });
+            const packaged = await buildEtsySizedStickerZip(batch, nicheName, start);
+            const qualityNote = packaged.scale < 0.995
+              ? ` • optimized at ${Math.round(packaged.scale * 100)}% dimensions`
+              : ' • original PNG dimensions preserved';
+            addLog(`ZIP Vol ${i + 1}: ${batch.length} PNG files • ${formatFileSizeMb(packaged.blob.size)}${qualityNote}`);
+            zips.push({ name: `StickerPack_Vol${i+1}_${nicheName.replace(/[^a-zA-Z0-9]/g, '')}.zip`, blob: packaged.blob });
         }
       }
       return zips;
@@ -522,6 +641,40 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
      return selected.map(s => s.url!);
   };
 
+  const getModelSelectedCoverBatch = async (pool: Sticker[], count = 12): Promise<string[]> => {
+     const valid = pool.filter(sticker => sticker.status === 'completed' && sticker.url);
+     if (valid.length <= count) return valid.map(sticker => sticker.url!);
+
+     try {
+       addLog(`Choosing ${count} strongest real stickers for the main thumbnail...`);
+       const selectedIds = await selectCoverStickerIds(
+         valid.map(sticker => ({ id: sticker.id, prompt: sticker.prompt })),
+         count
+       );
+       const byId = new Map(valid.map(sticker => [sticker.id, sticker]));
+       const selected: Sticker[] = [];
+       const usedUrls = new Set<string>();
+
+       selectedIds.forEach(id => {
+         const sticker = byId.get(id);
+         if (!sticker?.url || usedUrls.has(sticker.url)) return;
+         usedUrls.add(sticker.url);
+         selected.push(sticker);
+       });
+       for (const sticker of valid) {
+         if (selected.length >= count) break;
+         if (!sticker.url || usedUrls.has(sticker.url)) continue;
+         usedUrls.add(sticker.url);
+         selected.push(sticker);
+       }
+       return selected.slice(0, count).map(sticker => sticker.url!);
+     } catch (error) {
+       console.warn('Cover selection failed; using the diversity fallback.', error);
+       addLog('Cover selector unavailable; using a diverse fallback set.');
+       return getUniqueBatchForMockup(valid, count);
+     }
+  };
+
   const getStickerRange = (stickers: Sticker[], start: number, end: number) => {
        const subset = stickers.slice(start, end);
        const valid = subset.filter(s => s.status === 'completed' && s.url);
@@ -542,7 +695,9 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       });
 
       try {
-          const validStickers = stickersRef.current;
+          const validStickers = stickersRef.current
+            .filter(sticker => sticker.status === 'completed' && sticker.url)
+            .slice(0, TARGET_STICKER_COUNT);
           let stickersForMockup: string[] = [];
 
           // Expanded Logic to slice 100 stickers into 6 grids
@@ -554,8 +709,8 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
            else if (asset.id === 'preview_6') stickersForMockup = getStickerRange(validStickers, 85, 100);
            
            // Use Unique Batch Logic for Mockups to avoid repeats
-           else if (asset.type === 'cover') stickersForMockup = getUniqueBatchForMockup(validStickers, 15); // Use 15 Unique
-           else if (asset.type === 'howto') stickersForMockup = getUniqueBatchForMockup(validStickers, 3);
+           else if (asset.type === 'cover') stickersForMockup = await getModelSelectedCoverBatch(validStickers, 12);
+           else if (asset.type === 'howto') stickersForMockup = getUniqueBatchForMockup(validStickers, 4);
            else stickersForMockup = getUniqueBatchForMockup(validStickers, 8); 
 
           const url = await generateSeedreamMockup(
@@ -810,7 +965,10 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       setState(prev => ({ ...prev, status: 'marketing', progress: 85 }));
       addLog("Creating Mockups...");
 
-      const availableStickerCount = stickersRef.current.filter(sticker => sticker.status === 'completed' && sticker.url).length;
+      const availableStickerCount = Math.min(
+        TARGET_STICKER_COUNT,
+        stickersRef.current.filter(sticker => sticker.status === 'completed' && sticker.url).length
+      );
       const previewCount = Math.min(6, Math.ceil(availableStickerCount / 17));
       const previewAssets: MarketingAsset[] = Array.from({ length: previewCount }, (_, index) => ({
         id: `preview_${index + 1}`,
@@ -846,7 +1004,9 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         });
 
         try {
-          const validStickers = stickersRef.current;
+          const validStickers = stickersRef.current
+            .filter(sticker => sticker.status === 'completed' && sticker.url)
+            .slice(0, TARGET_STICKER_COUNT);
           let stickersForMockup: string[] = [];
 
           if (asset.id === 'preview_1') stickersForMockup = getStickerRange(validStickers, 0, 17);
@@ -855,8 +1015,8 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
           else if (asset.id === 'preview_4') stickersForMockup = getStickerRange(validStickers, 51, 68);
           else if (asset.id === 'preview_5') stickersForMockup = getStickerRange(validStickers, 68, 85);
           else if (asset.id === 'preview_6') stickersForMockup = getStickerRange(validStickers, 85, 100);
-          else if (asset.type === 'cover') stickersForMockup = getUniqueBatchForMockup(validStickers, 15);
-          else if (asset.type === 'howto') stickersForMockup = getUniqueBatchForMockup(validStickers, 3);
+          else if (asset.type === 'cover') stickersForMockup = await getModelSelectedCoverBatch(validStickers, 12);
+          else if (asset.type === 'howto') stickersForMockup = getUniqueBatchForMockup(validStickers, 4);
           else stickersForMockup = getUniqueBatchForMockup(validStickers, 8);
 
           if (!stickersForMockup.length) {
@@ -896,7 +1056,10 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       setState(prev => ({ ...prev, status: 'copywriting', progress: 95 }));
       addLog("Generating SEO Listing Copy...");
       // PASS useTurbo to generate correct description
-      const completedStickerCount = stickersRef.current.filter(sticker => sticker.status === 'completed').length;
+      const completedStickerCount = Math.min(
+        TARGET_STICKER_COUNT,
+        stickersRef.current.filter(sticker => sticker.status === 'completed').length
+      );
       const rawListing = await generateAutopilotListing(niche!.name, style.name, useTurbo, completedStickerCount);
       setState(prev => ({ ...prev, rawListing, status: 'completed', progress: 100 }));
       addLog("PRODUCTION COMPLETE.");
@@ -1289,7 +1452,12 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
                          </div>
                          {state.zips.map((zip, i) => (
                            <div key={i} className="flex justify-between items-center bg-slate-800 p-3 rounded-lg border border-slate-700">
-                              <span className="text-sm text-white truncate max-w-[200px]">{zip.name}</span>
+                              <div className="min-w-0">
+                                <div className="text-sm text-white truncate max-w-[220px]">{zip.name}</div>
+                                <div className={`text-[11px] font-semibold ${zip.blob.size <= ETSY_ZIP_MAX_BYTES ? 'text-emerald-400' : 'text-red-400'}`}>
+                                  {formatFileSizeMb(zip.blob.size)} • Etsy-ready
+                                </div>
+                              </div>
                               <button 
                                 onClick={() => downloadFile(zip.blob, zip.name)}
                                 className="text-xs bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 rounded flex items-center gap-1"
@@ -1306,7 +1474,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
                          <div className="grid grid-cols-2 gap-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
                           {state.marketingAssets.map((asset, i) => (
                             <div key={i} className="bg-slate-800 rounded-lg border border-slate-700 overflow-hidden group flex flex-col">
-                                <div className="aspect-square bg-slate-900 relative flex items-center justify-center">
+                                <div className={`${asset.type === 'cover' ? 'aspect-[5/4]' : 'aspect-square'} bg-slate-900 relative flex items-center justify-center`}>
                                      {asset.status === 'completed' && asset.url ? (
                                          <>
                                             <img src={asset.url} className="w-full h-full object-cover" />

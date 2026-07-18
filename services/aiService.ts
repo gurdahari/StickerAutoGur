@@ -185,19 +185,38 @@ const drawContainedSticker = (
   context.restore();
 };
 
-const fitText = (
+const getCoverTitleLayout = (
   context: CanvasRenderingContext2D,
-  text: string,
-  maxWidth: number,
-  maxFontSize: number,
-  minFontSize: number,
-  weight = 900
+  rawTitle: string,
+  maxWidth: number
 ) => {
-  let fontSize = maxFontSize;
-  do {
-    context.font = `${weight} ${fontSize}px Inter, Arial, sans-serif`;
+  const title = (rawTitle || 'Premium Sticker Collection').replace(/\s+/g, ' ').trim().toUpperCase();
+  const words = title.split(' ');
+  let lines = [title];
+
+  // Strong marketplace covers use a compact two-level headline. Choose the
+  // most visually balanced word break instead of shrinking a long niche name
+  // into one weak line.
+  if (words.length >= 3 || title.length > 22) {
+    context.font = '900 120px Inter, Arial, sans-serif';
+    let best: { lines: string[]; score: number } | null = null;
+    for (let split = 1; split < words.length; split++) {
+      const candidate = [words.slice(0, split).join(' '), words.slice(split).join(' ')];
+      const widths = candidate.map(line => context.measureText(line).width);
+      const score = Math.max(...widths) + Math.abs(widths[0] - widths[1]) * 0.32;
+      if (!best || score < best.score) best = { lines: candidate, score };
+    }
+    if (best) lines = best.lines;
+  }
+
+  let fontSize = lines.length === 1 ? 190 : 164;
+  const minimumFontSize = lines.length === 1 ? 92 : 78;
+  while (fontSize > minimumFontSize) {
+    context.font = `900 ${fontSize}px Inter, Arial, sans-serif`;
+    if (lines.every(line => context.measureText(line).width <= maxWidth)) break;
     fontSize -= 4;
-  } while (fontSize > minFontSize && context.measureText(text).width > maxWidth);
+  }
+  return { lines, fontSize };
 };
 
 const createCoverComposite = async (stickerUrls: string[], nicheName: string, totalStickerCount: number): Promise<string> => {
@@ -214,84 +233,141 @@ const createCoverComposite = async (stickerUrls: string[], nicheName: string, to
   const context = canvas.getContext('2d');
   if (!context) throw new Error('Canvas is unavailable for cover generation.');
 
+  const palettes = [
+    { start: '#14B8A6', middle: '#3B82F6', end: '#A855F7', accent: '#FB7185', accent2: '#FDE047', ink: '#071A2D' },
+    { start: '#EC4899', middle: '#8B5CF6', end: '#06B6D4', accent: '#FB7185', accent2: '#FDE68A', ink: '#2E1065' },
+    { start: '#0EA5E9', middle: '#6366F1', end: '#D946EF', accent: '#F97316', accent2: '#A3E635', ink: '#082F49' },
+    { start: '#F59E0B', middle: '#EF4444', end: '#9333EA', accent: '#22D3EE', accent2: '#FDE047', ink: '#3F0D12' }
+  ];
+  const nicheHash = [...(nicheName || 'sticker')]
+    .reduce((hash, character) => ((hash * 31) + character.charCodeAt(0)) >>> 0, 7);
+  const palette = palettes[nicheHash % palettes.length];
   const background = context.createLinearGradient(0, 0, width, height);
-  background.addColorStop(0, '#071A2D');
-  background.addColorStop(0.46, '#0E5263');
-  background.addColorStop(1, '#4A1F62');
+  background.addColorStop(0, palette.start);
+  background.addColorStop(0.50, palette.middle);
+  background.addColorStop(1, palette.end);
   context.fillStyle = background;
   context.fillRect(0, 0, width, height);
 
-  const glowLeft = context.createRadialGradient(390, 1180, 0, 390, 1180, 1320);
-  glowLeft.addColorStop(0, 'rgba(34, 211, 238, 0.46)');
-  glowLeft.addColorStop(1, 'rgba(34, 211, 238, 0)');
-  context.fillStyle = glowLeft;
+  const centerGlow = context.createRadialGradient(1500, 1280, 120, 1500, 1280, 1500);
+  centerGlow.addColorStop(0, 'rgba(255, 255, 255, 0.34)');
+  centerGlow.addColorStop(0.55, 'rgba(255, 255, 255, 0.09)');
+  centerGlow.addColorStop(1, 'rgba(255, 255, 255, 0)');
+  context.fillStyle = centerGlow;
   context.fillRect(0, 0, width, height);
 
-  const glowRight = context.createRadialGradient(2650, 1050, 0, 2650, 1050, 1380);
-  glowRight.addColorStop(0, 'rgba(251, 113, 133, 0.40)');
-  glowRight.addColorStop(1, 'rgba(244, 114, 182, 0)');
-  context.fillStyle = glowRight;
-  context.fillRect(0, 0, width, height);
+  // Retail-style burst and confetti create energy without adding generated
+  // product art. All product imagery below remains exact completed PNG pixels.
+  context.save();
+  context.translate(width / 2, 1390);
+  for (let ray = 0; ray < 24; ray++) {
+    context.rotate((Math.PI * 2) / 24);
+    context.fillStyle = ray % 2 === 0 ? 'rgba(255, 255, 255, 0.045)' : 'rgba(255, 255, 255, 0.018)';
+    context.beginPath();
+    context.moveTo(240, -34);
+    context.lineTo(1760, -108);
+    context.lineTo(1760, 108);
+    context.closePath();
+    context.fill();
+  }
+  context.restore();
 
-  // A quiet pattern adds retail energy while all visible product art remains
-  // pixel-for-pixel from the completed sticker files.
-  context.fillStyle = 'rgba(255, 255, 255, 0.08)';
-  for (let y = 70; y < height; y += 150) {
-    for (let x = 70 + ((y / 150) % 2) * 75; x < width; x += 150) {
-      context.beginPath();
-      context.arc(x, y, 9, 0, Math.PI * 2);
-      context.fill();
-    }
+  for (let index = 0; index < 48; index++) {
+    const x = 70 + ((index * 547 + nicheHash) % (width - 140));
+    const y = 70 + ((index * 311 + nicheHash * 3) % (height - 140));
+    const radius = 5 + (index % 4) * 3;
+    context.fillStyle = index % 3 === 0 ? 'rgba(253, 224, 71, 0.36)' : 'rgba(255, 255, 255, 0.18)';
+    context.beginPath();
+    context.arc(x, y, radius, 0, Math.PI * 2);
+    context.fill();
   }
 
+  context.strokeStyle = 'rgba(255, 255, 255, 0.82)';
+  context.lineWidth = 24;
+  context.strokeRect(34, 34, width - 68, height - 68);
+
   context.save();
-  context.fillStyle = 'rgba(255, 255, 255, 0.10)';
-  context.strokeStyle = 'rgba(255, 255, 255, 0.18)';
-  context.lineWidth = 5;
+  context.fillStyle = 'rgba(7, 18, 45, 0.20)';
+  context.strokeStyle = 'rgba(255, 255, 255, 0.34)';
+  context.lineWidth = 7;
   context.beginPath();
-  context.roundRect(105, 500, 2790, 1480, 90);
+  context.roundRect(105, 805, 2790, 1195, 110);
   context.fill();
   context.stroke();
   context.restore();
 
   context.textAlign = 'center';
   context.textBaseline = 'middle';
-  context.fillStyle = '#CFFAFE';
-  context.font = '900 58px Inter, Arial, sans-serif';
-  context.fillText('DIGITAL STICKER BUNDLE', width / 2, 75);
-
-  context.fillStyle = '#FFFFFF';
-  const title = (nicheName || 'Premium').trim().toUpperCase();
-  fitText(context, title, 2520, 168, 76);
-  context.shadowColor = 'rgba(0, 0, 0, 0.45)';
-  context.shadowBlur = 24;
-  context.fillText(title, width / 2, 235);
+  context.save();
+  context.fillStyle = palette.accent2;
+  context.shadowColor = 'rgba(0, 0, 0, 0.28)';
+  context.shadowBlur = 22;
+  context.beginPath();
+  context.roundRect(820, 66, 1360, 150, 75);
+  context.fill();
   context.shadowBlur = 0;
+  context.fillStyle = palette.ink;
+  context.font = '900 58px Inter, Arial, sans-serif';
+  context.fillText('THE ULTIMATE DIGITAL STICKER BUNDLE', width / 2, 142);
+  context.restore();
 
-  context.fillStyle = '#FDE68A';
-  context.font = '800 54px Inter, Arial, sans-serif';
-  context.fillText('INDIVIDUAL TRANSPARENT PNG FILES', width / 2, 395);
+  const titleLayout = getCoverTitleLayout(context, nicheName, 2360);
+  const titleLineHeight = titleLayout.fontSize * 0.92;
+  const titleCenterY = titleLayout.lines.length === 1 ? 415 : 430;
+  const firstTitleY = titleCenterY - ((titleLayout.lines.length - 1) * titleLineHeight) / 2;
+  context.font = `900 ${titleLayout.fontSize}px Inter, Arial, sans-serif`;
+  context.lineJoin = 'round';
+  context.lineWidth = Math.max(18, titleLayout.fontSize * 0.12);
+  titleLayout.lines.forEach((line, index) => {
+    const y = firstTitleY + index * titleLineHeight;
+    context.save();
+    context.fillStyle = palette.accent;
+    context.strokeStyle = palette.ink;
+    context.shadowColor = 'rgba(0, 0, 0, 0.34)';
+    context.shadowBlur = 26;
+    context.strokeText(line, width / 2 + 12, y + 15);
+    context.fillText(line, width / 2 + 12, y + 15);
+    context.shadowBlur = 0;
+    context.fillStyle = '#FFFFFF';
+    context.strokeStyle = palette.ink;
+    context.strokeText(line, width / 2, y);
+    context.fillText(line, width / 2, y);
+    context.restore();
+  });
+
+  context.save();
+  context.fillStyle = 'rgba(255, 255, 255, 0.94)';
+  context.strokeStyle = palette.ink;
+  context.lineWidth = 8;
+  context.beginPath();
+  context.roundRect(790, 664, 1420, 112, 56);
+  context.fill();
+  context.stroke();
+  context.fillStyle = palette.ink;
+  context.font = '900 44px Inter, Arial, sans-serif';
+  context.fillText(`${images.length} ACTUAL STICKER DESIGNS SHOWN`, width / 2, 722);
+  context.restore();
 
   const stickerCount = Math.max(images.length, totalStickerCount);
   // Ordered visual hierarchy: the OpenAI selector puts the strongest concept
   // first, then supporting designs, then accents. Draw accents first so the
   // hero remains unmistakable at small Etsy thumbnail sizes.
   const slots = [
-    { x: 1500, y: 1250, w: 910, h: 910, r: 0.01, shadow: 1.55 },
-    { x: 790, y: 980, w: 650, h: 650, r: -0.10, shadow: 1.30 },
-    { x: 2210, y: 970, w: 650, h: 650, r: 0.10, shadow: 1.30 },
-    { x: 820, y: 1590, w: 620, h: 620, r: 0.085, shadow: 1.25 },
-    { x: 2180, y: 1585, w: 620, h: 620, r: -0.085, shadow: 1.25 },
-    { x: 365, y: 790, w: 410, h: 410, r: -0.13, shadow: 1.0 },
-    { x: 2710, y: 1010, w: 380, h: 380, r: 0.13, shadow: 1.0 },
-    { x: 350, y: 1400, w: 440, h: 440, r: 0.10, shadow: 1.0 },
-    { x: 2650, y: 1390, w: 440, h: 440, r: -0.10, shadow: 1.0 },
-    { x: 1160, y: 690, w: 400, h: 400, r: -0.07, shadow: 0.95 },
-    { x: 1840, y: 690, w: 400, h: 400, r: 0.07, shadow: 0.95 },
-    { x: 1500, y: 1815, w: 430, h: 430, r: -0.025, shadow: 1.0 },
-    { x: 455, y: 1810, w: 350, h: 350, r: -0.08, shadow: 0.9 },
-    { x: 2545, y: 1800, w: 350, h: 350, r: 0.08, shadow: 0.9 },
-    { x: 1500, y: 610, w: 330, h: 330, r: 0.04, shadow: 0.9 }
+    { x: 1500, y: 1410, w: 760, h: 760, r: 0.01, shadow: 1.65 },
+    { x: 905, y: 1200, w: 570, h: 570, r: -0.11, shadow: 1.35 },
+    { x: 2095, y: 1195, w: 570, h: 570, r: 0.11, shadow: 1.35 },
+    { x: 880, y: 1695, w: 545, h: 545, r: 0.09, shadow: 1.30 },
+    { x: 2120, y: 1685, w: 545, h: 545, r: -0.09, shadow: 1.30 },
+    { x: 405, y: 1015, w: 390, h: 390, r: -0.14, shadow: 1.0 },
+    { x: 2595, y: 1035, w: 390, h: 390, r: 0.14, shadow: 1.0 },
+    { x: 405, y: 1480, w: 415, h: 415, r: 0.11, shadow: 1.0 },
+    { x: 2595, y: 1480, w: 415, h: 415, r: -0.11, shadow: 1.0 },
+    { x: 1180, y: 940, w: 355, h: 355, r: -0.07, shadow: 0.95 },
+    { x: 1820, y: 940, w: 355, h: 355, r: 0.07, shadow: 0.95 },
+    { x: 1180, y: 1880, w: 335, h: 335, r: -0.04, shadow: 1.0 },
+    { x: 1820, y: 1880, w: 335, h: 335, r: 0.04, shadow: 1.0 },
+    { x: 545, y: 1870, w: 310, h: 310, r: -0.10, shadow: 0.9 },
+    { x: 2455, y: 1860, w: 310, h: 310, r: 0.10, shadow: 0.9 }
   ];
   for (let index = images.length - 1; index >= 1; index--) {
     const slot = slots[index];
@@ -302,40 +378,38 @@ const createCoverComposite = async (stickerUrls: string[], nicheName: string, to
 
   // Draw the quantity badge last so sticker art can never obscure its text.
   context.save();
-  context.translate(2660, 575);
+  context.translate(2370, 890);
   context.shadowColor = 'rgba(0, 0, 0, 0.35)';
-  context.shadowBlur = 24;
-  context.fillStyle = '#FDE047';
+  context.shadowBlur = 30;
+  context.fillStyle = palette.accent2;
   context.strokeStyle = '#FFFFFF';
-  context.lineWidth = 15;
+  context.lineWidth = 18;
   context.beginPath();
-  context.arc(0, 0, 165, 0, Math.PI * 2);
+  context.arc(0, 0, 184, 0, Math.PI * 2);
   context.fill();
   context.stroke();
   context.shadowBlur = 0;
-  context.fillStyle = '#111827';
-  context.font = '900 96px Inter, Arial, sans-serif';
-  context.fillText(String(stickerCount), 0, -28);
-  context.font = '800 42px Inter, Arial, sans-serif';
-  context.fillText(stickerCount === 1 ? 'STICKER' : 'STICKERS', 0, 55);
+  context.fillStyle = palette.ink;
+  context.font = '900 108px Inter, Arial, sans-serif';
+  context.fillText(String(stickerCount), 0, -32);
+  context.font = '900 43px Inter, Arial, sans-serif';
+  context.fillText(stickerCount === 1 ? 'STICKER' : 'STICKERS', 0, 62);
   context.restore();
 
   context.save();
-  context.fillStyle = '#FB7185';
+  context.fillStyle = palette.accent;
   context.shadowColor = 'rgba(0, 0, 0, 0.32)';
-  context.shadowBlur = 24;
+  context.shadowBlur = 28;
   context.beginPath();
-  context.roundRect(390, 2050, 2220, 190, 95);
+  context.roundRect(260, 2040, 2480, 285, 110);
   context.fill();
   context.shadowBlur = 0;
   context.fillStyle = '#FFFFFF';
-  context.font = '900 68px Inter, Arial, sans-serif';
-  context.fillText('TRANSPARENT PNG • INSTANT DOWNLOAD', width / 2, 2145);
+  context.font = '900 70px Inter, Arial, sans-serif';
+  context.fillText(`${stickerCount} INDIVIDUAL PNG STICKERS`, width / 2, 2125);
+  context.font = '800 43px Inter, Arial, sans-serif';
+  context.fillText('TRANSPARENT • PRE-CROPPED • INSTANT DOWNLOAD', width / 2, 2225);
   context.restore();
-
-  context.fillStyle = 'rgba(255, 255, 255, 0.82)';
-  context.font = '700 42px Inter, Arial, sans-serif';
-  context.fillText('USE IN DIGITAL PLANNERS, NOTES & CREATIVE PROJECTS', width / 2, 2320);
 
   return canvas.toDataURL('image/jpeg', 0.94);
 };
@@ -1037,12 +1111,12 @@ export const generateAutopilotSticker = async (
   3A. **EDGE QUALITY**: The outside of the white border must be perfectly clean, continuous, and crisp. NO gray rim, NO dotted/dashed cut line, NO glow, NO texture, NO drop shadow, and NO second outline.
   4. **NO CROPPING**: The object must be floating in the center with padding on all sides.
   5. **NO CARDS**: Do NOT place the sticker on a paper card or square backing. It must be floating in void.
-  6. **NO INTERNAL HOLES**: The object MUST be completely solid. NO rings, NO chains, NO empty gaps inside. Fill any natural holes with solid white or a matching color.
-  7. **COLOR RULE**: Inside the sticker, NEVER use pure black (#000000). Use dark gray (#1A1A1A) for dark details so it does not blend with the background.
+  6. **NATURAL OPENINGS**: Preserve openings that physically belong to the subject, such as the center of a ring, frame, hose loop, chain link, wheel, handle or scissors. Fill every intended empty opening with the exact same flat pure black (#000000) as the outer background so post-processing can make it transparent. Do not invent decorative holes or break a normally solid object.
+  7. **COLOR RULE**: Except for those intentional empty openings, NEVER use pure black (#000000) inside the sticker. Use dark gray (#1A1A1A) for outlines and dark details so artwork cannot be mistaken for removable background.
   
   ${strictConstraints}
   
-  NEGATIVE PROMPT (AVOID): ${negativeKeywords}, sticker sheet, sticker set, grid, pattern, multiple items, collection, cropping, blurry, text watermark, gray background, complex background, square crop, photo of a sticker on a table, realistic lighting on background, dark card backing, square paper behind sticker, holes, loops, empty space inside, transparent gaps, rings, chains, shadow, drop shadow, glow, oversized white border, extra-thick white outline, wide white halo, gray fringe, dotted outline, dashed cut line, textured edge.
+  NEGATIVE PROMPT (AVOID): ${negativeKeywords}, sticker sheet, sticker set, grid, pattern, multiple items, collection, cropping, blurry, text watermark, gray background, complex background, square crop, photo of a sticker on a table, realistic lighting on background, dark card backing, square paper behind sticker, accidental cutouts, unintended holes, broken silhouette, shadow, drop shadow, glow, oversized white border, extra-thick white outline, wide white halo, gray fringe, dotted outline, dashed cut line, textured edge.
   `;
 
   return generateSeedreamImage(fullPrompt, useTurbo ? '1K' : '2K');

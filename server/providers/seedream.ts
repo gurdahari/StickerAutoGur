@@ -36,6 +36,7 @@ const sizeToPixels = (size: ImageSize = '2K') => ({
   '1K': '1024x1024',
   '1K_LANDSCAPE': '1152x864',
   '2K': '2048x2048',
+  '2K_LANDSCAPE': '2048x1536',
   '4K': '4096x4096'
 }[size]);
 

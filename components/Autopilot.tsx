@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { AutopilotState, NicheIdea, StylePreset, Sticker, MarketingAsset, TrendResult, DiscoveredTrend, NicheVisualAnalysis, ProductionRunMode, QualityReport } from '../types';
 import { NICHE_IDEAS, STYLE_PRESETS } from '../data/presets';
 import { ensureProvidersConfigured, generateStickerPrompts, generateAutopilotSticker, generateAutopilotListing, generateSeedreamMockup, findViralNiche, getTrendAnalysis, discoverTopTrends, analyzeNicheVisuals, selectCoverStickerIds, assessNicheForProduction, generateReplacementStickerPrompts, generateStickerQualityReport, createListingPreviewVideo } from '../services/aiService';
-import { processStickerImage } from '../services/stickerProcessing';
+import { expectsTransparentOpening, processStickerImage } from '../services/stickerProcessing';
 import { createQaContactSheets, findVisualDuplicateGroups, inspectStickerLocally } from '../services/qualityControl';
 import { clearRunCheckpoint, loadRunCheckpoint, saveRunCheckpointMeta, saveStickerCheckpoint, saveStickerCheckpoints, type RunCheckpointMeta } from '../services/runPersistence';
 import { Play, Pause, RefreshCw, CheckCircle, Download, FileText, Image as ImageIcon, Box, Archive, Zap, Gauge, Copy, FastForward, RotateCcw, Beaker, DollarSign, AlertCircle, Scissors, Eye, Globe, Search, ExternalLink, X, ArrowRight, BarChart3, Plus, Palette, ShoppingBag, Loader2, Wand2, Laptop, Tablet, Grid, BookOpen, Layers, ShieldCheck, Save, Video } from 'lucide-react';
@@ -277,6 +277,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
   
   // DEFAULT TO TURBO MODE (TRUE) FOR SPEED
   const [useTurbo, setUseTurbo] = useState(true); 
+  const [seedreamWorkerLimit, setSeedreamWorkerLimit] = useState(10);
   const [needsZipUpdate, setNeedsZipUpdate] = useState(false);
   const [runMode, setRunMode] = useState<ProductionRunMode>('production');
   const [allowRiskyNiche, setAllowRiskyNiche] = useState(false);
@@ -297,6 +298,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
   const metricsRef = useRef(state.metrics);
   const preflightRef = useRef(state.preflight);
   const turboModeRef = useRef(useTurbo);
+  const seedreamWorkerLimitRef = useRef(10);
   const riskOverrideRef = useRef(allowRiskyNiche);
 
   const targetStickerCount = runMode === 'production' ? PRODUCTION_STICKER_COUNT : TEST_STICKER_COUNT;
@@ -579,7 +581,12 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
   };
 
   const checkApiKey = async () => {
-     await ensureProvidersConfigured();
+     const health = await ensureProvidersConfigured();
+     const configuredLimit = Number(health.providers.seedream.maxConcurrency);
+     const safeLimit = Number.isFinite(configuredLimit) ? Math.max(1, Math.min(15, configuredLimit)) : 10;
+     seedreamWorkerLimitRef.current = safeLimit;
+     setSeedreamWorkerLimit(safeLimit);
+     return health;
   };
 
   const nichesByCategory = availableNiches.reduce((acc, niche) => {
@@ -712,7 +719,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
     turboMode: boolean,
     isReplacement = false
   ) => {
-    const initialConcurrency = turboMode ? 8 : 6;
+    const initialConcurrency = Math.min(seedreamWorkerLimitRef.current, turboMode ? 10 : 8);
     const replacementBudget = mode === 'production' ? PRODUCTION_REPLACEMENT_BUDGET : TEST_REPLACEMENT_BUDGET;
     const requestBudget = targetCount + replacementBudget;
     addLog(`Generating ${items.length} sticker${items.length === 1 ? '' : 's'} with up to ${initialConcurrency} adaptive Seedream workers...`);
@@ -959,28 +966,71 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
 
       const sticker = state.stickers[stickerIndex];
       const newRegenCount = (sticker.regenCount || 0) + 1;
-      addLog(`Regenerating Sticker #${stickerId} (Attempt ${newRegenCount})...`);
-
-      // SMART REGENERATION: If failed > 2 times, change prompt to avoid loop
-      let promptToUse = sticker.prompt;
-      if (newRegenCount >= 3) {
-          promptToUse = `${sticker.prompt.split('|')[0]} | COMPOSITION: Minimal, simple, centered and fully visible | TEXT: NONE`;
-          addLog(`⚠️ Attempt ${newRegenCount}: Simplifying prompt logic for Sticker #${stickerId}`);
-      }
+      addLog(`Replacing defective Sticker #${stickerId} with a fresh concept (Attempt ${newRegenCount})...`);
 
       setState(prev => {
           const newStickers = [...prev.stickers];
-          newStickers[stickerIndex] = { ...sticker, status: 'generating', regenCount: newRegenCount, prompt: promptToUse };
+          newStickers[stickerIndex] = { ...sticker, status: 'generating', regenCount: newRegenCount };
           return { ...prev, stickers: newStickers };
       });
 
       try {
-           updateMetrics({ seedreamRequests: metricsRef.current.seedreamRequests + 1 });
-           const base64 = await generateAutopilotSticker(promptToUse, state.currentStyle.prompt, useTurbo, state.currentNiche.name, visualAnalysisRef.current);
-           
-           const processedBlob = await processStickerImage(base64, promptToUse);
-           const finalUrl = URL.createObjectURL(processedBlob);
-           const updatedSticker: Sticker = { ...sticker, prompt: promptToUse, url: finalUrl, blob: processedBlob, status: 'completed', regenCount: newRegenCount, qaStatus: 'pending', qaIssues: [], qaScore: undefined, perceptualHash: undefined };
+           const replacementPrompts = await generateReplacementStickerPrompts(
+             state.currentNiche.name,
+             state.currentStyle,
+             2,
+             stickersRef.current.map(item => item.prompt),
+             [...(sticker.qaIssues || []), 'Manual replacement requested because regenerating the same concept repeated the visual defect.'],
+             visualAnalysisRef.current
+           );
+           let accepted: { prompt: string; blob: Blob; perceptualHash: string } | null = null;
+           const localFailures: string[] = [];
+
+           for (const freshPrompt of replacementPrompts.slice(0, 2)) {
+             try {
+               updateMetrics({
+                 seedreamRequests: metricsRef.current.seedreamRequests + 1,
+                 replacementImages: metricsRef.current.replacementImages + 1
+               });
+               const base64 = await generateAutopilotSticker(freshPrompt, state.currentStyle.prompt, useTurbo, state.currentNiche.name, visualAnalysisRef.current);
+               const processedBlob = await processStickerImage(base64, freshPrompt);
+               const localResult = await inspectStickerLocally({
+                 ...sticker,
+                 prompt: freshPrompt,
+                 blob: processedBlob,
+                 url: null,
+                 status: 'completed'
+               });
+               if (!localResult.issues.length) {
+                 accepted = { prompt: freshPrompt, blob: processedBlob, perceptualHash: localResult.perceptualHash };
+                 break;
+               }
+               localFailures.push(...localResult.issues);
+             } catch (candidateError) {
+               localFailures.push(candidateError instanceof Error ? candidateError.message : String(candidateError));
+             }
+             addLog(`Replacement candidate for #${stickerId} failed local QA; trying a different concept.`);
+           }
+
+           if (!accepted) {
+             throw new Error([...new Set(localFailures)].join(' ') || 'No locally valid replacement was generated.');
+           }
+
+           const finalUrl = URL.createObjectURL(accepted.blob);
+           const updatedSticker: Sticker = {
+             ...sticker,
+             prompt: accepted.prompt,
+             url: finalUrl,
+             blob: accepted.blob,
+             status: 'completed',
+             regenCount: newRegenCount,
+             qaStatus: 'pending',
+             qaIssues: [],
+             qaScore: undefined,
+             perceptualHash: accepted.perceptualHash,
+             replacementCount: (sticker.replacementCount || 0) + 1
+           };
+           if (sticker.url?.startsWith('blob:')) URL.revokeObjectURL(sticker.url);
            const refIndex = stickersRef.current.findIndex(item => item.id === stickerId);
            if (refIndex === -1) stickersRef.current.push(updatedSticker);
            else stickersRef.current[refIndex] = updatedSticker;
@@ -993,7 +1043,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
                return { ...prev, stickers: newStickers };
            });
            
-           addLog(`Sticker #${stickerId} updated.`);
+           addLog(`Sticker #${stickerId} replaced with a fresh concept and passed local QA.`);
            setNeedsZipUpdate(true); 
            if (runIdRef.current) await saveStickerCheckpoint(runIdRef.current, updatedSticker);
 
@@ -1001,7 +1051,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
           addLog(`Error regenerating sticker #${stickerId}: ${e.message}`);
           setState(prev => {
               const newStickers = [...prev.stickers];
-              newStickers[stickerIndex] = { ...sticker, status: 'error', regenCount: newRegenCount };
+              newStickers[stickerIndex] = { ...sticker, status: sticker.url ? 'completed' : 'error', regenCount: newRegenCount };
               return { ...prev, stickers: newStickers };
           });
       }
@@ -1012,6 +1062,11 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       if (stickerIndex === -1) return;
       const sticker = stickersRef.current[stickerIndex];
       if (!sticker.url || !sticker.blob) return;
+
+      if (!expectsTransparentOpening(sticker.prompt)) {
+          addLog(`Sticker #${stickerId} is a solid-subject concept. Local carving was blocked; use Replace so black model corruption is not turned into a fake hole.`);
+          return;
+      }
 
       addLog(`Repairing transparent openings for Sticker #${stickerId} locally...`);
       setState(prev => {
@@ -1376,7 +1431,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       status: 'pending'
     }));
     const baseAssets: MarketingAsset[] = [
-      { id: 'cover_a', type: 'cover', title: 'Main Cover A (Hero Collage)', url: null, status: 'pending' },
+      { id: 'cover_a', type: 'cover', title: 'Main Cover A (Seedream Art-Directed Hero)', url: null, status: 'pending' },
       { id: 'cover_b', type: 'cover', title: 'Main Cover B (Editorial)', url: null, status: 'pending' },
       { id: 'cover_c', type: 'cover', title: 'Main Cover C (Orbit Layout)', url: null, status: 'pending' },
       { id: 'included', type: 'included', title: 'What You Receive', url: null, status: 'pending' },
@@ -1594,6 +1649,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
           checkpointUpdatedAt: null
       }));
       addLog(`Starting ${activeMode === 'production' ? '100-sticker production' : '10-sticker test'} run...`);
+      addLog(`Seedream concurrency: up to ${Math.min(seedreamWorkerLimitRef.current, useTurbo ? 10 : 8)} adaptive workers (server cap ${seedreamWorkerLimitRef.current}).`);
       
       const niche = availableNiches.find(n => n.id === selectedNicheId);
       const rawStyle = availableStyles.find(s => s.id === selectedStyleId) || availableStyles[0];
@@ -1684,7 +1740,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         status: 'pending'
       }));
       const baseAssets: MarketingAsset[] = [
-        { id: 'cover_a', type: 'cover', title: 'Main Cover A (Hero Collage)', url: null, status: 'pending' },
+        { id: 'cover_a', type: 'cover', title: 'Main Cover A (Seedream Art-Directed Hero)', url: null, status: 'pending' },
         { id: 'cover_b', type: 'cover', title: 'Main Cover B (Editorial)', url: null, status: 'pending' },
         { id: 'cover_c', type: 'cover', title: 'Main Cover C (Orbit Layout)', url: null, status: 'pending' },
         { id: 'included', type: 'included', title: 'What You Receive', url: null, status: 'pending' },
@@ -1869,7 +1925,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
                 StickerOS Autopilot
               </h2>
               <p className="text-slate-400 mt-1">
-                {useTurbo ? 'Fast Mode: 1K Generation' : 'Quality Mode: 2K Generation'} • Seedream 5.0 Pro
+                {useTurbo ? 'Fast Mode: 1K Generation' : 'Quality Mode: 2K Generation'} • Seedream 5.0 Pro • up to {Math.min(seedreamWorkerLimit, useTurbo ? 10 : 8)} adaptive workers
               </p>
             </div>
 
@@ -2169,14 +2225,14 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
                                 <button 
                                     onClick={() => handleRegenerateSticker(s.id)}
                                     className="bg-indigo-600 hover:bg-indigo-500 text-white p-2 rounded-full shadow-lg transform hover:scale-110 transition-all"
-                                    title="Regenerate this sticker"
+                                    title="Replace defect with a fresh concept"
                                 >
                                     <RefreshCw className="w-4 h-4" />
                                 </button>
                                 <button
                                     onClick={() => handleRepairStickerTransparency(s.id)}
                                     className="bg-fuchsia-600 hover:bg-fuchsia-500 text-white p-2 rounded-full shadow-lg transform hover:scale-110 transition-all"
-                                    title="Repair transparent holes without regenerating"
+                                    title="Repair a physically expected transparent opening"
                                 >
                                     <Wand2 className="w-4 h-4" />
                                 </button>

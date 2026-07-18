@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently -k -n api,web -c cyan,magenta \"tsx watch server/index.ts\" \"vite\"",
+    "dev": "concurrently -k -n api,web -c cyan,magenta \"tsx watch --include .env --include .env.local server/index.ts\" \"vite\"",
     "typecheck": "tsc --noEmit",
     "build": "npm run typecheck && vite build && tsc -p tsconfig.server.json",
     "start": "node server-dist/index.js",

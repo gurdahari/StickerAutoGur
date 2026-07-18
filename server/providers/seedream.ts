@@ -34,6 +34,7 @@ export const getSeedreamLastSuccessfulRequestAt = () => lastSuccessfulRequestAt;
 
 const sizeToPixels = (size: ImageSize = '2K') => ({
   '1K': '1024x1024',
+  '1K_LANDSCAPE': '1152x864',
   '2K': '2048x2048',
   '4K': '4096x4096'
 }[size]);
@@ -95,7 +96,9 @@ export const generateSeedreamImage = async (request: ImageRequest): Promise<Imag
   }
 
   const baseUrl = (process.env.SEEDREAM_BASE_URL?.trim() || DEFAULT_BASE_URL).replace(/\/$/, '');
-  const inputImages = (request.images || []).slice(0, 10);
+  // Seedream 5 Pro accepts up to 14 reference images when producing one output
+  // image (15 total input + output images per request).
+  const inputImages = (request.images || []).slice(0, 14);
   const body: Record<string, unknown> = {
     model: getSeedreamModel(),
     prompt: request.prompt,

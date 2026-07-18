@@ -52,6 +52,14 @@ npm start
 
 The production server serves both the compiled React app and `/api/*` on `PORT` (default `8787`).
 
+## Asset integrity
+
+- Sticker PNGs are generated against a flat matte, cleaned with edge-connected background removal, decontaminated at the cut line, and normalized to a consistent square canvas.
+- Downloadable sticker files never contain a baked-in drop shadow. Shadows are added only while composing marketing images.
+- Main covers and grid previews are built deterministically in browser Canvas from the completed sticker files. The image model cannot invent, redraw, or duplicate cover stickers.
+- Lifestyle mockups use Seedream only for an empty scene; the real sticker PNGs are composited afterward in code.
+- Cover badges and listing copy use the actual number of completed stickers, including partial test runs.
+
 ## Configuration
 
 | Variable | Default | Purpose |

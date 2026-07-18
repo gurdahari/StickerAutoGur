@@ -76,9 +76,9 @@ The production server serves both the compiled React app and `/api/*` on `PORT` 
 
 Model IDs and regional availability can vary by BytePlus account. If the default Seedream model is not enabled in your region, set `SEEDREAM_MODEL` and `SEEDREAM_BASE_URL` to the values shown in your ModelArk console.
 
-### Verify which Seedream key is active
+### Verify provider configuration
 
-`GET /api/health` reports only a masked four-character key hint, the environment-variable name that supplied it, and the last successful Seedream request observed since the server started. It never returns the secret key.
+`GET /api/health` reports whether each provider is configured and which model is selected. Masked key diagnostics remain available only in the local server terminal and are not exposed over HTTP.
 
 ```powershell
 Invoke-RestMethod http://localhost:8787/api/health | ConvertTo-Json -Depth 5
@@ -88,4 +88,6 @@ Invoke-RestMethod http://localhost:8787/api/health | ConvertTo-Json -Depth 5
 
 ## Security note
 
-API keys are server-only and are never injected into Vite. Before exposing this app publicly, add user authentication and persistent rate limits so anonymous visitors cannot spend your provider credits.
+API keys are server-only and are never injected into Vite. Both development servers bind to `127.0.0.1`, so use `http://localhost:3000`; LAN addresses such as `192.168.x.x` are intentionally unavailable. Cross-origin API calls are rejected and sensitive key diagnostics are terminal-only.
+
+This is a local development application, not a public deployment. Before exposing it through a domain, tunnel, port-forward, or cloud host, add HTTPS, user authentication, CSRF protection, and persistent rate limits so anonymous visitors cannot spend provider credits.

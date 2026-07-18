@@ -14,6 +14,7 @@ import {
   generateSeedreamImage,
   getSeedreamKeyHint,
   getSeedreamKeySource,
+  getSeedreamMaxConcurrency,
   getSeedreamModel,
   isSeedreamConfigured
 } from './providers/seedream.js';
@@ -145,7 +146,8 @@ const server = createServer(async (request, response) => {
           },
           seedream: {
             configured: isSeedreamConfigured(),
-            model: getSeedreamModel()
+            model: getSeedreamModel(),
+            maxConcurrency: getSeedreamMaxConcurrency()
           }
         }
       });

@@ -73,6 +73,53 @@ export const ensureProvidersConfigured = async (): Promise<ProviderHealth> => {
   return health;
 };
 
+export const selectCoverStickerIds = async (
+  candidates: { id: number; prompt: string }[],
+  desiredCount = 12
+): Promise<number[]> => {
+  const available = candidates.filter(candidate => Number.isFinite(candidate.id) && candidate.prompt.trim());
+  const count = Math.min(available.length, Math.max(10, Math.min(15, desiredCount)));
+  if (!available.length) return [];
+  if (available.length <= count) return available.map(candidate => candidate.id);
+
+  const candidateList = available
+    .map(candidate => `${candidate.id}: ${candidate.prompt.replace(/\s+/g, ' ').trim()}`)
+    .join('\n');
+  const response = await generateBrainText({
+    prompt: `Act as an Etsy creative director choosing the real sticker designs for the first listing thumbnail.
+Select exactly ${count} IDs from the candidates below and order them by visual importance.
+
+SELECTION GOALS:
+- ID #1 must be the strongest hero image: instantly understandable, iconic, high-contrast and representative of the full theme.
+- IDs #2-5 must be strong supporting designs with clearly different silhouettes, subjects and color opportunities.
+- The remaining IDs should add breadth and visual rhythm without repeating the same object, window, pose, phrase or composition.
+- Favor designs that will remain readable at small marketplace-thumbnail size.
+- Avoid overly detailed concepts, tiny text, weak filler, near-duplicates and concepts that represent only one narrow subtheme.
+- Select only supplied IDs. Never invent an ID.
+
+CANDIDATES:
+${candidateList}`,
+    schemaName: 'cover_sticker_selection',
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        selectedIds: {
+          type: 'array',
+          items: { type: 'integer' },
+          minItems: count,
+          maxItems: count
+        }
+      },
+      required: ['selectedIds']
+    }
+  });
+
+  const parsed = JSON.parse(response.text) as { selectedIds: number[] };
+  const allowedIds = new Set(available.map(candidate => candidate.id));
+  return [...new Set(parsed.selectedIds)].filter(id => allowedIds.has(id)).slice(0, count);
+};
+
 const uniqueStickerUrls = (urls: string[]) => [...new Set(urls.filter(Boolean))];
 
 const loadCanvasImage = (url: string): Promise<HTMLImageElement | null> => new Promise(resolve => {
@@ -160,36 +207,37 @@ const createCoverComposite = async (stickerUrls: string[], nicheName: string, to
   if (!images.length) throw new Error('No valid stickers are available for the cover.');
 
   const canvas = document.createElement('canvas');
-  const size = 3000;
-  canvas.width = size;
-  canvas.height = size;
+  const width = 3000;
+  const height = 2400;
+  canvas.width = width;
+  canvas.height = height;
   const context = canvas.getContext('2d');
   if (!context) throw new Error('Canvas is unavailable for cover generation.');
 
-  const background = context.createLinearGradient(0, 0, size, size);
-  background.addColorStop(0, '#06283D');
-  background.addColorStop(0.48, '#174A5F');
-  background.addColorStop(1, '#512B67');
+  const background = context.createLinearGradient(0, 0, width, height);
+  background.addColorStop(0, '#071A2D');
+  background.addColorStop(0.46, '#0E5263');
+  background.addColorStop(1, '#4A1F62');
   context.fillStyle = background;
-  context.fillRect(0, 0, size, size);
+  context.fillRect(0, 0, width, height);
 
-  const glowLeft = context.createRadialGradient(360, 1350, 0, 360, 1350, 1350);
-  glowLeft.addColorStop(0, 'rgba(34, 211, 238, 0.38)');
+  const glowLeft = context.createRadialGradient(390, 1180, 0, 390, 1180, 1320);
+  glowLeft.addColorStop(0, 'rgba(34, 211, 238, 0.46)');
   glowLeft.addColorStop(1, 'rgba(34, 211, 238, 0)');
   context.fillStyle = glowLeft;
-  context.fillRect(0, 0, size, size);
+  context.fillRect(0, 0, width, height);
 
-  const glowRight = context.createRadialGradient(2670, 1280, 0, 2670, 1280, 1450);
-  glowRight.addColorStop(0, 'rgba(251, 113, 133, 0.34)');
+  const glowRight = context.createRadialGradient(2650, 1050, 0, 2650, 1050, 1380);
+  glowRight.addColorStop(0, 'rgba(251, 113, 133, 0.40)');
   glowRight.addColorStop(1, 'rgba(244, 114, 182, 0)');
   context.fillStyle = glowRight;
-  context.fillRect(0, 0, size, size);
+  context.fillRect(0, 0, width, height);
 
-  // Subtle retail-style pattern gives the thumbnail energy without inventing
-  // product art or competing with the real sticker pixels.
+  // A quiet pattern adds retail energy while all visible product art remains
+  // pixel-for-pixel from the completed sticker files.
   context.fillStyle = 'rgba(255, 255, 255, 0.08)';
-  for (let y = 60; y < size; y += 150) {
-    for (let x = 70 + ((y / 150) % 2) * 75; x < size; x += 150) {
+  for (let y = 70; y < height; y += 150) {
+    for (let x = 70 + ((y / 150) % 2) * 75; x < width; x += 150) {
       context.beginPath();
       context.arc(x, y, 9, 0, Math.PI * 2);
       context.fill();
@@ -201,7 +249,7 @@ const createCoverComposite = async (stickerUrls: string[], nicheName: string, to
   context.strokeStyle = 'rgba(255, 255, 255, 0.18)';
   context.lineWidth = 5;
   context.beginPath();
-  context.roundRect(92, 590, 2816, 1900, 84);
+  context.roundRect(105, 500, 2790, 1480, 90);
   context.fill();
   context.stroke();
   context.restore();
@@ -209,83 +257,67 @@ const createCoverComposite = async (stickerUrls: string[], nicheName: string, to
   context.textAlign = 'center';
   context.textBaseline = 'middle';
   context.fillStyle = '#CFFAFE';
-  context.font = '900 68px Inter, Arial, sans-serif';
-  context.fillText('DIGITAL STICKER PACK', size / 2, 105);
+  context.font = '900 58px Inter, Arial, sans-serif';
+  context.fillText('DIGITAL STICKER BUNDLE', width / 2, 75);
 
   context.fillStyle = '#FFFFFF';
   const title = (nicheName || 'Premium').trim().toUpperCase();
-  fitText(context, title, 2680, 190, 82);
+  fitText(context, title, 2520, 168, 76);
   context.shadowColor = 'rgba(0, 0, 0, 0.45)';
   context.shadowBlur = 24;
-  context.fillText(title, size / 2, 305);
+  context.fillText(title, width / 2, 235);
   context.shadowBlur = 0;
 
   context.fillStyle = '#FDE68A';
-  context.font = '800 62px Inter, Arial, sans-serif';
-  context.fillText('READY FOR PLANNERS, NOTES & DIGITAL PROJECTS', size / 2, 475);
+  context.font = '800 54px Inter, Arial, sans-serif';
+  context.fillText('INDIVIDUAL TRANSPARENT PNG FILES', width / 2, 395);
 
   const stickerCount = Math.max(images.length, totalStickerCount);
-  if (images.length <= 6) {
-    const slots = [
-      { x: 1500, y: 1660, w: 1160, h: 1160, r: 0 },
-      { x: 590, y: 1110, w: 760, h: 760, r: -0.12 },
-      { x: 2380, y: 1110, w: 760, h: 760, r: 0.12 },
-      { x: 630, y: 2110, w: 700, h: 700, r: 0.1 },
-      { x: 2370, y: 2110, w: 700, h: 700, r: -0.1 },
-      { x: 1500, y: 2260, w: 540, h: 540, r: 0.05 }
-    ];
-    for (let index = images.length - 1; index >= 1; index--) {
-      const slot = slots[index];
-      drawContainedSticker(context, images[index], slot.x, slot.y, slot.w, slot.h, slot.r, 1.25);
-    }
-    const hero = slots[0];
-    drawContainedSticker(context, images[0], hero.x, hero.y, hero.w, hero.h, hero.r, 1.45);
-  } else {
-    const columns = images.length >= 13 ? 5 : 4;
-    const rows = Math.ceil(images.length / columns);
-    const regionX = 155;
-    const regionY = 700;
-    const regionWidth = 2690;
-    const regionHeight = 1640;
-    const cellWidth = regionWidth / columns;
-    const cellHeight = regionHeight / rows;
-    const rotations = [-0.11, 0.065, -0.045, 0.095, -0.075, 0.04];
-    images.forEach((image, index) => {
-      const column = index % columns;
-      const row = Math.floor(index / columns);
-      const rowOffset = row % 2 === 0 ? -18 : 28;
-      const sizeBoost = index % 3 === 0 ? 1.08 : index % 3 === 1 ? 0.96 : 1.02;
-      drawContainedSticker(
-        context,
-        image,
-        regionX + cellWidth * (column + 0.5) + rowOffset,
-        regionY + cellHeight * (row + 0.5) + (column % 2 === 0 ? -20 : 22),
-        cellWidth * 0.94 * sizeBoost,
-        cellHeight * 0.92 * sizeBoost,
-        rotations[index % rotations.length],
-        1.15
-      );
-    });
+  // Ordered visual hierarchy: the OpenAI selector puts the strongest concept
+  // first, then supporting designs, then accents. Draw accents first so the
+  // hero remains unmistakable at small Etsy thumbnail sizes.
+  const slots = [
+    { x: 1500, y: 1250, w: 910, h: 910, r: 0.01, shadow: 1.55 },
+    { x: 790, y: 980, w: 650, h: 650, r: -0.10, shadow: 1.30 },
+    { x: 2210, y: 970, w: 650, h: 650, r: 0.10, shadow: 1.30 },
+    { x: 820, y: 1590, w: 620, h: 620, r: 0.085, shadow: 1.25 },
+    { x: 2180, y: 1585, w: 620, h: 620, r: -0.085, shadow: 1.25 },
+    { x: 365, y: 790, w: 410, h: 410, r: -0.13, shadow: 1.0 },
+    { x: 2710, y: 1010, w: 380, h: 380, r: 0.13, shadow: 1.0 },
+    { x: 350, y: 1400, w: 440, h: 440, r: 0.10, shadow: 1.0 },
+    { x: 2650, y: 1390, w: 440, h: 440, r: -0.10, shadow: 1.0 },
+    { x: 1160, y: 690, w: 400, h: 400, r: -0.07, shadow: 0.95 },
+    { x: 1840, y: 690, w: 400, h: 400, r: 0.07, shadow: 0.95 },
+    { x: 1500, y: 1815, w: 430, h: 430, r: -0.025, shadow: 1.0 },
+    { x: 455, y: 1810, w: 350, h: 350, r: -0.08, shadow: 0.9 },
+    { x: 2545, y: 1800, w: 350, h: 350, r: 0.08, shadow: 0.9 },
+    { x: 1500, y: 610, w: 330, h: 330, r: 0.04, shadow: 0.9 }
+  ];
+  for (let index = images.length - 1; index >= 1; index--) {
+    const slot = slots[index];
+    drawContainedSticker(context, images[index], slot.x, slot.y, slot.w, slot.h, slot.r, slot.shadow);
   }
+  const hero = slots[0];
+  drawContainedSticker(context, images[0], hero.x, hero.y, hero.w, hero.h, hero.r, hero.shadow);
 
   // Draw the quantity badge last so sticker art can never obscure its text.
   context.save();
-  context.translate(2580, 610);
+  context.translate(2660, 575);
   context.shadowColor = 'rgba(0, 0, 0, 0.35)';
   context.shadowBlur = 24;
   context.fillStyle = '#FDE047';
   context.strokeStyle = '#FFFFFF';
-  context.lineWidth = 18;
+  context.lineWidth = 15;
   context.beginPath();
-  context.arc(0, 0, 205, 0, Math.PI * 2);
+  context.arc(0, 0, 165, 0, Math.PI * 2);
   context.fill();
   context.stroke();
   context.shadowBlur = 0;
   context.fillStyle = '#111827';
-  context.font = '900 122px Inter, Arial, sans-serif';
-  context.fillText(String(stickerCount), 0, -35);
-  context.font = '800 54px Inter, Arial, sans-serif';
-  context.fillText(stickerCount === 1 ? 'STICKER' : 'STICKERS', 0, 70);
+  context.font = '900 96px Inter, Arial, sans-serif';
+  context.fillText(String(stickerCount), 0, -28);
+  context.font = '800 42px Inter, Arial, sans-serif';
+  context.fillText(stickerCount === 1 ? 'STICKER' : 'STICKERS', 0, 55);
   context.restore();
 
   context.save();
@@ -293,17 +325,17 @@ const createCoverComposite = async (stickerUrls: string[], nicheName: string, to
   context.shadowColor = 'rgba(0, 0, 0, 0.32)';
   context.shadowBlur = 24;
   context.beginPath();
-  context.roundRect(430, 2600, 2140, 220, 110);
+  context.roundRect(390, 2050, 2220, 190, 95);
   context.fill();
   context.shadowBlur = 0;
   context.fillStyle = '#FFFFFF';
-  context.font = '900 76px Inter, Arial, sans-serif';
-  context.fillText('TRANSPARENT PNG • INSTANT DOWNLOAD', size / 2, 2710);
+  context.font = '900 68px Inter, Arial, sans-serif';
+  context.fillText('TRANSPARENT PNG • INSTANT DOWNLOAD', width / 2, 2145);
   context.restore();
 
   context.fillStyle = 'rgba(255, 255, 255, 0.82)';
-  context.font = '700 48px Inter, Arial, sans-serif';
-  context.fillText('HIGH-RESOLUTION DIGITAL FILES', size / 2, 2905);
+  context.font = '700 42px Inter, Arial, sans-serif';
+  context.fillText('USE IN DIGITAL PLANNERS, NOTES & CREATIVE PROJECTS', width / 2, 2320);
 
   return canvas.toDataURL('image/jpeg', 0.94);
 };
@@ -434,7 +466,7 @@ const createHybridMockup = async (backgroundUrl: string, stickerUrls: string[], 
 };
 
 const createHowToComposite = async (stickerUrls: string[]): Promise<string> => {
-  const images = (await Promise.all(uniqueStickerUrls(stickerUrls).slice(0, 3).map(loadCanvasImage)))
+  const images = (await Promise.all(uniqueStickerUrls(stickerUrls).slice(0, 4).map(loadCanvasImage)))
     .filter((image): image is HTMLImageElement => Boolean(image?.width));
   if (!images.length) throw new Error('No valid stickers are available for the how-to image.');
 
@@ -454,59 +486,163 @@ const createHowToComposite = async (stickerUrls: string[]): Promise<string> => {
   context.textAlign = 'center';
   context.textBaseline = 'middle';
   context.fillStyle = '#172554';
-  context.font = '900 160px Inter, Arial, sans-serif';
-  context.fillText('HOW TO USE YOUR STICKERS', 1500, 245);
+  context.font = '900 142px Inter, Arial, sans-serif';
+  context.fillText('HOW YOUR DOWNLOAD WORKS', 1500, 155);
   context.fillStyle = '#475569';
-  context.font = '700 66px Inter, Arial, sans-serif';
-  context.fillText('THREE QUICK STEPS • SIMPLE DIGITAL WORKFLOW', 1500, 430);
+  context.font = '700 58px Inter, Arial, sans-serif';
+  context.fillText('PURCHASE → DOWNLOAD → UNZIP → IMPORT', 1500, 315);
 
-  const steps = [
-    { title: 'DOWNLOAD', detail: 'Save the transparent PNG files' },
-    { title: 'IMPORT', detail: 'Open them in your favorite app' },
-    { title: 'CREATE', detail: 'Drag, resize and enjoy' }
+  const cardWidth = 1320;
+  const cardHeight = 900;
+  const cards = [
+    { x: 130, y: 465, color: '#F97316', title: 'DOWNLOAD FROM ETSY', line1: 'ETSY.COM → ACCOUNT → PURCHASES', line2: 'Select “Download Files” in a browser' },
+    { x: 1550, y: 465, color: '#8B5CF6', title: 'UNZIP YOUR FILES', line1: 'OPEN EACH DOWNLOADED ZIP', line2: 'Choose Extract All / Uncompress' },
+    { x: 130, y: 1465, color: '#0891B2', title: 'IMPORT A PNG', line1: 'OPEN YOUR PLANNER OR DESIGN APP', line2: 'Choose Import, Insert Image or Upload' },
+    { x: 1550, y: 1465, color: '#EC4899', title: 'DECORATE & CREATE', line1: 'DRAG • RESIZE • ROTATE • LAYER', line2: 'Arrange the stickers in your project' }
   ];
-  const cardWidth = 820;
-  const cardHeight = 1900;
-  const gap = 95;
-  const startX = (3000 - (cardWidth * 3 + gap * 2)) / 2;
 
-  steps.forEach((step, index) => {
-    const x = startX + index * (cardWidth + gap);
+  cards.forEach((card, index) => {
+    const { x, y } = card;
     context.save();
     context.shadowColor = 'rgba(30, 41, 59, 0.17)';
     context.shadowBlur = 45;
     context.shadowOffsetY = 24;
     context.fillStyle = '#FFFFFF';
     context.beginPath();
-    context.roundRect(x, 660, cardWidth, cardHeight, 70);
+    context.roundRect(x, y, cardWidth, cardHeight, 70);
     context.fill();
     context.restore();
 
-    context.fillStyle = ['#FB7185', '#8B5CF6', '#06B6D4'][index];
+    context.fillStyle = card.color;
     context.beginPath();
-    context.arc(x + cardWidth / 2, 830, 92, 0, Math.PI * 2);
+    context.arc(x + 105, y + 105, 68, 0, Math.PI * 2);
     context.fill();
     context.fillStyle = '#FFFFFF';
-    context.font = '900 88px Inter, Arial, sans-serif';
-    context.fillText(String(index + 1), x + cardWidth / 2, 830);
-
-    const image = images[index % images.length];
-    drawContainedSticker(context, image, x + cardWidth / 2, 1480, 650, 820, index === 1 ? 0.04 : -0.035, 0.65);
+    context.font = '900 62px Inter, Arial, sans-serif';
+    context.fillText(String(index + 1), x + 105, y + 105);
 
     context.fillStyle = '#172554';
-    context.font = '900 82px Inter, Arial, sans-serif';
-    context.fillText(step.title, x + cardWidth / 2, 2180);
+    context.textAlign = 'left';
+    context.font = '900 62px Inter, Arial, sans-serif';
+    context.fillText(card.title, x + 205, y + 90);
     context.fillStyle = '#64748B';
-    context.font = '600 48px Inter, Arial, sans-serif';
-    const words = step.detail.split(' ');
-    const midpoint = Math.ceil(words.length / 2);
-    context.fillText(words.slice(0, midpoint).join(' '), x + cardWidth / 2, 2310);
-    context.fillText(words.slice(midpoint).join(' '), x + cardWidth / 2, 2380);
+    context.font = '700 35px Inter, Arial, sans-serif';
+    context.fillText(card.line1, x + 205, y + 155);
+    context.font = '600 35px Inter, Arial, sans-serif';
+    context.fillText(card.line2, x + 205, y + 205);
+    context.textAlign = 'center';
+
+    if (index === 0) {
+      // A simplified Etsy Purchases screen makes the retrieval path obvious.
+      context.fillStyle = '#F8FAFC';
+      context.strokeStyle = '#CBD5E1';
+      context.lineWidth = 6;
+      context.beginPath();
+      context.roundRect(x + 100, y + 285, 1120, 500, 38);
+      context.fill();
+      context.stroke();
+      context.fillStyle = '#E2E8F0';
+      context.fillRect(x + 100, y + 285, 1120, 88);
+      ['#FB7185', '#FBBF24', '#34D399'].forEach((color, dotIndex) => {
+        context.fillStyle = color;
+        context.beginPath();
+        context.arc(x + 155 + dotIndex * 52, y + 330, 14, 0, Math.PI * 2);
+        context.fill();
+      });
+      context.textAlign = 'left';
+      context.fillStyle = '#334155';
+      context.font = '800 42px Inter, Arial, sans-serif';
+      context.fillText('Your account  ›  Purchases', x + 155, y + 440);
+      context.fillStyle = '#FFFFFF';
+      context.strokeStyle = '#E2E8F0';
+      context.beginPath();
+      context.roundRect(x + 155, y + 500, 1010, 205, 30);
+      context.fill();
+      context.stroke();
+      context.fillStyle = '#0F172A';
+      context.font = '800 38px Inter, Arial, sans-serif';
+      context.fillText('Your digital sticker order', x + 205, y + 560);
+      context.fillStyle = '#F97316';
+      context.beginPath();
+      context.roundRect(x + 760, y + 590, 335, 78, 39);
+      context.fill();
+      context.textAlign = 'center';
+      context.fillStyle = '#FFFFFF';
+      context.font = '900 32px Inter, Arial, sans-serif';
+      context.fillText('DOWNLOAD FILES', x + 927, y + 630);
+    } else if (index === 1) {
+      // ZIP files flow into an extracted PNG folder.
+      [0, 1, 2].forEach(fileIndex => {
+        const fileX = x + 145 + fileIndex * 285;
+        context.fillStyle = fileIndex === 1 ? '#EDE9FE' : '#F5F3FF';
+        context.strokeStyle = '#8B5CF6';
+        context.lineWidth = 6;
+        context.beginPath();
+        context.roundRect(fileX, y + 330 + fileIndex * 18, 225, 285, 28);
+        context.fill();
+        context.stroke();
+        context.fillStyle = '#8B5CF6';
+        context.fillRect(fileX + 102, y + 350 + fileIndex * 18, 22, 155);
+        context.fillStyle = '#4C1D95';
+        context.font = '900 38px Inter, Arial, sans-serif';
+        context.fillText('ZIP', fileX + 112, y + 560 + fileIndex * 18);
+      });
+      context.fillStyle = '#8B5CF6';
+      context.beginPath();
+      context.roundRect(x + 380, y + 690, 560, 92, 46);
+      context.fill();
+      context.fillStyle = '#FFFFFF';
+      context.font = '900 38px Inter, Arial, sans-serif';
+      context.fillText('EXTRACT ALL FILES', x + 660, y + 736);
+    } else if (index === 2) {
+      // A generic app import surface avoids promising one specific app.
+      context.fillStyle = '#0F172A';
+      context.beginPath();
+      context.roundRect(x + 210, y + 285, 900, 525, 58);
+      context.fill();
+      context.fillStyle = '#FFFFFF';
+      context.beginPath();
+      context.roundRect(x + 255, y + 335, 810, 425, 32);
+      context.fill();
+      context.strokeStyle = '#CBD5E1';
+      context.lineWidth = 5;
+      context.stroke();
+      context.fillStyle = '#0891B2';
+      context.beginPath();
+      context.roundRect(x + 355, y + 400, 610, 105, 52);
+      context.fill();
+      context.fillStyle = '#FFFFFF';
+      context.font = '900 40px Inter, Arial, sans-serif';
+      context.fillText('+  IMPORT / INSERT IMAGE', x + 660, y + 453);
+      drawContainedSticker(context, images[0], x + 660, y + 650, 330, 235, -0.035, 0.55);
+    } else {
+      context.fillStyle = '#FFFEF7';
+      context.strokeStyle = '#FBCFE8';
+      context.lineWidth = 7;
+      context.beginPath();
+      context.roundRect(x + 145, y + 285, 1030, 530, 44);
+      context.fill();
+      context.stroke();
+      context.strokeStyle = 'rgba(148, 163, 184, 0.35)';
+      context.lineWidth = 4;
+      for (let line = 0; line < 5; line++) {
+        context.beginPath();
+        context.moveTo(x + 220, y + 410 + line * 72);
+        context.lineTo(x + 1095, y + 410 + line * 72);
+        context.stroke();
+      }
+      drawContainedSticker(context, images[1 % images.length], x + 510, y + 560, 430, 390, -0.09, 0.60);
+      drawContainedSticker(context, images[2 % images.length], x + 875, y + 595, 390, 360, 0.08, 0.60);
+    }
   });
 
   context.fillStyle = '#172554';
-  context.font = '800 64px Inter, Arial, sans-serif';
-  context.fillText('PERFECT FOR DIGITAL PLANNERS, NOTES & CREATIVE PROJECTS', 1500, 2780);
+  context.textAlign = 'center';
+  context.font = '900 48px Inter, Arial, sans-serif';
+  context.fillText('DIGITAL DOWNLOAD • USE A MOBILE BROWSER OR COMPUTER • NO PHYSICAL ITEM', 1500, 2605);
+  context.fillStyle = '#475569';
+  context.font = '700 42px Inter, Arial, sans-serif';
+  context.fillText('After unzipping, import any individual transparent PNG into an app that supports images.', 1500, 2705);
   return canvas.toDataURL('image/jpeg', 0.93);
 };
 
@@ -917,22 +1053,96 @@ export const generateMockupBackground = async (type: string, niche: string): Pro
 };
 
 export const generateAutopilotListing = async (niche: string, styleName: string, useTurbo: boolean, stickerCount = 100): Promise<string> => {
-  const fileSpecs = useTurbo ? "High Resolution 1024px (300 DPI)" : "Ultra High Resolution 2048px (300 DPI)";
+  const sourceResolution = useTurbo
+    ? 'high-resolution transparent PNG files created from 1K source artwork'
+    : 'ultra-high-resolution transparent PNG files created from 2K source artwork';
+  const zipCount = Math.ceil(stickerCount / 20);
 
   const userPrompt = `
-    You are an Etsy SEO Expert. Create a listing for a digital sticker bundle containing exactly ${stickerCount} finished stickers.
-    NICHE/THEME: "${niche}" (${styleName} style).
-    
-    ACCURACY RULE: Never claim that the bundle contains more than ${stickerCount} stickers.
+    Act as a conversion-focused Etsy copywriter who follows current buyer-friendly title and description practices.
+    Create a complete listing for a digital sticker bundle containing exactly ${stickerCount} finished stickers.
 
-    OUTPUT FORMAT REQUIREMENTS:
-    <<<TITLE>>> [SEO Title] <<<END_TITLE>>>
-    <<<TAGS>>> [13 Tags] <<<END_TAGS>>>
-    <<<DESCRIPTION>>> [Description including "${fileSpecs}"] <<<END_DESCRIPTION>>>
+    PRODUCT FACTS — NEVER CONTRADICT OR EMBELLISH:
+    - Theme: "${niche}"
+    - Visual style: "${styleName}"
+    - Delivery: ${zipCount} ZIP file${zipCount === 1 ? '' : 's'}, with up to 20 separate PNG stickers per ZIP
+    - File type: ${sourceResolution}
+    - Transparent backgrounds and individual, separately usable designs
+    - Instant digital download; no physical item is shipped
+    - Buyers download on Etsy.com from Account > Purchases > Download Files. The Etsy app does not currently download digital files, so buyers should use a mobile browser or computer.
+
+    TITLE RULES:
+    - Clear, natural and buyer-friendly; ideally fewer than 15 words and always under 140 characters.
+    - State the item once and put the theme plus the most important objective traits first.
+    - Do not keyword-stuff, repeat words, add price/shipping language, or use unsupported claims such as "best seller".
+
+    TAG RULES:
+    - Exactly 13 unique, relevant Etsy search phrases.
+    - Each tag must be 20 characters or fewer, including spaces.
+    - Mix specific long-tail intent, theme, format, use case and audience phrases. Avoid irrelevant traffic bait.
+
+    DESCRIPTION RULES:
+    - Write a detailed, persuasive, easy-to-scan description of roughly 450-700 words.
+    - Start with two concise sentences that immediately state what the buyer receives and the strongest practical/emotional benefit.
+    - Then use short paragraphs and clearly labeled sections with plain-text bullets:
+      WHAT YOU RECEIVE
+      WHY YOU'LL LOVE IT
+      GREAT FOR
+      HOW TO DOWNLOAD
+      HOW TO USE
+      IMPORTANT DETAILS
+    - Explain the variety within the broader theme instead of promising 100 versions of one object.
+    - Include practical uses such as digital planning, journaling, note-taking, presentations, mood boards and creative projects when relevant.
+    - Explain: download the ZIP files, extract/unzip them, import individual PNGs into an app that supports PNG images, then drag, resize and arrange.
+    - Say that colors may vary by screen and that the preview arrangement/mockup props are not additional files.
+    - Allow use in the buyer's own creative projects, but clearly prohibit reselling, redistributing, sharing or claiming the original PNG files as their own.
+    - Do not invent app guarantees, printable dimensions, DPI metadata, physical materials, bonuses, editable vectors, refunds, medical benefits or commercial-license rights.
   `;
 
-  const response = await generateBrainText({ prompt: userPrompt });
-  return response.text;
+  const response = await generateBrainText({
+    prompt: userPrompt,
+    schemaName: 'etsy_autopilot_listing',
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        title: { type: 'string' },
+        tags: {
+          type: 'array',
+          items: { type: 'string' },
+          minItems: 13,
+          maxItems: 13
+        },
+        description: { type: 'string' }
+      },
+      required: ['title', 'tags', 'description']
+    }
+  });
+  const listing = JSON.parse(response.text) as { title: string; tags: string[]; description: string };
+  const title = listing.title.replace(/\s+/g, ' ').trim();
+  const tags: string[] = [];
+  const seenTags = new Set<string>();
+  listing.tags.forEach(rawTag => {
+    const tag = rawTag.trim();
+    const normalizedTag = tag.toLocaleLowerCase('en-US');
+    if (tag && !seenTags.has(normalizedTag) && tags.length < 13) {
+      seenTags.add(normalizedTag);
+      tags.push(tag);
+    }
+  });
+  const description = listing.description.trim();
+  const descriptionWordCount = description.split(/\s+/).filter(Boolean).length;
+  if (!title || title.length > 140) {
+    throw new Error('OpenAI returned an invalid Etsy title. Please regenerate the listing copy.');
+  }
+  if (tags.length !== 13 || tags.some(tag => tag.length > 20)) {
+    throw new Error('OpenAI returned invalid Etsy tags. Please regenerate the listing copy.');
+  }
+  if (descriptionWordCount < 300) {
+    throw new Error('OpenAI returned a description that is too short. Please regenerate the listing copy.');
+  }
+
+  return `<<<TITLE>>>${title}<<<END_TITLE>>>\n<<<TAGS>>>${tags.join(', ')}<<<END_TAGS>>>\n<<<DESCRIPTION>>>${description}<<<END_DESCRIPTION>>>`;
 };
 
 export const generateSeedreamMockup = async (

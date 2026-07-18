@@ -1,4 +1,4 @@
-import type { GeneratedListing, ImageSize, TrendResult, StylePreset, DiscoveredTrend, NicheVisualAnalysis, NicheType } from "../types";
+import type { GeneratedListing, ImageSize, TrendResult, StylePreset, DiscoveredTrend, NicheVisualAnalysis, NicheType, NichePreflight } from "../types";
 
 type JsonSchema = Record<string, unknown>;
 
@@ -43,10 +43,28 @@ const generateBrainText = async (options: {
   schemaName?: string;
   webSearch?: boolean;
   chat?: boolean;
+  images?: { dataUrl: string; detail?: 'low' | 'high' | 'original' | 'auto' }[];
 }): Promise<BrainResult> => apiRequest<BrainResult>(options.chat ? '/api/brain/chat' : '/api/brain/generate', {
   method: 'POST',
   body: JSON.stringify(options)
 });
+
+export interface StickerVisionQaResult {
+  id: number;
+  decision: 'approve' | 'reject';
+  issues: string[];
+  coverScore: number;
+}
+
+export interface StickerVisionQaReport {
+  results: StickerVisionQaResult[];
+  duplicateGroups: number[][];
+}
+
+export interface QaContactSheetInput {
+  dataUrl: string;
+  stickerIds: number[];
+}
 
 const generateSeedreamImage = async (
   prompt: string,
@@ -71,6 +89,181 @@ export const ensureProvidersConfigured = async (): Promise<ProviderHealth> => {
     throw new Error(`Missing server configuration: ${missing.join(', ')}.`);
   }
   return health;
+};
+
+export const assessNicheForProduction = async (niche: string): Promise<NichePreflight> => {
+  const response = await generateBrainText({
+    webSearch: true,
+    prompt: `Perform a cautious pre-production assessment for an Etsy digital sticker bundle niche: "${niche}".
+
+Use current public marketplace/search evidence where available. This is decision support, not legal advice.
+
+Score:
+- demandScore: buyer-interest potential from 0 to 100.
+- variationScore: ability to support at least 100 genuinely different designs across 10 or more subject families, from 0 to 100.
+- saturation: low, medium or high.
+- ipRisk: low, medium or high. High means the phrase clearly depends on a protected brand, franchise, celebrity, character or trademark rather than a generic subject.
+- recommendation: proceed, review or block. Use block only for high IP risk or variationScore below 45.
+
+Do not promise sales, trademark clearance, or legal safety. Give concise evidence-based reasons.`,
+    schemaName: 'sticker_niche_preflight',
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        demandScore: { type: 'integer', minimum: 0, maximum: 100 },
+        variationScore: { type: 'integer', minimum: 0, maximum: 100 },
+        saturation: { type: 'string', enum: ['low', 'medium', 'high'] },
+        ipRisk: { type: 'string', enum: ['low', 'medium', 'high'] },
+        recommendation: { type: 'string', enum: ['proceed', 'review', 'block'] },
+        summary: { type: 'string' },
+        reasons: {
+          type: 'array',
+          items: { type: 'string' },
+          minItems: 2,
+          maxItems: 6
+        }
+      },
+      required: ['demandScore', 'variationScore', 'saturation', 'ipRisk', 'recommendation', 'summary', 'reasons']
+    }
+  });
+
+  const assessment = JSON.parse(response.text) as Omit<NichePreflight, 'sources'>;
+  return { ...assessment, sources: response.sources };
+};
+
+export const generateStickerQualityReport = async (
+  sheets: QaContactSheetInput[],
+  candidates: { id: number; prompt: string }[]
+): Promise<StickerVisionQaReport> => {
+  if (!candidates.length) return { results: [], duplicateGroups: [] };
+  const allowedIds = new Set(candidates.map(candidate => candidate.id));
+  const candidateText = candidates
+    .map(candidate => `${candidate.id}: ${candidate.prompt.replace(/\s+/g, ' ').trim().slice(0, 260)}`)
+    .join('\n');
+
+  const response = await generateBrainText({
+    images: sheets.map(sheet => ({ dataUrl: sheet.dataUrl, detail: 'original' })),
+    prompt: `You are the final visual quality inspector for a paid Etsy digital sticker product.
+The supplied images are numbered contact sheets. Inspect every numbered design listed below.
+
+Reject only a clear buyer-facing defect:
+- subject is malformed, nonsensical, cropped or visibly unfinished;
+- unexpected or misspelled text, fake logo, watermark or signature;
+- obvious background rectangle, dirty gray halo, broken white cutline or unintended transparent damage;
+- a physically expected opening is visibly filled when the concept explicitly requires an opening;
+- the design is off-theme or clearly breaks the shared visual style;
+- it is a near-duplicate of another supplied sticker.
+
+Do not reject merely because you personally prefer another design. Transparent regions appear as a checkerboard. Small white die-cut borders are intentional. Return one result for every supplied ID. coverScore is 0-100 for usefulness on a small marketplace thumbnail. Duplicate groups must contain only genuinely near-identical designs.
+
+EXPECTED CONCEPTS:
+${candidateText}`,
+    schemaName: 'sticker_visual_quality_report',
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        results: {
+          type: 'array',
+          minItems: candidates.length,
+          maxItems: candidates.length,
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              id: { type: 'integer' },
+              decision: { type: 'string', enum: ['approve', 'reject'] },
+              issues: { type: 'array', items: { type: 'string' }, maxItems: 5 },
+              coverScore: { type: 'integer', minimum: 0, maximum: 100 }
+            },
+            required: ['id', 'decision', 'issues', 'coverScore']
+          }
+        },
+        duplicateGroups: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              ids: { type: 'array', items: { type: 'integer' }, minItems: 2 }
+            },
+            required: ['ids']
+          }
+        }
+      },
+      required: ['results', 'duplicateGroups']
+    }
+  });
+
+  const parsed = JSON.parse(response.text) as {
+    results: StickerVisionQaResult[];
+    duplicateGroups: { ids: number[] }[];
+  };
+  const byId = new Map<number, StickerVisionQaResult>();
+  parsed.results.forEach(result => {
+    if (!allowedIds.has(result.id) || byId.has(result.id)) return;
+    byId.set(result.id, {
+      id: result.id,
+      decision: result.decision,
+      issues: result.issues.slice(0, 5),
+      coverScore: Math.max(0, Math.min(100, result.coverScore))
+    });
+  });
+
+  // Missing IDs are rejected instead of silently entering a paid bundle.
+  const results = candidates.map(candidate => byId.get(candidate.id) || ({
+    id: candidate.id,
+    decision: 'reject' as const,
+    issues: ['Visual QA did not return a result for this sticker.'],
+    coverScore: 0
+  }));
+  const duplicateGroups = parsed.duplicateGroups
+    .map(group => [...new Set(group.ids)].filter(id => allowedIds.has(id)))
+    .filter(group => group.length >= 2);
+  return { results, duplicateGroups };
+};
+
+export const generateReplacementStickerPrompts = async (
+  niche: string,
+  style: StylePreset,
+  count: number,
+  existingPrompts: string[],
+  rejectedReasons: string[],
+  analysis?: NicheVisualAnalysis
+): Promise<string[]> => {
+  const existingSubjects = existingPrompts
+    .map(prompt => prompt.replace(/\s+/g, ' ').trim().slice(0, 220))
+    .slice(-120)
+    .join('\n');
+  const response = await generateBrainText({
+    prompt: `Create exactly ${count} replacement sticker concepts for "${niche}" in the locked style "${style.name}" (${style.prompt}).
+Theme universe: ${analysis?.themeUniverse || niche}
+Subject families: ${analysis?.subthemes || analysis?.safeGenerics || 'core objects, tools, accessories, places and symbols'}
+
+The replacements must be visibly different from every existing concept and from each other. Preserve the pack's medium, palette logic, texture, line treatment and border treatment. Avoid the defects that caused rejection: ${rejectedReasons.join('; ') || 'quality failure'}.
+
+EXISTING CONCEPTS — DO NOT REPEAT OR PARAPHRASE:
+${existingSubjects}
+
+Return prompts in exactly this format:
+"TYPE: [Type] | SUBJECT: [one clear primary subject] | COMPOSITION: [layout] | TEXT: '[exact text or NONE]'"`,
+    schemaName: 'replacement_sticker_concepts',
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        prompts: {
+          type: 'array',
+          items: { type: 'string' },
+          minItems: count,
+          maxItems: count
+        }
+      },
+      required: ['prompts']
+    }
+  });
+  return (JSON.parse(response.text) as { prompts: string[] }).prompts.slice(0, count);
 };
 
 export const selectCoverStickerIds = async (
@@ -219,7 +412,12 @@ const getCoverTitleLayout = (
   return { lines, fontSize };
 };
 
-const createCoverComposite = async (stickerUrls: string[], nicheName: string, totalStickerCount: number): Promise<string> => {
+const createCoverComposite = async (
+  stickerUrls: string[],
+  nicheName: string,
+  totalStickerCount: number,
+  variant = 0
+): Promise<string> => {
   const uniqueUrls = uniqueStickerUrls(stickerUrls).slice(0, 15);
   const images = (await Promise.all(uniqueUrls.map(loadCanvasImage)))
     .filter((image): image is HTMLImageElement => Boolean(image?.width));
@@ -241,8 +439,13 @@ const createCoverComposite = async (stickerUrls: string[], nicheName: string, to
   ];
   const nicheHash = [...(nicheName || 'sticker')]
     .reduce((hash, character) => ((hash * 31) + character.charCodeAt(0)) >>> 0, 7);
-  const palette = palettes[nicheHash % palettes.length];
-  const background = context.createLinearGradient(0, 0, width, height);
+  const coverVariant = Math.abs(variant) % 3;
+  const palette = palettes[(nicheHash + coverVariant) % palettes.length];
+  const background = coverVariant === 1
+    ? context.createLinearGradient(width, 0, 0, height)
+    : coverVariant === 2
+      ? context.createLinearGradient(0, height, width, 0)
+      : context.createLinearGradient(0, 0, width, height);
   background.addColorStop(0, palette.start);
   background.addColorStop(0.50, palette.middle);
   background.addColorStop(1, palette.end);
@@ -352,7 +555,7 @@ const createCoverComposite = async (stickerUrls: string[], nicheName: string, to
   // Ordered visual hierarchy: the OpenAI selector puts the strongest concept
   // first, then supporting designs, then accents. Draw accents first so the
   // hero remains unmistakable at small Etsy thumbnail sizes.
-  const slots = [
+  const baseSlots = [
     { x: 1500, y: 1410, w: 760, h: 760, r: 0.01, shadow: 1.65 },
     { x: 905, y: 1200, w: 570, h: 570, r: -0.11, shadow: 1.35 },
     { x: 2095, y: 1195, w: 570, h: 570, r: 0.11, shadow: 1.35 },
@@ -369,6 +572,35 @@ const createCoverComposite = async (stickerUrls: string[], nicheName: string, to
     { x: 545, y: 1870, w: 310, h: 310, r: -0.10, shadow: 0.9 },
     { x: 2455, y: 1860, w: 310, h: 310, r: 0.10, shadow: 0.9 }
   ];
+  const slots = baseSlots.map((slot, index) => {
+    if (coverVariant === 1) {
+      if (index === 0) return { ...slot, x: 1040, y: 1430, w: 820, h: 820, r: -0.035 };
+      const column = index % 3;
+      return {
+        ...slot,
+        x: 1740 + column * 365,
+        y: 960 + Math.floor((index - 1) / 3) * 335,
+        w: Math.min(slot.w, index < 5 ? 430 : 310),
+        h: Math.min(slot.h, index < 5 ? 430 : 310),
+        r: column === 0 ? -0.07 : column === 2 ? 0.07 : 0
+      };
+    }
+    if (coverVariant === 2) {
+      if (index === 0) return { ...slot, y: 1325, w: 720, h: 720 };
+      const angle = ((index - 1) / Math.max(1, images.length - 1)) * Math.PI * 2 - Math.PI / 2;
+      const radiusX = index < 8 ? 920 : 1220;
+      const radiusY = index < 8 ? 515 : 700;
+      return {
+        ...slot,
+        x: 1500 + Math.cos(angle) * radiusX,
+        y: 1420 + Math.sin(angle) * radiusY,
+        w: index < 8 ? 420 : 300,
+        h: index < 8 ? 420 : 300,
+        r: angle * 0.035
+      };
+    }
+    return slot;
+  });
   for (let index = images.length - 1; index >= 1; index--) {
     const slot = slots[index];
     drawContainedSticker(context, images[index], slot.x, slot.y, slot.w, slot.h, slot.r, slot.shadow);
@@ -1219,6 +1451,151 @@ export const generateAutopilotListing = async (niche: string, styleName: string,
   return `<<<TITLE>>>${title}<<<END_TITLE>>>\n<<<TAGS>>>${tags.join(', ')}<<<END_TAGS>>>\n<<<DESCRIPTION>>>${description}<<<END_DESCRIPTION>>>`;
 };
 
+const drawTransparencyGrid = (
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  size = 42
+) => {
+  for (let row = 0; row < Math.ceil(height / size); row++) {
+    for (let column = 0; column < Math.ceil(width / size); column++) {
+      context.fillStyle = (row + column) % 2 === 0 ? '#F8FAFC' : '#CBD5E1';
+      context.fillRect(x + column * size, y + row * size, size, size);
+    }
+  }
+};
+
+const createQualityProofComposite = async (stickerUrls: string[], nicheName: string): Promise<string> => {
+  const images = (await Promise.all(uniqueStickerUrls(stickerUrls).slice(0, 4).map(loadCanvasImage)))
+    .filter((image): image is HTMLImageElement => Boolean(image?.width));
+  if (!images.length) throw new Error('No valid stickers are available for the quality proof.');
+  const canvas = document.createElement('canvas');
+  canvas.width = 3000;
+  canvas.height = 2400;
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Canvas is unavailable for the quality proof.');
+
+  const background = context.createLinearGradient(0, 0, 3000, 2400);
+  background.addColorStop(0, '#06172C');
+  background.addColorStop(1, '#312E81');
+  context.fillStyle = background;
+  context.fillRect(0, 0, 3000, 2400);
+  context.textAlign = 'center';
+  context.fillStyle = '#67E8F9';
+  context.font = '900 66px Inter, Arial, sans-serif';
+  context.fillText('ACTUAL PNG QUALITY', 1500, 125);
+  context.fillStyle = '#FFFFFF';
+  context.font = '900 128px Inter, Arial, sans-serif';
+  context.fillText('CLEAN TRANSPARENT EDGES', 1500, 275);
+  context.fillStyle = '#CBD5E1';
+  context.font = '700 42px Inter, Arial, sans-serif';
+  context.fillText(`${nicheName.toUpperCase()} • ENLARGED DETAIL PREVIEW`, 1500, 365);
+
+  const panels = [
+    { x: 130, y: 500, w: 1320, h: 760, dark: false },
+    { x: 1550, y: 500, w: 1320, h: 760, dark: true },
+    { x: 130, y: 1360, w: 1320, h: 760, dark: true },
+    { x: 1550, y: 1360, w: 1320, h: 760, dark: false }
+  ];
+  panels.forEach((panel, index) => {
+    context.save();
+    context.beginPath();
+    context.roundRect(panel.x, panel.y, panel.w, panel.h, 70);
+    context.clip();
+    if (panel.dark) {
+      context.fillStyle = '#020617';
+      context.fillRect(panel.x, panel.y, panel.w, panel.h);
+    } else {
+      drawTransparencyGrid(context, panel.x, panel.y, panel.w, panel.h);
+    }
+    const image = images[index % images.length];
+    const scale = Math.min((panel.w - 100) / image.width, (panel.h - 100) / image.height) * 1.12;
+    const width = image.width * scale;
+    const height = image.height * scale;
+    context.drawImage(image, panel.x + (panel.w - width) / 2, panel.y + (panel.h - height) / 2, width, height);
+    context.restore();
+    context.strokeStyle = panel.dark ? '#38BDF8' : '#FFFFFF';
+    context.lineWidth = 12;
+    context.beginPath();
+    context.roundRect(panel.x, panel.y, panel.w, panel.h, 70);
+    context.stroke();
+  });
+
+  context.fillStyle = '#FFFFFF';
+  context.font = '900 50px Inter, Arial, sans-serif';
+  context.fillText('CHECKERBOARD = TRANSPARENCY  •  DARK PANELS REVEAL EDGE QUALITY', 1500, 2260);
+  context.fillStyle = '#67E8F9';
+  context.font = '800 38px Inter, Arial, sans-serif';
+  context.fillText('ACTUAL FINISHED FILES SHOWN — NO REGENERATED PREVIEW ART', 1500, 2330);
+  return canvas.toDataURL('image/jpeg', 0.94);
+};
+
+const createIncludedComposite = async (
+  stickerUrls: string[],
+  nicheName: string,
+  totalStickerCount: number
+): Promise<string> => {
+  const images = (await Promise.all(uniqueStickerUrls(stickerUrls).slice(0, 8).map(loadCanvasImage)))
+    .filter((image): image is HTMLImageElement => Boolean(image?.width));
+  if (!images.length) throw new Error('No valid stickers are available for the included-files graphic.');
+  const canvas = document.createElement('canvas');
+  canvas.width = 3000;
+  canvas.height = 2400;
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Canvas is unavailable for the included-files graphic.');
+  const gradient = context.createLinearGradient(0, 0, 3000, 2400);
+  gradient.addColorStop(0, '#0F766E');
+  gradient.addColorStop(0.55, '#2563EB');
+  gradient.addColorStop(1, '#7E22CE');
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, 3000, 2400);
+  context.textAlign = 'center';
+  context.fillStyle = '#FDE047';
+  context.font = '900 62px Inter, Arial, sans-serif';
+  context.fillText('EVERYTHING YOU RECEIVE', 1500, 135);
+  context.fillStyle = '#FFFFFF';
+  context.font = '900 128px Inter, Arial, sans-serif';
+  context.fillText(`${totalStickerCount} INDIVIDUAL STICKERS`, 1500, 290);
+  context.fillStyle = '#DBEAFE';
+  context.font = '700 44px Inter, Arial, sans-serif';
+  context.fillText(nicheName.toUpperCase(), 1500, 380);
+
+  const facts = [
+    [`${totalStickerCount}`, 'TRANSPARENT PNGS'],
+    [`${Math.ceil(totalStickerCount / 20)}`, 'EASY ZIP DOWNLOADS'],
+    ['20', 'PNG FILES PER ZIP'],
+    ['READY', 'TO DRAG & RESIZE']
+  ];
+  facts.forEach(([value, label], index) => {
+    const x = 150 + index * 710;
+    context.fillStyle = 'rgba(255, 255, 255, 0.94)';
+    context.beginPath();
+    context.roundRect(x, 500, 610, 300, 58);
+    context.fill();
+    context.fillStyle = '#172554';
+    context.font = '900 94px Inter, Arial, sans-serif';
+    context.fillText(value, x + 305, 625);
+    context.font = '900 32px Inter, Arial, sans-serif';
+    context.fillText(label, x + 305, 730);
+  });
+
+  images.forEach((image, index) => {
+    const column = index % 4;
+    const row = Math.floor(index / 4);
+    const centerX = 470 + column * 690;
+    const centerY = 1190 + row * 620;
+    drawContainedSticker(context, image, centerX, centerY, 560, 520, (index % 2 ? 1 : -1) * 0.045, 1.1);
+  });
+  context.fillStyle = 'rgba(2, 6, 23, 0.86)';
+  context.fillRect(0, 2220, 3000, 180);
+  context.fillStyle = '#FFFFFF';
+  context.font = '900 52px Inter, Arial, sans-serif';
+  context.fillText('DIGITAL DOWNLOAD • INDIVIDUAL FILES • ACTUAL DESIGNS SHOWN', 1500, 2310);
+  return canvas.toDataURL('image/jpeg', 0.94);
+};
+
 export const generateSeedreamMockup = async (
     assetId: string,
     assetType: string,
@@ -1232,7 +1609,12 @@ export const generateSeedreamMockup = async (
 
     if (!uniqueUrls.length) throw new Error('No unique stickers are available for this marketing asset.');
     if (type === 'preview' || id.includes('preview')) return createGridComposite(uniqueUrls);
-    if (type === 'cover') return createCoverComposite(uniqueUrls, niche, totalStickerCount);
+    if (type === 'cover') {
+      const variant = id.endsWith('_b') ? 1 : id.endsWith('_c') ? 2 : 0;
+      return createCoverComposite(uniqueUrls, niche, totalStickerCount, variant);
+    }
+    if (type === 'closeup' || id.includes('quality_proof')) return createQualityProofComposite(uniqueUrls, niche);
+    if (type === 'included' || id.includes('included')) return createIncludedComposite(uniqueUrls, niche, totalStickerCount);
     if (type === 'howto' || id.includes('howto')) return createHowToComposite(uniqueUrls);
 
     const placement = type === 'goodnotes' || id.includes('goodnotes')
@@ -1269,6 +1651,68 @@ export const generateSeedreamMockup = async (
         console.warn('Lifestyle mockup generation failed; falling back to an exact grid.', e);
         return await createGridComposite(uniqueUrls);
     }
+};
+
+export const createListingPreviewVideo = async (
+  imageUrls: string[]
+): Promise<{ url: string; mimeType: string }> => {
+  if (typeof MediaRecorder === 'undefined') throw new Error('This browser cannot create a listing preview video.');
+  const images = (await Promise.all(uniqueStickerUrls(imageUrls).slice(0, 5).map(loadCanvasImage)))
+    .filter((image): image is HTMLImageElement => Boolean(image?.width));
+  if (images.length < 2) throw new Error('At least two completed listing images are required for a preview video.');
+
+  const canvas = document.createElement('canvas');
+  canvas.width = 1080;
+  canvas.height = 1080;
+  const context = canvas.getContext('2d');
+  if (!context || !canvas.captureStream) throw new Error('Canvas video capture is unavailable in this browser.');
+  const mimeType = [
+    'video/mp4;codecs=avc1.42E01E',
+    'video/webm;codecs=vp9',
+    'video/webm'
+  ].find(candidate => MediaRecorder.isTypeSupported(candidate)) || '';
+  const stream = canvas.captureStream(30);
+  const recorder = new MediaRecorder(stream, mimeType ? { mimeType, videoBitsPerSecond: 8_000_000 } : undefined);
+  const chunks: Blob[] = [];
+  recorder.ondataavailable = event => {
+    if (event.data.size) chunks.push(event.data);
+  };
+  const finished = new Promise<Blob>((resolve, reject) => {
+    recorder.onerror = () => reject(new Error('Browser video encoding failed.'));
+    recorder.onstop = () => resolve(new Blob(chunks, { type: recorder.mimeType || mimeType || 'video/webm' }));
+  });
+
+  const duration = 7200;
+  const slideDuration = duration / images.length;
+  const startedAt = performance.now();
+  recorder.start(500);
+  await new Promise<void>(resolve => {
+    const draw = (timestamp: number) => {
+      const elapsed = timestamp - startedAt;
+      const slideIndex = Math.min(images.length - 1, Math.floor(elapsed / slideDuration));
+      const slideProgress = (elapsed % slideDuration) / slideDuration;
+      const image = images[slideIndex];
+      context.fillStyle = '#020617';
+      context.fillRect(0, 0, 1080, 1080);
+      const coverScale = Math.max(1080 / image.width, 1080 / image.height) * (1 + slideProgress * 0.035);
+      const width = image.width * coverScale;
+      const height = image.height * coverScale;
+      context.globalAlpha = Math.min(1, slideProgress * 5, (1 - slideProgress) * 5);
+      context.drawImage(image, (1080 - width) / 2, (1080 - height) / 2, width, height);
+      context.globalAlpha = 1;
+      if (elapsed >= duration) {
+        resolve();
+        return;
+      }
+      requestAnimationFrame(draw);
+    };
+    requestAnimationFrame(draw);
+  });
+  recorder.stop();
+  const blob = await finished;
+  stream.getTracks().forEach(track => track.stop());
+  if (!blob.size) throw new Error('The listing preview video was empty.');
+  return { url: URL.createObjectURL(blob), mimeType: blob.type || recorder.mimeType || 'video/webm' };
 };
 
 export const generateMarketingAsset = async (type: string, niche: string, styleName: string): Promise<string> => {

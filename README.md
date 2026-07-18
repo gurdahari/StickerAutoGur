@@ -84,7 +84,7 @@ Model IDs and regional availability can vary by BytePlus account. If the default
 Invoke-RestMethod http://localhost:8787/api/health | ConvertTo-Json -Depth 5
 ```
 
-`.env.local` is loaded before `.env`, so update `.env.local` when both files exist and restart `npm run dev` after changing a key.
+`.env.local` is loaded before `.env`, so update `.env.local` when both files exist. During development, changing either environment file restarts both the API and Vite processes; after replacing the development script itself, stop the old process and run `npm run dev` once.
 
 ## Security note
 

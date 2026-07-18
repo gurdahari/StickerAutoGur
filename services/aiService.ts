@@ -323,10 +323,9 @@ const loadCanvasImage = (url: string): Promise<HTMLImageElement | null> => new P
   image.src = url;
 });
 
-const imageUrlToDataUrl = async (url: string): Promise<string> => {
+const imageUrlToDataUrl = async (url: string, maxDimension = 1024): Promise<string> => {
   const image = await loadCanvasImage(url);
   if (!image) throw new Error('Failed to prepare sticker reference.');
-  const maxDimension = 1024;
   const scale = Math.min(1, maxDimension / Math.max(image.width, image.height));
   const canvas = document.createElement('canvas');
   canvas.width = Math.max(1, Math.round(image.width * scale));
@@ -337,6 +336,45 @@ const imageUrlToDataUrl = async (url: string): Promise<string> => {
   context.imageSmoothingQuality = 'high';
   context.drawImage(image, 0, 0, canvas.width, canvas.height);
   return canvas.toDataURL('image/png');
+};
+
+const finalizeGeneratedCover = async (source: string): Promise<string> => {
+  const image = await loadCanvasImage(source);
+  if (!image) throw new Error('Failed to load the full Seedream cover.');
+  const canvas = document.createElement('canvas');
+  canvas.width = 3000;
+  canvas.height = 2400;
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Canvas is unavailable for final cover sizing.');
+
+  const targetRatio = canvas.width / canvas.height;
+  const sourceRatio = image.width / image.height;
+  let sourceX = 0;
+  let sourceY = 0;
+  let sourceWidth = image.width;
+  let sourceHeight = image.height;
+  if (sourceRatio > targetRatio) {
+    sourceWidth = image.height * targetRatio;
+    sourceX = (image.width - sourceWidth) / 2;
+  } else if (sourceRatio < targetRatio) {
+    sourceHeight = image.width / targetRatio;
+    sourceY = (image.height - sourceHeight) / 2;
+  }
+
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = 'high';
+  context.drawImage(
+    image,
+    sourceX,
+    sourceY,
+    sourceWidth,
+    sourceHeight,
+    0,
+    0,
+    canvas.width,
+    canvas.height
+  );
+  return canvas.toDataURL('image/jpeg', 0.95);
 };
 
 const upscaleMockupTo2K = async (source: string): Promise<string> => {
@@ -1665,17 +1703,48 @@ export const generateSeedreamMockup = async (
     if (type === 'preview' || id.includes('preview')) return createGridComposite(uniqueUrls);
     if (type === 'cover') {
       const variant = id.endsWith('_b') ? 1 : id.endsWith('_c') ? 2 : 0;
+      const coverCopy = getCoverCopy(niche);
+      const stickerCount = Math.max(uniqueUrls.length, totalStickerCount);
       const artDirections = [
-        'Cinematic premium retail mood with a warm central spotlight, deep edge vignette, layered natural texture and restrained metallic highlights.',
-        'Boutique editorial mood with tactile paper, linen and subtle collage depth, balanced symmetry and a rich sophisticated color story.',
-        'High-end catalog mood with elegant tonal depth, a clean focal glow and restrained abstract pattern work that feels modern and expensive.'
+        'Create a cinematic luxury bestseller cover with a dominant central hero sticker, rich niche-matched atmosphere, dramatic depth and a dense but controlled supporting collage.',
+        'Create a bright boutique editorial cover with tactile collage depth, sophisticated color contrast, energetic asymmetry and a premium handmade marketplace feel.',
+        'Create a high-end modern catalog cover with elegant tonal depth, crisp hierarchy, balanced geometry and a polished commercial campaign finish.'
       ];
-      const coverBackgroundPrompt = `Create BACKGROUND ART ONLY for the first Etsy thumbnail of a digital sticker bundle themed "${niche}". Translate the theme into a cohesive premium palette, lighting, atmospheric texture and subtle abstract pattern language; do not create literal isolated theme objects. ${artDirections[variant]} The result must feel bespoke to the niche, immediately attractive at small marketplace thumbnail size, and commercially polished rather than like a generic neon template. Keep the top 27 percent calmer and high-contrast for a large headline. Keep the center and lower product stage readable behind white-bordered PNG artwork. 5:4 landscape composition. Background only: absolutely no stickers, decals, clipart, product illustrations, isolated objects, animals, people, characters, text, letters, numbers, badges, logos, watermarks, UI, borders or frames.`;
+      const fullCoverPrompt = `Create the COMPLETE finished first-listing thumbnail for a premium Etsy digital sticker bundle. This is a final commercial cover, not a background template. Use the supplied 14 reference images as the actual sticker products.
+
+PRODUCT THEME: ${niche}
+ART DIRECTION: ${artDirections[variant]}
+
+REFERENCE-STICKER RULES:
+- Display all 14 supplied sticker references exactly once each.
+- Make reference image 1 the largest central hero. Arrange the other 13 as a dense, exciting, professionally balanced supporting collage.
+- Preserve each supplied sticker's recognizable subject, palette, internal artwork, white die-cut edge and proportions.
+- Do not invent, duplicate, merge or substitute any sticker. Do not add background stickers, ghost stickers or partially hidden fake designs.
+- Keep every sticker fully visible, uncropped and inside the composition.
+
+RENDER THIS TEXT EXACTLY, LETTER FOR LETTER:
+"DIGITAL STICKER BUNDLE"
+"${coverCopy.title}"
+"${coverCopy.subtitle}"
+"${stickerCount} STICKERS"
+"TRANSPARENT PNG • INSTANT DOWNLOAD"
+
+TYPOGRAPHY AND SALES DESIGN:
+- Seedream must create all typography, badges, panels, lighting, background and layout as one cohesive finished image.
+- Make "${coverCopy.title}" the strongest headline, instantly readable at small marketplace-thumbnail size.
+- Put "${stickerCount} STICKERS" in one clear premium quantity badge.
+- Use excellent spacing, hierarchy and contrast. Typography must match the niche and feel expensive, not like a generic template.
+- Do not add any other words, letters, prices, logos, watermarks, repeated headlines, faint background text or misspellings.
+
+Landscape 4:3 render with all important text and products inside the central 90% safe area so it can be center-cropped slightly to 5:4. Outstanding high-conversion marketplace thumbnail, cohesive niche-specific art direction, polished professional advertising quality.`;
       try {
-        const artDirectedBackground = await generateSeedreamImage(coverBackgroundPrompt, '1K');
-        return createCoverComposite(uniqueUrls, niche, totalStickerCount, variant, artDirectedBackground);
+        const referenceImages = await Promise.all(
+          uniqueUrls.slice(0, 14).map(url => imageUrlToDataUrl(url, 768))
+        );
+        const generatedCover = await generateSeedreamImage(fullCoverPrompt, '1K_LANDSCAPE', referenceImages);
+        return finalizeGeneratedCover(generatedCover);
       } catch (error) {
-        console.warn('Seedream cover art direction failed; using the deterministic niche-matched background.', error);
+        console.warn('Full Seedream cover generation failed; using the deterministic exact-pixel fallback.', error);
       }
       return createCoverComposite(uniqueUrls, niche, totalStickerCount, variant);
     }

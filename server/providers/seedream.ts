@@ -16,6 +16,10 @@ let lastSuccessfulRequestAt: string | null = null;
 
 const getApiKey = () => (process.env.SEEDREAM_API_KEY || process.env.ARK_API_KEY)?.trim();
 export const getSeedreamModel = () => process.env.SEEDREAM_MODEL?.trim() || 'dola-seedream-5-0-pro-260628';
+export const getSeedreamMaxConcurrency = () => {
+  const configured = Number.parseInt(process.env.SEEDREAM_MAX_CONCURRENCY || '10', 10);
+  return Number.isFinite(configured) ? Math.max(1, Math.min(15, configured)) : 10;
+};
 export const isSeedreamConfigured = () => Boolean(getApiKey());
 export const getSeedreamKeyHint = () => {
   const key = getApiKey();
@@ -36,7 +40,16 @@ const sizeToPixels = (size: ImageSize = '2K') => ({
 
 const sleep = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds));
 
-const fetchWithRetry = async (url: string, init: RequestInit, attempts = 5): Promise<Response> => {
+const retryAfterMilliseconds = (response: Response) => {
+  const value = response.headers.get('retry-after');
+  if (!value) return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const date = Date.parse(value);
+  return Number.isNaN(date) ? null : Math.max(0, date - Date.now());
+};
+
+const fetchWithRetry = async (url: string, init: RequestInit, attempts = 4): Promise<Response> => {
   let lastError: unknown;
 
   for (let attempt = 0; attempt < attempts; attempt++) {
@@ -50,12 +63,16 @@ const fetchWithRetry = async (url: string, init: RequestInit, attempts = 5): Pro
         throw new Error(`Seedream API ${response.status}: ${body.slice(0, 500)}`);
       }
       lastError = new Error(`Seedream API ${response.status}`);
+      const serverDelay = retryAfterMilliseconds(response);
+      const exponentialDelay = Math.min(6_000, 750 * (2 ** attempt));
+      await sleep((serverDelay ?? exponentialDelay) + Math.floor(Math.random() * 280));
+      continue;
     } catch (error) {
       lastError = error;
       if (attempt === attempts - 1) throw error;
     }
 
-    await sleep(1000 * (2 ** attempt));
+    await sleep(Math.min(6_000, 750 * (2 ** attempt)) + Math.floor(Math.random() * 280));
   }
 
   throw lastError instanceof Error ? lastError : new Error('Seedream request failed.');

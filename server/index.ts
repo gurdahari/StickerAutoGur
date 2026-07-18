@@ -4,7 +4,14 @@ import { readFile, stat } from 'node:fs/promises';
 import { extname, resolve, sep } from 'node:path';
 import type { BrainRequest, ImageRequest } from './contracts.js';
 import { generateBrainResponse, getOpenAIModel, isOpenAIConfigured } from './providers/openaiBrain.js';
-import { generateSeedreamImage, getSeedreamModel, isSeedreamConfigured } from './providers/seedream.js';
+import {
+  generateSeedreamImage,
+  getSeedreamKeyHint,
+  getSeedreamKeySource,
+  getSeedreamLastSuccessfulRequestAt,
+  getSeedreamModel,
+  isSeedreamConfigured
+} from './providers/seedream.js';
 
 dotenv.config({ path: '.env.local', quiet: true });
 dotenv.config({ quiet: true });
@@ -89,7 +96,13 @@ const server = createServer(async (request, response) => {
         status: 'ok',
         providers: {
           openai: { configured: isOpenAIConfigured(), model: getOpenAIModel() },
-          seedream: { configured: isSeedreamConfigured(), model: getSeedreamModel() }
+          seedream: {
+            configured: isSeedreamConfigured(),
+            model: getSeedreamModel(),
+            keyHint: getSeedreamKeyHint(),
+            keySource: getSeedreamKeySource(),
+            lastSuccessfulRequestAt: getSeedreamLastSuccessfulRequestAt()
+          }
         }
       });
       return;
@@ -130,4 +143,5 @@ const server = createServer(async (request, response) => {
 
 server.listen(port, '0.0.0.0', () => {
   console.log(`StickerOS API listening on http://localhost:${port}`);
+  console.log(`Seedream key loaded from ${getSeedreamKeySource() || 'no environment variable'} (${getSeedreamKeyHint() || 'not configured'}).`);
 });

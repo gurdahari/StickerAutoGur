@@ -534,7 +534,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       try {
            const base64 = await generateAutopilotSticker(promptToUse, state.currentStyle.prompt, useTurbo, state.currentNiche.name, visualAnalysisRef.current);
            
-           const processedBlob = await processStickerImage(base64);
+           const processedBlob = await processStickerImage(base64, promptToUse);
            const finalUrl = URL.createObjectURL(processedBlob);
 
            setState(prev => {
@@ -554,6 +554,46 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
               newStickers[stickerIndex] = { ...sticker, status: 'error', regenCount: newRegenCount };
               return { ...prev, stickers: newStickers };
           });
+      }
+  };
+
+  const handleRepairStickerTransparency = async (stickerId: number) => {
+      const stickerIndex = stickersRef.current.findIndex(sticker => sticker.id === stickerId);
+      if (stickerIndex === -1) return;
+      const sticker = stickersRef.current[stickerIndex];
+      if (!sticker.url || !sticker.blob) return;
+
+      addLog(`Repairing transparent openings for Sticker #${stickerId} locally...`);
+      setState(prev => {
+          const nextStickers = [...prev.stickers];
+          const index = nextStickers.findIndex(item => item.id === stickerId);
+          if (index !== -1) nextStickers[index] = { ...nextStickers[index], status: 'generating' };
+          return { ...prev, stickers: nextStickers };
+      });
+
+      try {
+          const processedBlob = await processStickerImage(sticker.url, sticker.prompt);
+          const finalUrl = URL.createObjectURL(processedBlob);
+          const repairedSticker = { ...sticker, url: finalUrl, blob: processedBlob, status: 'completed' as const };
+
+          setState(prev => {
+              const nextStickers = [...prev.stickers];
+              const index = nextStickers.findIndex(item => item.id === stickerId);
+              if (index !== -1) nextStickers[index] = repairedSticker;
+              return { ...prev, stickers: nextStickers };
+          });
+          stickersRef.current[stickerIndex] = repairedSticker;
+          if (sticker.url.startsWith('blob:')) URL.revokeObjectURL(sticker.url);
+          setNeedsZipUpdate(true);
+          addLog(`Sticker #${stickerId} transparency repaired without regeneration.`);
+      } catch (error: any) {
+          setState(prev => {
+              const nextStickers = [...prev.stickers];
+              const index = nextStickers.findIndex(item => item.id === stickerId);
+              if (index !== -1) nextStickers[index] = { ...sticker, status: 'completed' };
+              return { ...prev, stickers: nextStickers };
+          });
+          addLog(`Could not repair Sticker #${stickerId}: ${error.message}`);
       }
   };
 
@@ -588,7 +628,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         
         // 2. Generate Image
         const base64 = await generateAutopilotSticker(freshPrompt, state.currentStyle.prompt, useTurbo, state.currentNiche.name, visualAnalysisRef.current);
-        const processedBlob = await processStickerImage(base64);
+        const processedBlob = await processStickerImage(base64, freshPrompt);
         const finalUrl = URL.createObjectURL(processedBlob);
 
         // 3. Update Result
@@ -709,7 +749,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
            else if (asset.id === 'preview_6') stickersForMockup = getStickerRange(validStickers, 85, 100);
            
            // Use Unique Batch Logic for Mockups to avoid repeats
-           else if (asset.type === 'cover') stickersForMockup = await getModelSelectedCoverBatch(validStickers, 12);
+           else if (asset.type === 'cover') stickersForMockup = await getModelSelectedCoverBatch(validStickers, 15);
            else if (asset.type === 'howto') stickersForMockup = getUniqueBatchForMockup(validStickers, 4);
            else stickersForMockup = getUniqueBatchForMockup(validStickers, 8); 
 
@@ -920,7 +960,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
               const base64 = await generateAutopilotSticker(s.prompt, style.prompt, useTurbo, niche.name, analysis);
               
               // PROCESS: 1. Remove BLACK BG -> 2. Add Shadow (White border comes from AI)
-              const processedBlob = await processStickerImage(base64);
+              const processedBlob = await processStickerImage(base64, s.prompt);
               const finalUrl = URL.createObjectURL(processedBlob);
               
               setState(prev => {
@@ -1015,7 +1055,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
           else if (asset.id === 'preview_4') stickersForMockup = getStickerRange(validStickers, 51, 68);
           else if (asset.id === 'preview_5') stickersForMockup = getStickerRange(validStickers, 68, 85);
           else if (asset.id === 'preview_6') stickersForMockup = getStickerRange(validStickers, 85, 100);
-          else if (asset.type === 'cover') stickersForMockup = await getModelSelectedCoverBatch(validStickers, 12);
+          else if (asset.type === 'cover') stickersForMockup = await getModelSelectedCoverBatch(validStickers, 15);
           else if (asset.type === 'howto') stickersForMockup = getUniqueBatchForMockup(validStickers, 4);
           else stickersForMockup = getUniqueBatchForMockup(validStickers, 8);
 
@@ -1339,6 +1379,13 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
                                     title="Regenerate this sticker"
                                 >
                                     <RefreshCw className="w-4 h-4" />
+                                </button>
+                                <button
+                                    onClick={() => handleRepairStickerTransparency(s.id)}
+                                    className="bg-fuchsia-600 hover:bg-fuchsia-500 text-white p-2 rounded-full shadow-lg transform hover:scale-110 transition-all"
+                                    title="Repair transparent holes without regenerating"
+                                >
+                                    <Wand2 className="w-4 h-4" />
                                 </button>
                                 <button 
                                     onClick={() => copyImageToClipboard(s.blob)}

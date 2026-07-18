@@ -719,7 +719,9 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
     turboMode: boolean,
     isReplacement = false
   ) => {
-    const initialConcurrency = Math.min(seedreamWorkerLimitRef.current, turboMode ? 10 : 8);
+    const initialConcurrency = turboMode
+      ? seedreamWorkerLimitRef.current
+      : Math.min(seedreamWorkerLimitRef.current, 8);
     const replacementBudget = mode === 'production' ? PRODUCTION_REPLACEMENT_BUDGET : TEST_REPLACEMENT_BUDGET;
     const requestBudget = targetCount + replacementBudget;
     addLog(`Generating ${items.length} sticker${items.length === 1 ? '' : 's'} with up to ${initialConcurrency} adaptive Seedream workers...`);
@@ -1649,7 +1651,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
           checkpointUpdatedAt: null
       }));
       addLog(`Starting ${activeMode === 'production' ? '100-sticker production' : '10-sticker test'} run...`);
-      addLog(`Seedream concurrency: up to ${Math.min(seedreamWorkerLimitRef.current, useTurbo ? 10 : 8)} adaptive workers (server cap ${seedreamWorkerLimitRef.current}).`);
+      addLog(`Seedream concurrency: up to ${useTurbo ? seedreamWorkerLimitRef.current : Math.min(seedreamWorkerLimitRef.current, 8)} adaptive workers (server cap ${seedreamWorkerLimitRef.current}).`);
       
       const niche = availableNiches.find(n => n.id === selectedNicheId);
       const rawStyle = availableStyles.find(s => s.id === selectedStyleId) || availableStyles[0];
@@ -1925,7 +1927,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
                 StickerOS Autopilot
               </h2>
               <p className="text-slate-400 mt-1">
-                {useTurbo ? 'Fast Mode: 1K Generation' : 'Quality Mode: 2K Generation'} • Seedream 5.0 Pro • up to {Math.min(seedreamWorkerLimit, useTurbo ? 10 : 8)} adaptive workers
+                {useTurbo ? 'Fast Mode: 1K Generation' : 'Quality Mode: 2K Generation'} • Seedream 5.0 Pro • up to {useTurbo ? seedreamWorkerLimit : Math.min(seedreamWorkerLimit, 8)} adaptive workers
               </p>
             </div>
 

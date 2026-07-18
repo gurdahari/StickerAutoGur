@@ -35,6 +35,7 @@ export interface NicheIdea {
   id: number;
   name: string;
   category: string;
+  generationBrief?: string;
   score?: number;
   status?: 'planned' | 'generated' | 'skipped';
   isNew?: boolean;

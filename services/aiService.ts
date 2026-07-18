@@ -132,36 +132,62 @@ const createCoverComposite = async (stickerUrls: string[], nicheName: string, to
   if (!context) throw new Error('Canvas is unavailable for cover generation.');
 
   const background = context.createLinearGradient(0, 0, size, size);
-  background.addColorStop(0, '#071827');
-  background.addColorStop(0.52, '#123b55');
-  background.addColorStop(1, '#321b4d');
+  background.addColorStop(0, '#06283D');
+  background.addColorStop(0.48, '#174A5F');
+  background.addColorStop(1, '#512B67');
   context.fillStyle = background;
   context.fillRect(0, 0, size, size);
 
-  const glowLeft = context.createRadialGradient(400, 1200, 0, 400, 1200, 1200);
-  glowLeft.addColorStop(0, 'rgba(34, 211, 238, 0.25)');
+  const glowLeft = context.createRadialGradient(360, 1350, 0, 360, 1350, 1350);
+  glowLeft.addColorStop(0, 'rgba(34, 211, 238, 0.38)');
   glowLeft.addColorStop(1, 'rgba(34, 211, 238, 0)');
   context.fillStyle = glowLeft;
   context.fillRect(0, 0, size, size);
 
-  const glowRight = context.createRadialGradient(2600, 1500, 0, 2600, 1500, 1300);
-  glowRight.addColorStop(0, 'rgba(244, 114, 182, 0.22)');
+  const glowRight = context.createRadialGradient(2670, 1280, 0, 2670, 1280, 1450);
+  glowRight.addColorStop(0, 'rgba(251, 113, 133, 0.34)');
   glowRight.addColorStop(1, 'rgba(244, 114, 182, 0)');
   context.fillStyle = glowRight;
   context.fillRect(0, 0, size, size);
 
+  // Subtle retail-style pattern gives the thumbnail energy without inventing
+  // product art or competing with the real sticker pixels.
+  context.fillStyle = 'rgba(255, 255, 255, 0.08)';
+  for (let y = 60; y < size; y += 150) {
+    for (let x = 70 + ((y / 150) % 2) * 75; x < size; x += 150) {
+      context.beginPath();
+      context.arc(x, y, 9, 0, Math.PI * 2);
+      context.fill();
+    }
+  }
+
+  context.save();
+  context.fillStyle = 'rgba(255, 255, 255, 0.10)';
+  context.strokeStyle = 'rgba(255, 255, 255, 0.18)';
+  context.lineWidth = 5;
+  context.beginPath();
+  context.roundRect(92, 590, 2816, 1900, 84);
+  context.fill();
+  context.stroke();
+  context.restore();
+
   context.textAlign = 'center';
   context.textBaseline = 'middle';
-  context.fillStyle = '#F8FAFC';
+  context.fillStyle = '#CFFAFE';
+  context.font = '900 68px Inter, Arial, sans-serif';
+  context.fillText('DIGITAL STICKER PACK', size / 2, 105);
+
+  context.fillStyle = '#FFFFFF';
   const title = (nicheName || 'Premium').trim().toUpperCase();
-  fitText(context, title, 2600, 220, 92);
+  fitText(context, title, 2680, 190, 82);
   context.shadowColor = 'rgba(0, 0, 0, 0.45)';
   context.shadowBlur = 24;
-  context.fillText(title, size / 2, 220);
+  context.fillText(title, size / 2, 305);
   context.shadowBlur = 0;
-  context.fillStyle = '#67E8F9';
-  context.font = '800 105px Inter, Arial, sans-serif';
-  context.fillText('DIGITAL STICKER BUNDLE', size / 2, 430);
+
+  context.fillStyle = '#FDE68A';
+  context.font = '800 62px Inter, Arial, sans-serif';
+  context.fillText('READY FOR PLANNERS, NOTES & DIGITAL PROJECTS', size / 2, 475);
 
   const stickerCount = Math.max(images.length, totalStickerCount);
   if (images.length <= 6) {
@@ -169,9 +195,9 @@ const createCoverComposite = async (stickerUrls: string[], nicheName: string, to
       { x: 1500, y: 1660, w: 1160, h: 1160, r: 0 },
       { x: 590, y: 1110, w: 760, h: 760, r: -0.12 },
       { x: 2380, y: 1110, w: 760, h: 760, r: 0.12 },
-      { x: 630, y: 2150, w: 760, h: 760, r: 0.1 },
-      { x: 2370, y: 2150, w: 760, h: 760, r: -0.1 },
-      { x: 1500, y: 2380, w: 650, h: 650, r: 0.05 }
+      { x: 630, y: 2110, w: 700, h: 700, r: 0.1 },
+      { x: 2370, y: 2110, w: 700, h: 700, r: -0.1 },
+      { x: 1500, y: 2260, w: 540, h: 540, r: 0.05 }
     ];
     for (let index = images.length - 1; index >= 1; index--) {
       const slot = slots[index];
@@ -182,57 +208,67 @@ const createCoverComposite = async (stickerUrls: string[], nicheName: string, to
   } else {
     const columns = images.length >= 13 ? 5 : 4;
     const rows = Math.ceil(images.length / columns);
-    const regionX = 190;
-    const regionY = 690;
-    const regionWidth = 2620;
-    const regionHeight = 1840;
+    const regionX = 155;
+    const regionY = 700;
+    const regionWidth = 2690;
+    const regionHeight = 1640;
     const cellWidth = regionWidth / columns;
     const cellHeight = regionHeight / rows;
-    const rotations = [-0.1, 0.06, -0.04, 0.09, -0.07];
+    const rotations = [-0.11, 0.065, -0.045, 0.095, -0.075, 0.04];
     images.forEach((image, index) => {
       const column = index % columns;
       const row = Math.floor(index / columns);
+      const rowOffset = row % 2 === 0 ? -18 : 28;
+      const sizeBoost = index % 3 === 0 ? 1.08 : index % 3 === 1 ? 0.96 : 1.02;
       drawContainedSticker(
         context,
         image,
-        regionX + cellWidth * (column + 0.5),
-        regionY + cellHeight * (row + 0.5),
-        cellWidth * 0.94,
-        cellHeight * 0.94,
+        regionX + cellWidth * (column + 0.5) + rowOffset,
+        regionY + cellHeight * (row + 0.5) + (column % 2 === 0 ? -20 : 22),
+        cellWidth * 0.94 * sizeBoost,
+        cellHeight * 0.92 * sizeBoost,
         rotations[index % rotations.length],
-        1.05
+        1.15
       );
     });
   }
 
   // Draw the quantity badge last so sticker art can never obscure its text.
   context.save();
-  context.translate(2570, 655);
+  context.translate(2580, 610);
   context.shadowColor = 'rgba(0, 0, 0, 0.35)';
   context.shadowBlur = 24;
   context.fillStyle = '#FDE047';
   context.strokeStyle = '#FFFFFF';
   context.lineWidth = 18;
   context.beginPath();
-  context.arc(0, 0, 225, 0, Math.PI * 2);
+  context.arc(0, 0, 205, 0, Math.PI * 2);
   context.fill();
   context.stroke();
   context.shadowBlur = 0;
   context.fillStyle = '#111827';
-  context.font = '900 130px Inter, Arial, sans-serif';
+  context.font = '900 122px Inter, Arial, sans-serif';
   context.fillText(String(stickerCount), 0, -35);
   context.font = '800 54px Inter, Arial, sans-serif';
   context.fillText(stickerCount === 1 ? 'STICKER' : 'STICKERS', 0, 70);
   context.restore();
 
-  context.fillStyle = 'rgba(2, 6, 23, 0.88)';
-  context.fillRect(0, 2700, size, 300);
+  context.save();
+  context.fillStyle = '#FB7185';
+  context.shadowColor = 'rgba(0, 0, 0, 0.32)';
+  context.shadowBlur = 24;
+  context.beginPath();
+  context.roundRect(430, 2600, 2140, 220, 110);
+  context.fill();
+  context.shadowBlur = 0;
   context.fillStyle = '#FFFFFF';
-  context.font = '900 74px Inter, Arial, sans-serif';
-  context.fillText('ACTUAL DESIGNS SHOWN • NO DUPLICATES', size / 2, 2790);
-  context.fillStyle = '#CBD5E1';
-  context.font = '700 56px Inter, Arial, sans-serif';
-  context.fillText('HIGH-RES TRANSPARENT PNG • INSTANT DOWNLOAD', size / 2, 2900);
+  context.font = '900 76px Inter, Arial, sans-serif';
+  context.fillText('TRANSPARENT PNG • INSTANT DOWNLOAD', size / 2, 2710);
+  context.restore();
+
+  context.fillStyle = 'rgba(255, 255, 255, 0.82)';
+  context.font = '700 48px Inter, Arial, sans-serif';
+  context.fillText('HIGH-RESOLUTION DIGITAL FILES', size / 2, 2905);
 
   return canvas.toDataURL('image/jpeg', 0.94);
 };
@@ -264,16 +300,85 @@ const createHybridMockup = async (backgroundUrl: string, stickerUrls: string[], 
     backgroundHeight
   );
 
-  const region = type === 'laptop'
-    ? { x: 500, y: 620, width: 1040, height: 760, columns: 3 }
-    : type === 'goodnotes' || type === 'journal'
-      ? { x: 470, y: 500, width: 1110, height: 1050, columns: 3 }
-      : { x: 300, y: 360, width: 1448, height: 1320, columns: 3 };
+  // Build the product surface in Canvas instead of trusting a generative model
+  // to place the device. This gives us a known, clip-safe area every time.
+  context.save();
+  context.shadowColor = 'rgba(15, 23, 42, 0.34)';
+  context.shadowBlur = 70;
+  context.shadowOffsetY = 36;
+
+  let region: { x: number; y: number; width: number; height: number; columns: number; radius: number };
+  if (type === 'laptop') {
+    context.fillStyle = '#D6D3D1';
+    context.strokeStyle = '#78716C';
+    context.lineWidth = 12;
+    context.beginPath();
+    context.roundRect(230, 285, 1588, 1160, 92);
+    context.fill();
+    context.stroke();
+    context.shadowBlur = 0;
+    context.fillStyle = '#A8A29E';
+    context.beginPath();
+    context.roundRect(170, 1440, 1708, 115, 58);
+    context.fill();
+    region = { x: 330, y: 410, width: 1388, height: 885, columns: 3, radius: 55 };
+  } else if (type === 'journal') {
+    context.fillStyle = '#FFFBEB';
+    context.strokeStyle = '#D6C7A1';
+    context.lineWidth = 10;
+    context.beginPath();
+    context.roundRect(155, 285, 1738, 1395, 62);
+    context.fill();
+    context.stroke();
+    context.shadowBlur = 0;
+    context.strokeStyle = 'rgba(120, 92, 58, 0.28)';
+    context.lineWidth = 8;
+    context.beginPath();
+    context.moveTo(1024, 325);
+    context.lineTo(1024, 1640);
+    context.stroke();
+    region = { x: 245, y: 405, width: 1558, height: 1110, columns: 4, radius: 28 };
+  } else if (type === 'goodnotes') {
+    context.fillStyle = '#111827';
+    context.beginPath();
+    context.roundRect(280, 170, 1488, 1708, 118);
+    context.fill();
+    context.shadowBlur = 0;
+    context.fillStyle = '#FFFEF8';
+    context.beginPath();
+    context.roundRect(350, 255, 1348, 1518, 58);
+    context.fill();
+    context.fillStyle = '#F1F5F9';
+    context.fillRect(350, 255, 1348, 145);
+    ['#FB7185', '#FBBF24', '#34D399'].forEach((color, index) => {
+      context.fillStyle = color;
+      context.beginPath();
+      context.arc(425 + index * 58, 328, 17, 0, Math.PI * 2);
+      context.fill();
+    });
+    region = { x: 425, y: 455, width: 1198, height: 1160, columns: 3, radius: 34 };
+  } else {
+    context.fillStyle = '#FFFFFF';
+    context.strokeStyle = '#E2E8F0';
+    context.lineWidth = 10;
+    context.beginPath();
+    context.roundRect(210, 255, 1628, 1445, 74);
+    context.fill();
+    context.stroke();
+    context.shadowBlur = 0;
+    region = { x: 310, y: 390, width: 1428, height: 1130, columns: Math.min(3, Math.max(1, stickers.length)), radius: 42 };
+  }
+  context.restore();
+
   const rows = Math.max(1, Math.ceil(stickers.length / region.columns));
   const cellWidth = region.width / region.columns;
   const cellHeight = region.height / rows;
-  const rotations = [-0.08, 0.04, 0.09, -0.05, 0.02];
+  const rotations = [-0.045, 0.025, 0.04, -0.03, 0.015];
 
+  context.save();
+  context.beginPath();
+  context.roundRect(region.x, region.y, region.width, region.height, region.radius);
+  context.clip();
   stickers.forEach((sticker, index) => {
     const column = index % region.columns;
     const row = Math.floor(index / region.columns);
@@ -282,20 +387,13 @@ const createHybridMockup = async (backgroundUrl: string, stickerUrls: string[], 
       sticker,
       region.x + cellWidth * (column + 0.5),
       region.y + cellHeight * (row + 0.5),
-      cellWidth * 0.88,
-      cellHeight * 0.88,
+      cellWidth * 0.76,
+      cellHeight * 0.74,
       rotations[index % rotations.length],
-      0.55
+      0.42
     );
   });
-
-  context.fillStyle = 'rgba(15, 23, 42, 0.78)';
-  context.fillRect(0, 1900, 2048, 148);
-  context.fillStyle = '#FFFFFF';
-  context.textAlign = 'center';
-  context.textBaseline = 'middle';
-  context.font = '800 48px Inter, Arial, sans-serif';
-  context.fillText('ACTUAL STICKER DESIGNS', 1024, 1974);
+  context.restore();
 
   return canvas.toDataURL('image/jpeg', 0.92);
 };
@@ -709,19 +807,15 @@ export const generateSeedreamMockup = async (
     if (type === 'preview' || id.includes('preview')) return createGridComposite(uniqueUrls);
     if (type === 'cover') return createCoverComposite(uniqueUrls, niche, totalStickerCount);
 
-    let backgroundPrompt: string;
-    if (type === 'goodnotes' || id.includes('goodnotes')) {
-      backgroundPrompt = `Create a premium square product photo of a tablet on a tidy modern desk, viewed directly from above. The tablet screen must be a large blank warm-white planner page with no UI, no writing, no icons, no logos, no images, and no stickers. Keep the central screen fully unobstructed. Soft daylight, subtle coffee cup and stylus near the outer edges. Theme mood: ${niche}.`;
-    } else if (type === 'laptop' || id.includes('laptop')) {
-      backgroundPrompt = `Create a premium square product photo of an open laptop viewed from a slightly elevated angle in a stylish cafe. The back of the laptop lid must be a large blank matte neutral surface, completely empty: no logo, no text, no art, no decals, and absolutely no stickers. Keep the lid centered and unobstructed. Soft realistic lighting and shallow depth of field. Theme mood: ${niche}.`;
-    } else if (type === 'journal' || id.includes('journal')) {
-      backgroundPrompt = `Create a premium square top-down product photo of an open journal on a warm wooden desk. Both pages must be completely blank and unobstructed: no text, no drawings, no photos, no labels, and absolutely no stickers. Keep a large clean page area in the center. Cozy natural lighting with minimal props only at the outer edges. Theme mood: ${niche}.`;
-    } else {
-      backgroundPrompt = `Create a premium square product-photo background for a digital sticker bundle. Use a clean softly textured neutral surface with a large empty central area. Do not include stickers, labels, illustrations, text, logos, badges, icons, or product artwork. Theme mood: ${niche}.`;
-    }
+    // The generated image is scenery only. Do not mention the niche here: when
+    // the model sees it, it may paint fake thematic stickers into the photo.
+    // Canvas adds the device and the exact completed sticker files afterward.
+    const backgroundPrompt = `Create a premium square top-down lifestyle photograph of a clean warm-neutral desk surface. Leave the central 80 percent completely empty and unobstructed. Place at most two subtle realistic props only at the extreme outer edges, such as a coffee cup corner or a small plant. Do not include any tablet, laptop, notebook, journal, paper, screen, frame, sticker, decal, illustration, icon, logo, label, badge, UI, writing, letters, or numbers. Soft natural daylight, realistic commercial product photography.`;
 
     try {
-        const backgroundUrl = await generateSeedreamImage(backgroundPrompt, '2K');
+        // The scenery is intentionally soft-focus; 1K is enough because the
+        // exact sticker pixels and product frame are rendered locally at 2K.
+        const backgroundUrl = await generateSeedreamImage(backgroundPrompt, '1K');
         return await createHybridMockup(backgroundUrl, uniqueUrls, type);
     } catch (e: any) {
         console.warn('Lifestyle mockup generation failed; falling back to an exact grid.', e);

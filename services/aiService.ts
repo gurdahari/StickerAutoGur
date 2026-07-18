@@ -416,23 +416,39 @@ const drawContainedSticker = (
   context.restore();
 };
 
+const clampCoverPhrase = (value: string, maxChars: number, maxWords: number) => {
+  const words = value.replace(/[^a-zA-Z0-9&+\-' ]+/g, ' ').replace(/\s+/g, ' ').trim().split(' ').filter(Boolean);
+  const kept: string[] = [];
+  for (const word of words) {
+    if (kept.length >= maxWords) break;
+    const candidate = [...kept, word].join(' ');
+    if (candidate.length > maxChars && kept.length) break;
+    kept.push(word);
+  }
+  return kept.join(' ').trim();
+};
+
 const getCoverCopy = (rawNiche: string) => {
   const normalized = (rawNiche || 'Premium Sticker Collection').replace(/\s+/g, ' ').trim();
   const parenthetical = normalized.match(/^(.*?)\s*\(([^)]+)\)\s*$/);
   const colon = !parenthetical ? normalized.match(/^([^:]+):\s*(.+)$/) : null;
-  const rawTitle = (parenthetical?.[1] || colon?.[1] || normalized)
+  const broadSplit = !parenthetical && !colon
+    ? normalized.split(/\s*(?:\/|\||—|\bcovering\b|\bincluding\b|\bfeaturing\b)\s*/i).filter(Boolean)
+    : [];
+  const rawTitle = (parenthetical?.[1] || colon?.[1] || broadSplit[0] || normalized)
     .replace(/\b(?:digital\s+)?stickers?\s+bundle\b/gi, '')
     .replace(/\b(?:digital\s+)?stickers?\b/gi, '')
     .trim();
-  const rawSubtitle = parenthetical?.[2] || colon?.[2] || 'Premium themed collection';
+  const rawSubtitle = parenthetical?.[2] || colon?.[2] || broadSplit.slice(1).join(' • ') || 'Premium themed collection';
+  const title = clampCoverPhrase(rawTitle || normalized, 30, 4) || 'PREMIUM STICKERS';
+  const subtitleParts = rawSubtitle
+    .split(/[\/,|•]+/)
+    .map(part => clampCoverPhrase(part, 16, 2))
+    .filter(Boolean)
+    .slice(0, 3);
   return {
-    title: (rawTitle || normalized).toUpperCase(),
-    subtitle: rawSubtitle
-      .replace(/[\/|]+/g, ' • ')
-      .replace(/\s*•\s*/g, ' • ')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .toUpperCase()
+    title: title.toUpperCase(),
+    subtitle: (subtitleParts.join(' • ') || 'PREMIUM COLLECTION').toUpperCase()
   };
 };
 
@@ -1705,19 +1721,20 @@ export const generateSeedreamMockup = async (
       const variant = id.endsWith('_b') ? 1 : id.endsWith('_c') ? 2 : 0;
       const coverCopy = getCoverCopy(niche);
       const stickerCount = Math.max(uniqueUrls.length, totalStickerCount);
+      const coverReferenceCount = Math.min(12, uniqueUrls.length);
       const artDirections = [
-        'Create a cinematic luxury bestseller cover with a dominant central hero sticker, rich niche-matched atmosphere, dramatic depth and a dense but controlled supporting collage.',
-        'Create a bright boutique editorial cover with tactile collage depth, sophisticated color contrast, energetic asymmetry and a premium handmade marketplace feel.',
-        'Create a high-end modern catalog cover with elegant tonal depth, crisp hierarchy, balanced geometry and a polished commercial campaign finish.'
+        'A cinematic high-conversion hero cover: bold niche-specific color, luminous focal glow, layered depth, one unmistakable hero sticker and a rich supporting collage. Exciting and premium, never dull beige or generic corporate brown.',
+        'A vibrant boutique editorial cover: sophisticated complementary colors sampled from the supplied stickers, tactile paper-collage depth, energetic asymmetry and a premium handmade marketplace feel.',
+        'A dramatic luxury catalog cover: deep niche-matched atmosphere, crisp high-contrast hierarchy, elegant geometry and polished advertising art direction. Dense and impressive without clutter or dead space.'
       ];
-      const fullCoverPrompt = `Create the COMPLETE finished first-listing thumbnail for a premium Etsy digital sticker bundle. This is a final commercial cover, not a background template. Use the supplied 14 reference images as the actual sticker products.
+      const fullCoverPrompt = `Create the COMPLETE finished first-listing thumbnail for a premium Etsy digital sticker bundle. This is a final commercial advertisement, not a background template. Use the supplied ${coverReferenceCount} reference images as the actual products.
 
-PRODUCT THEME: ${niche}
+VISUAL THEME ONLY — NEVER PRINT THIS BRIEF: ${niche}
 ART DIRECTION: ${artDirections[variant]}
 
 REFERENCE-STICKER RULES:
-- Display all 14 supplied sticker references exactly once each.
-- Make reference image 1 the largest central hero. Arrange the other 13 as a dense, exciting, professionally balanced supporting collage.
+- Display all ${coverReferenceCount} supplied sticker references exactly once each.
+- Make reference image 1 the largest central hero. Make references 2-4 strong secondary anchors and arrange the rest as a dense, exciting supporting collage.
 - Preserve each supplied sticker's recognizable subject, palette, internal artwork, white die-cut edge and proportions.
 - Do not invent, duplicate, merge or substitute any sticker. Do not add background stickers, ghost stickers or partially hidden fake designs.
 - Keep every sticker fully visible, uncropped and inside the composition.
@@ -1731,15 +1748,18 @@ RENDER THIS TEXT EXACTLY, LETTER FOR LETTER:
 
 TYPOGRAPHY AND SALES DESIGN:
 - Seedream must create all typography, badges, panels, lighting, background and layout as one cohesive finished image.
-- Make "${coverCopy.title}" the strongest headline, instantly readable at small marketplace-thumbnail size.
+- Reserve the upper 25% for typography. Render "${coverCopy.title}" as the strongest headline in no more than two centered lines.
+- The exact headline is only ${coverCopy.title.length} characters. Never replace it with the long visual-theme brief.
 - Put "${stickerCount} STICKERS" in one clear premium quantity badge.
-- Use excellent spacing, hierarchy and contrast. Typography must match the niche and feel expensive, not like a generic template.
-- Do not add any other words, letters, prices, logos, watermarks, repeated headlines, faint background text or misspellings.
+- Let the sticker collage fill most of the middle and lower image, with large readable products and minimal empty space.
+- Keep every word at least 7% away from the left and right edges. No text may be clipped, overflow, run behind the quantity badge or touch the frame.
+- Use excellent spacing, hierarchy and contrast. Typography must match the niche and feel expensive, not like a generic dashboard template.
+- Do not add any other words, prices, logos, watermarks, repeated headlines, faint background text or misspellings.
 
-Landscape 4:3 render with all important text and products inside the central 90% safe area so it can be center-cropped slightly to 5:4. Outstanding high-conversion marketplace thumbnail, cohesive niche-specific art direction, polished professional advertising quality.`;
+Landscape 4:3 render. All important text and products stay inside the central 86% safe area for a slight 5:4 center crop. Judge the design at tiny Etsy search-result size: the title, 100 quantity and strongest stickers must read instantly. Outstanding high-conversion marketplace thumbnail, cohesive niche-specific art direction, polished professional advertising quality.`;
       try {
         const referenceImages = await Promise.all(
-          uniqueUrls.slice(0, 14).map(url => imageUrlToDataUrl(url, 768))
+          uniqueUrls.slice(0, coverReferenceCount).map(url => imageUrlToDataUrl(url, 768))
         );
         const generatedCover = await generateSeedreamImage(fullCoverPrompt, '1K_LANDSCAPE', referenceImages);
         return finalizeGeneratedCover(generatedCover);

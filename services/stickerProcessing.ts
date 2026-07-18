@@ -158,6 +158,19 @@ export const processStickerImage = async (source: string): Promise<Blob> => {
     }
   }
 
+  // Remove the barely-visible alpha veil left by matte reconstruction. Those
+  // pixels look like a gray halo on dark surfaces even though they appear
+  // transparent in an editor. Preserve only a short, clean antialiased edge.
+  for (let position = 0; position < pixelCount; position++) {
+    const alphaIndex = position * 4 + 3;
+    const alpha = data[alphaIndex];
+    if (alpha > 0 && alpha < 104) {
+      data[alphaIndex] = 0;
+    } else if (alpha >= 104 && alpha < 240) {
+      data[alphaIndex] = Math.min(255, Math.round((alpha - 104) * 1.88));
+    }
+  }
+
   context.putImageData(imageData, 0, 0);
 
   let minX = width;
@@ -176,35 +189,29 @@ export const processStickerImage = async (source: string): Promise<Blob> => {
 
   if (maxX < minX || maxY < minY) throw new Error('Sticker cleanup removed the entire image.');
 
-  // Normalize every sticker to a consistent square canvas and let the artwork
-  // occupy 92% of it. This replaces the old shadow padding that made assets small.
-  const outputSize = Math.max(width, height);
+  // Export a tight aspect-ratio crop. A square canvas creates large invisible
+  // bands above/below wide stickers (or beside tall ones), which feels like a
+  // transparent halo in Canva and makes mockup placement inaccurate.
+  const cropWidth = maxX - minX + 1;
+  const cropHeight = maxY - minY + 1;
+  const padding = Math.max(4, Math.round(Math.max(cropWidth, cropHeight) * 0.008));
   const outputCanvas = document.createElement('canvas');
-  outputCanvas.width = outputSize;
-  outputCanvas.height = outputSize;
+  outputCanvas.width = cropWidth + padding * 2;
+  outputCanvas.height = cropHeight + padding * 2;
   const outputContext = outputCanvas.getContext('2d');
   if (!outputContext) throw new Error('Canvas is unavailable for sticker normalization.');
 
-  const cropWidth = maxX - minX + 1;
-  const cropHeight = maxY - minY + 1;
-  const availableSize = outputSize * 0.92;
-  const scale = Math.min(availableSize / cropWidth, availableSize / cropHeight);
-  const drawWidth = cropWidth * scale;
-  const drawHeight = cropHeight * scale;
-
-  outputContext.clearRect(0, 0, outputSize, outputSize);
-  outputContext.imageSmoothingEnabled = true;
-  outputContext.imageSmoothingQuality = 'high';
+  outputContext.clearRect(0, 0, outputCanvas.width, outputCanvas.height);
   outputContext.drawImage(
     workingCanvas,
     minX,
     minY,
     cropWidth,
     cropHeight,
-    (outputSize - drawWidth) / 2,
-    (outputSize - drawHeight) / 2,
-    drawWidth,
-    drawHeight
+    padding,
+    padding,
+    cropWidth,
+    cropHeight
   );
 
   return canvasToBlob(outputCanvas);

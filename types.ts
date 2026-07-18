@@ -62,6 +62,7 @@ export interface StickerQaMetrics {
   transparentRatio: number;
   artworkRatio: number;
   softAlphaRatio: number;
+  largestSolidBlackRatio: number;
   touchesCanvasEdge: boolean;
 }
 

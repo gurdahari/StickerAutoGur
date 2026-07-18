@@ -1195,6 +1195,42 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
      return selected.map(s => s.url!);
   };
 
+  const getSemanticCoverFallback = (pool: Sticker[], count: number): string[] => {
+     const valid = pool
+       .filter(sticker => sticker.status === 'completed' && sticker.url && sticker.qaStatus === 'approved')
+       .sort((left, right) => (right.qaScore || 0) - (left.qaScore || 0) || left.id - right.id);
+     if (valid.length <= count) return valid.map(sticker => sticker.url!);
+
+     const subjectTokens = (sticker: Sticker) => {
+       const subject = sticker.prompt.match(/SUBJECT:\s*([^|]+)/i)?.[1] || sticker.prompt;
+       return new Set(subject.toLowerCase().match(/[a-z0-9]+/g)?.filter(token => token.length > 2) || []);
+     };
+     const distance = (left: Set<string>, right: Set<string>) => {
+       const intersection = [...left].filter(token => right.has(token)).length;
+       const union = new Set([...left, ...right]).size || 1;
+       return 1 - intersection / union;
+     };
+
+     const selected: Sticker[] = [valid[0]];
+     const remaining = valid.slice(1);
+     while (selected.length < count && remaining.length) {
+       let bestIndex = 0;
+       let bestScore = -1;
+       remaining.forEach((candidate, index) => {
+         const candidateTokens = subjectTokens(candidate);
+         const novelty = Math.min(...selected.map(chosen => distance(candidateTokens, subjectTokens(chosen))));
+         const noTextBonus = /TEXT:\s*(?:NONE|NO TEXT)/i.test(candidate.prompt) ? 0.08 : 0;
+         const score = novelty + noTextBonus + (candidate.qaScore || 0) / 1000;
+         if (score > bestScore) {
+           bestScore = score;
+           bestIndex = index;
+         }
+       });
+       selected.push(remaining.splice(bestIndex, 1)[0]);
+     }
+     return selected.map(sticker => sticker.url!);
+  };
+
   const getModelSelectedCoverBatch = async (pool: Sticker[], count = 14): Promise<string[]> => {
      const valid = pool
        .filter(sticker => sticker.status === 'completed' && sticker.url && sticker.qaStatus === 'approved')
@@ -1226,8 +1262,9 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
        return selected.slice(0, count).map(sticker => sticker.url!);
      } catch (error) {
        console.warn('Cover selection failed; using the diversity fallback.', error);
-       addLog('Cover selector unavailable; using a diverse fallback set.');
-       return getUniqueBatchForMockup(valid, count);
+       const message = error instanceof Error ? error.message : String(error);
+       addLog(`Cover selector unavailable: ${message} Using the free local semantic-diversity selector.`);
+       return getSemanticCoverFallback(valid, count);
      }
   };
 

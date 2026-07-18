@@ -10,21 +10,8 @@ interface BrainResult {
 interface ProviderHealth {
   status: string;
   providers: {
-    openai: {
-      configured: boolean;
-      model: string;
-      keyHint?: string | null;
-      keySource?: string | null;
-      keyLocation?: string | null;
-      lastSuccessfulRequestAt?: string | null;
-    };
-    seedream: {
-      configured: boolean;
-      model: string;
-      keyHint?: string | null;
-      keySource?: string | null;
-      lastSuccessfulRequestAt?: string | null;
-    };
+    openai: { configured: boolean; model: string };
+    seedream: { configured: boolean; model: string };
   };
 }
 

@@ -78,6 +78,22 @@ const loadCanvasImage = (url: string): Promise<HTMLImageElement | null> => new P
   image.src = url;
 });
 
+const imageUrlToDataUrl = async (url: string): Promise<string> => {
+  const image = await loadCanvasImage(url);
+  if (!image) throw new Error('Failed to prepare sticker reference.');
+  const maxDimension = 1024;
+  const scale = Math.min(1, maxDimension / Math.max(image.width, image.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(image.width * scale));
+  canvas.height = Math.max(1, Math.round(image.height * scale));
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Canvas is unavailable for sticker reference preparation.');
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = 'high';
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL('image/png');
+};
+
 const drawContainedSticker = (
   context: CanvasRenderingContext2D,
   image: HTMLImageElement,
@@ -550,11 +566,13 @@ export const analyzeNicheVisuals = async (nicheName: string): Promise<NicheVisua
   
   OBJECTIVE: Determine the EXACT visual aesthetic that real buyers in this niche want.
   ALSO: Understand deeply what customers search for in this niche, and the different intents and uses of the stickers (not just visual).
+  IMPORTANT: Interpret the submitted niche as an entry point into a broader visual universe, not as the only object to repeat.
   
   SCENARIO EXAMPLES:
   - If niche is "Kodak Portra" -> Aesthetic is "Analog Film, Grainy, Retro, Realistic, Muted". NOT Kawaii.
   - If niche is "Cyberpunk" -> Aesthetic is "Neon, Glitch, High-Tech, Dark". NOT Pastel.
   - If niche is "Kindergarten Teacher" -> Aesthetic is "Cute, Crayon, Primary Colors".
+  - If niche is "Retro Windows Error (Anxiety.exe)" -> Theme universe is retro desktop computing and operating-system nostalgia. Error dialogs are only one subtheme alongside folders, cursors, control panels, loading states, desktop icons, files, software tools, floppy disks, monitors, keyboards, settings, wallpapers, and startup/shutdown moments.
   
   JSON RESPONSE REQUIRED:
   {
@@ -563,6 +581,8 @@ export const analyzeNicheVisuals = async (nicheName: string): Promise<NicheVisua
     "keywords": "Comma-separated visual adjectives (e.g. 'grainy, analog, muted' or 'pastel, cute, round')",
     "negativeKeywords": "What to AVOID? (e.g. 'vector, cartoon, flat' if analog, or 'realistic, dark' if kawaii)",
     "safeGenerics": "5 generic items that fit this theme",
+    "themeUniverse": "The broad parent world behind the submitted niche. Do not simply repeat the niche wording.",
+    "subthemes": "10-12 comma-separated, visually distinct subject families that belong to that broader world",
     "intentAndUse": "Describe the different intents and practical uses for these stickers (e.g., planner decoration, laptop decals, functional tracking, emotional expression).",
     "customerSearchBehavior": "What specific terms and concepts do customers search for when looking for this?"
   }
@@ -581,10 +601,12 @@ export const analyzeNicheVisuals = async (nicheName: string): Promise<NicheVisua
             keywords: { type: 'string' },
             negativeKeywords: { type: 'string' },
             safeGenerics: { type: 'string' },
+            themeUniverse: { type: 'string' },
+            subthemes: { type: 'string' },
             intentAndUse: { type: 'string' },
             customerSearchBehavior: { type: 'string' }
           },
-          required: ['archetype', 'visualStyle', 'keywords', 'negativeKeywords', 'safeGenerics', 'intentAndUse', 'customerSearchBehavior']
+          required: ['archetype', 'visualStyle', 'keywords', 'negativeKeywords', 'safeGenerics', 'themeUniverse', 'subthemes', 'intentAndUse', 'customerSearchBehavior']
         }
       });
       return JSON.parse(response.text.trim());
@@ -595,13 +617,20 @@ export const analyzeNicheVisuals = async (nicheName: string): Promise<NicheVisua
           keywords: 'aesthetic, sticker', 
           negativeKeywords: 'ugly', 
           safeGenerics: 'star, heart',
-          visualStyle: 'Standard Vector' // Fallback
-      } as any;
+          visualStyle: 'Standard Vector',
+          themeUniverse: nicheName,
+          subthemes: 'core objects, tools, accessories, symbols, environments, functional elements'
+      };
   }
 };
 
 export const generateStickerPrompts = async (niche: string, style: StylePreset, count: number = 30, analysis?: NicheVisualAnalysis): Promise<string[]> => {
   const COUNT = count;
+  const themeUniverse = analysis?.themeUniverse?.trim() || niche;
+  const fallbackFamilies = (analysis?.subthemes || analysis?.safeGenerics || 'core objects, tools, accessories, symbols, environments, functional elements')
+    .split(',')
+    .map(value => value.trim())
+    .filter(Boolean);
   
   let analysisContext = "";
   if (analysis) {
@@ -611,6 +640,8 @@ export const generateStickerPrompts = async (niche: string, style: StylePreset, 
       - Visual Style: ${analysis['visualStyle']}
       - Must Include Keywords: ${analysis.keywords}
       - STRICTLY AVOID: ${analysis.negativeKeywords}
+      - BROAD THEME UNIVERSE: ${themeUniverse}
+      - REQUIRED SUBJECT FAMILIES: ${analysis.subthemes || analysis.safeGenerics}
       - Intent and Use: ${analysis.intentAndUse || 'General decoration'}
       - Customer Search Behavior: ${analysis.customerSearchBehavior || 'General sticker search'}
       `;
@@ -619,32 +650,39 @@ export const generateStickerPrompts = async (niche: string, style: StylePreset, 
   // MASTER PROMPT: DYNAMIC "BEST SELLER" LOGIC
   const prompt = `
     ACT AS A SENIOR ART DIRECTOR.
-    TASK: Generate exactly ${COUNT} distinct commercial sticker design concepts for: "${niche}".
+    TASK: Generate exactly ${COUNT} distinct commercial sticker design concepts inspired by: "${niche}".
     BASE STYLE PRESET: ${style.name}
+    BASE STYLE RULES: ${style.prompt}
     
     ${analysisContext}
 
     CRITICAL RULES:
-    1. **SINGLE OBJECTS ONLY**: Describe ONE specific, standalone item per sticker.
+    1. **ONE PRIMARY CONCEPT**: Describe one clear standalone sticker design. A primary subject may have small supporting details, but never create a sheet or collection inside one image.
     2. **NO COLLECTIONS**: Do NOT write prompts for "sticker sheets", "sets", "packs", or "collections".
     3. **BE SPECIFIC**: Instead of "medical equipment", say "A blue stethoscope".
+    4. **UMBRELLA INTERPRETATION**: The input phrase is a creative doorway into its larger world. Do not turn every design into a literal illustration of the phrase.
+    5. **DIRECT MOTIF CAP**: At most 15% of concepts may use the most literal motif or wording from "${niche}". The remaining concepts must explore the broader theme universe and its adjacent features.
     
     GOAL: Create a high-value sticker pack that EXACTLY matches the target aesthetic AND the customer's intent. 
     If the style is "Analog Film", generate film strips, cameras, light leaks.
     If the style is "Kawaii", generate cute characters.
     Make sure the stickers reflect the "Intent and Use" and "Customer Search Behavior" provided above.
     
-    CRITICAL RATIOS:
-    - 40% CORE OBJECTS (The "Meat" of the pack: Tools, Symbols, Items)
-    - 20% THEMATIC ELEMENTS (Background textures, abstract shapes if applicable)
-    - 20% FUNCTIONAL/DECORATIVE (Frames, Washi tape, functional labels, trackers, etc. that match the style and intent)
-    - 20% EMOTIONAL/EXPRESSIVE (Quotes, text snippets, character expressions, mood indicators)
+    SUBJECT DISTRIBUTION ACROSS THE WHOLE PACK:
+    - 15% DIRECT/LITERAL MOTIFS from the submitted phrase
+    - 25% CORE OBJECTS AND ICONS from the broader theme universe
+    - 20% TOOLS, ACTIONS, WORKFLOWS, AND SYSTEM FEATURES
+    - 15% HARDWARE, ACCESSORIES, PLACES, OR SUPPORTING ENVIRONMENT
+    - 15% FUNCTIONAL AND DECORATIVE ELEMENTS that fit the theme
+    - 10% EMOTIONAL OR TEXT-BASED DESIGNS; use TEXT: NONE for everything else
+
+    For a 100-design pack, cover at least 10 distinct subject families and do not let any family exceed 15 designs.
 
     DESIGN RULES:
-    1. RELEVANCE: Generate items highly specific to "${niche}".
+    1. RELEVANCE: Every item must belong to the broader theme universe, even when it is not a literal rendering of "${niche}".
     2. VARIETY: Every concept must have a different primary subject. Do not repeat the same object, character, quote, pose, or composition.
     3. SEMANTIC UNIQUENESS: Rewording an existing idea does not make it new. Each design must be visibly distinguishable at thumbnail size.
-    4. STYLE CONSISTENCY: All items must look like they belong in the same pack.
+    4. STYLE LOCK: Subjects and compositions must vary, but visual medium, line treatment, palette logic, shading, texture, border treatment, and overall art direction must remain consistent across the entire pack. Never introduce a different art style as a way to create variety.
 
     OUTPUT FORMAT:
     Return a JSON object with a "prompts" array containing exactly ${COUNT} strings.
@@ -680,12 +718,16 @@ export const generateStickerPrompts = async (niche: string, style: StylePreset, 
       });
       while (uniquePrompts.length < COUNT) {
         const variation = uniquePrompts.length + 1;
-        uniquePrompts.push(`TYPE: Object-Only | SUBJECT: A unique ${niche} concept number ${variation} with a primary subject not used elsewhere | COMPOSITION: Centered isolated design | TEXT: NONE`);
+        const family = fallbackFamilies[(variation - 1) % fallbackFamilies.length] || 'thematic object';
+        uniquePrompts.push(`TYPE: Object-Only | SUBJECT: A distinct ${family} concept from ${themeUniverse}, variation ${variation}, with a primary subject not used elsewhere | COMPOSITION: Centered isolated design | TEXT: NONE`);
       }
       return uniquePrompts.slice(0, COUNT);
   } catch (e) {
       console.error(`Failed to parse prompts`, e);
-      return Array.from({ length: COUNT }, (_, index) => `TYPE: Object-Only | SUBJECT: A unique ${niche} concept number ${index + 1} | COMPOSITION: Centered isolated design | TEXT: NONE`);
+      return Array.from({ length: COUNT }, (_, index) => {
+        const family = fallbackFamilies[index % fallbackFamilies.length] || 'thematic object';
+        return `TYPE: Object-Only | SUBJECT: A distinct ${family} concept from ${themeUniverse}, variation ${index + 1} | COMPOSITION: Centered isolated design | TEXT: NONE`;
+      });
   }
 };
 
@@ -720,7 +762,9 @@ export const generateAutopilotSticker = async (
   let visualDescription = "";
   let strictConstraints = "";
 
-  const isFrame = cleanType.toUpperCase().includes('FRAME') || (analysis?.archetype === 'FRAME_OVERLAY');
+  // The niche-level archetype is only an art-direction hint. It must never
+  // force every item into the same form (for example, 100 window frames).
+  const isFrame = cleanType.toUpperCase().includes('FRAME');
   
   if (isFrame) {
       // IF FRAME: Force center to be PURE WHITE. The Luma Keyer (set to > 65) will NOT delete white.
@@ -729,7 +773,7 @@ export const generateAutopilotSticker = async (
       visualDescription = `A TOP-DOWN view of a ${cleanSubject} frame overlay.`;
       strictConstraints = `CENTER MUST BE PURE BLACK (#000000). NO CONTENT INSIDE FRAME.`;
   } else {
-      visualDescription = `A SINGLE, ISOLATED vector sticker design of ${cleanSubject}.`;
+      visualDescription = `A SINGLE, ISOLATED digital sticker design of ${cleanSubject}.`;
   }
 
   // Determine aesthetic vibe from analysis or default
@@ -740,10 +784,10 @@ export const generateAutopilotSticker = async (
     : 'NO TEXT: Do not render any words, letters, numbers, labels, logos, signatures, or watermarks anywhere in the sticker.';
 
   const fullPrompt = `
-  GENERATE A RAW VECTOR STICKER ASSET (NOT A PHOTO OF A STICKER).
+  GENERATE A RAW DIGITAL STICKER ASSET (NOT A PHOTO OF A STICKER).
   
   SUBJECT: ${visualDescription}
-  NICHE CONTEXT: "${nicheContext}"
+  BROAD THEME UNIVERSE: "${analysis?.themeUniverse || nicheContext}"
   COMPOSITION: ${cleanComp || 'Centered, isolated, and fully visible'}
   TEXT REQUIREMENT: ${textInstruction}
   
@@ -752,7 +796,7 @@ export const generateAutopilotSticker = async (
   - KEY AESTHETICS: ${aestheticKeywords}
   
   TECHNICAL RULES (DO NOT IGNORE):
-  1. **SINGLE OBJECT ONLY**: Generate ONE single sticker subject in the center. Do NOT generate a sticker sheet, a grid, a pattern, or a collection of small items.
+  1. **SINGLE STICKER DESIGN ONLY**: Generate one clear primary subject in the center. Small supporting details named in the subject are allowed, but do not generate a sticker sheet, grid, pattern, or collection.
   2. **BACKGROUND**: SOLID BLACK HEX #000000. DO NOT USE DARK GRAY. DO NOT USE GRADIENTS. MUST BE FLAT BLACK.
   3. **BORDER**: MANDATORY THICK WHITE DIE-CUT BORDER surrounding the object. This border protects the sticker content.
   3A. **EDGE QUALITY**: The outside of the white border must be perfectly clean, continuous, and crisp. NO gray rim, NO dotted/dashed cut line, NO glow, NO texture, NO drop shadow, and NO second outline.
@@ -806,6 +850,25 @@ export const generateSeedreamMockup = async (
     if (!uniqueUrls.length) throw new Error('No unique stickers are available for this marketing asset.');
     if (type === 'preview' || id.includes('preview')) return createGridComposite(uniqueUrls);
     if (type === 'cover') return createCoverComposite(uniqueUrls, niche, totalStickerCount);
+
+    const placement = type === 'goodnotes' || id.includes('goodnotes')
+      ? id.endsWith('_2')
+        ? 'an elegant close three-quarter view of a tablet on a modern desk, with a large blank digital-planner page visible on the screen'
+        : 'a premium straight top-down view of a tablet on a tidy modern desk, with a large blank digital-planner page visible on the screen'
+      : type === 'laptop' || id.includes('laptop')
+        ? 'a premium lifestyle photograph of a modern laptop on a clean desk, with the outer laptop lid as a large clearly visible sticker surface'
+        : type === 'journal' || id.includes('journal')
+          ? 'a premium top-down lifestyle photograph of an open cream-paper journal on a warm wooden desk, with both pages clearly visible'
+          : 'a premium top-down product scene showing a clean digital-planner workspace with a large usable central surface';
+
+    const referencePrompt = `Use every supplied reference image as a finished sticker design. Create ${placement}. Place the supplied sticker designs naturally and professionally on the visible product surface. Preserve each reference design's subject, colors, line work, proportions, spelling, and white die-cut border as closely as possible. Keep every placed sticker fully inside the laptop, screen, page, or product boundary with comfortable margin; no sticker may float outside or be cropped. Use each supplied reference once. Do not invent, redraw, merge, replace, or add any sticker design. Do not add headings, captions, badges, labels, logos, watermarks, marketing copy, or extra readable text. The result must look like convincing commercial Etsy product photography, square composition, soft natural light, realistic scale and shadows.`;
+
+    try {
+      const referenceImages = await Promise.all(uniqueUrls.slice(0, 8).map(imageUrlToDataUrl));
+      return await generateSeedreamImage(referencePrompt, '2K', referenceImages);
+    } catch (e: any) {
+      console.warn('Reference-based Seedream mockup failed; using the clipped exact-pixel fallback.', e);
+    }
 
     // The generated image is scenery only. Do not mention the niche here: when
     // the model sees it, it may paint fake thematic stickers into the photo.

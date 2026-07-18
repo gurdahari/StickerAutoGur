@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { AutopilotState, NicheIdea, StylePreset, Sticker, MarketingAsset, TrendResult, DiscoveredTrend, NicheVisualAnalysis } from '../types';
 import { NICHE_IDEAS, STYLE_PRESETS } from '../data/presets';
 import { ensureProvidersConfigured, generateStickerPrompts, generateAutopilotSticker, generateAutopilotListing, generateSeedreamMockup, findViralNiche, getTrendAnalysis, discoverTopTrends, analyzeNicheVisuals } from '../services/aiService';
+import { processStickerImage } from '../services/stickerProcessing';
 import { Play, Pause, RefreshCw, CheckCircle, Download, FileText, Image as ImageIcon, Box, Archive, Zap, Gauge, Copy, FastForward, RotateCcw, Beaker, DollarSign, AlertCircle, Scissors, Eye, Globe, Search, ExternalLink, X, ArrowRight, BarChart3, Plus, Palette, ShoppingBag, Loader2, Wand2, Laptop, Tablet, Grid, BookOpen, Layers } from 'lucide-react';
 import JSZip from 'jszip';
 
@@ -27,162 +28,6 @@ const dataURLToBlob = (dataURL: string): Blob => {
     return new Blob([], { type: 'image/png' }); // Fallback empty blob
   }
 };
-
-// --- BACKGROUND REMOVAL ENGINE (V3: THE "SQUARE KILLER") ---
-
-const processImageForTransparency = async (base64: string): Promise<Blob> => {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.src = base64;
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      canvas.width = img.width;
-      canvas.height = img.height;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) { reject(new Error('Canvas failed')); return; }
-
-      ctx.drawImage(img, 0, 0);
-      
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const data = imageData.data;
-      const width = canvas.width;
-      const height = canvas.height;
-      
-      // V3 TUNING: HIGH AGGRESSION
-      // 85/255 is approx 33% brightness. Anything darker than dark gray gets nuked.
-      // This kills "dark card" backgrounds but preserves white borders.
-      const TOLERANCE = 85; 
-
-      const getIndex = (x: number, y: number) => (y * width + x) * 4;
-      
-      // Helper: Is this pixel dark enough to be background?
-      const isBackground = (idx: number) => {
-          // If already transparent, yes
-          if (data[idx + 3] === 0) return true;
-          
-          const r = data[idx];
-          const g = data[idx + 1];
-          const b = data[idx + 2];
-          
-          // Luma check
-          const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-          return luma < TOLERANCE;
-      };
-
-      // STEP 0: BORDER SCRUB (Crucial for "Squares")
-      // Force the 1px outer rim to be transparent if it's dark.
-      // This ensures the flood fill has an entry point even if the AI drew a border.
-      for (let x = 0; x < width; x++) {
-          if (isBackground(getIndex(x, 0))) data[getIndex(x, 0) + 3] = 0;
-          if (isBackground(getIndex(x, height-1))) data[getIndex(x, height-1) + 3] = 0;
-      }
-      for (let y = 0; y < height; y++) {
-          if (isBackground(getIndex(0, y))) data[getIndex(0, y) + 3] = 0;
-          if (isBackground(getIndex(width-1, y))) data[getIndex(width-1, y) + 3] = 0;
-      }
-
-      const visited = new Uint8Array(width * height);
-      const queue: number[] = [];
-
-      // STEP 1: FLOOD FILL FROM EDGES
-      // Add all transparent/dark edge pixels to queue
-      for (let x = 0; x < width; x++) {
-          if (data[getIndex(x, 0) + 3] === 0) { queue.push(x, 0); visited[0 * width + x] = 1; }
-          if (data[getIndex(x, height-1) + 3] === 0) { queue.push(x, height-1); visited[(height-1)*width + x] = 1; }
-      }
-      for (let y = 0; y < height; y++) {
-          if (data[getIndex(0, y) + 3] === 0) { queue.push(0, y); visited[y * width] = 1; }
-          if (data[getIndex(width-1, y) + 3] === 0) { queue.push(width-1, y); visited[y * width + width-1] = 1; }
-      }
-
-      while (queue.length > 0) {
-          const y = queue.pop()!;
-          const x = queue.pop()!;
-          const idx = getIndex(x, y);
-
-          // Nuke it
-          data[idx + 3] = 0; 
-
-          const neighbors = [{x: x+1, y}, {x: x-1, y}, {x, y: y+1}, {x, y: y-1}];
-          for (const n of neighbors) {
-              if (n.x >= 0 && n.x < width && n.y >= 0 && n.y < height) {
-                  const nPos = n.y * width + n.x;
-                  if (visited[nPos] === 0) {
-                      const nIdx = getIndex(n.x, n.y);
-                      // If neighbor is dark, consume it
-                      if (isBackground(nIdx)) {
-                          visited[nPos] = 1;
-                          queue.push(n.x, n.y);
-                      }
-                  }
-              }
-          }
-      }
-
-      // STEP 2: ARTIFACT CLEANUP (Despeckle)
-      // Remove floating dark pixels that weren't caught by flood fill but are surrounded by transparency
-      for (let y = 1; y < height - 1; y++) {
-          for (let x = 1; x < width - 1; x++) {
-              const idx = getIndex(x, y);
-              if (data[idx+3] > 0 && isBackground(idx)) {
-                  // It's a dark pixel that survived. Is it noise?
-                  // Check neighbors. If > 2 neighbors are transparent, kill it.
-                  let transparentNeighbors = 0;
-                  if (data[getIndex(x+1, y)+3] === 0) transparentNeighbors++;
-                  if (data[getIndex(x-1, y)+3] === 0) transparentNeighbors++;
-                  if (data[getIndex(x, y+1)+3] === 0) transparentNeighbors++;
-                  if (data[getIndex(x, y-1)+3] === 0) transparentNeighbors++;
-                  
-                  if (transparentNeighbors >= 3) {
-                      data[idx+3] = 0;
-                  }
-              }
-          }
-      }
-      
-      ctx.putImageData(imageData, 0, 0);
-      canvas.toBlob((blob) => {
-        if (blob) resolve(blob);
-        else reject(new Error('Blob conversion failed'));
-      }, 'image/png');
-    };
-    img.onerror = () => reject(new Error("Failed to load image for transparency processing"));
-  });
-};
-
-// Step 2: Add DROP SHADOW Only
-const addStickerShadow = async (transparentBlob: Blob): Promise<Blob> => {
-    return new Promise((resolve, reject) => {
-        const img = new Image();
-        const url = URL.createObjectURL(transparentBlob);
-        img.src = url;
-        img.onload = () => {
-            const w = img.width;
-            const h = img.height;
-            const padding = Math.max(w, h) * 0.1; // Reduced padding
-            const canvas = document.createElement('canvas');
-            canvas.width = w + (padding * 2);
-            canvas.height = h + (padding * 2);
-            const ctx = canvas.getContext('2d');
-            if(!ctx) return;
-
-            // Apply Drop Shadow to the existing image (which has the white border)
-            ctx.shadowColor = "rgba(0,0,0,0.35)";
-            ctx.shadowBlur = 15;
-            ctx.shadowOffsetY = 8;
-            ctx.drawImage(img, padding, padding);
-
-            canvas.toBlob((blob) => {
-                URL.revokeObjectURL(url);
-                if (blob) resolve(blob);
-                else reject(new Error('Shadow generation failed'));
-            }, 'image/png');
-        };
-        img.onerror = () => reject(new Error("Failed to load image for shadow"));
-    });
-};
-
 
 const parseListingText = (text: string) => {
     const titleMatch = text.match(/<<<TITLE>>>([\s\S]*?)<<<END_TITLE>>>/);
@@ -570,13 +415,12 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       try {
            const base64 = await generateAutopilotSticker(promptToUse, state.currentStyle.prompt, useTurbo, state.currentNiche.name, visualAnalysisRef.current);
            
-           const transparentBlob = await processImageForTransparency(base64);
-           const borderedBlob = await addStickerShadow(transparentBlob);
-           const finalUrl = URL.createObjectURL(borderedBlob);
+           const processedBlob = await processStickerImage(base64);
+           const finalUrl = URL.createObjectURL(processedBlob);
 
            setState(prev => {
                const newStickers = [...prev.stickers];
-               newStickers[stickerIndex] = { ...sticker, url: finalUrl, blob: borderedBlob, status: 'completed', regenCount: newRegenCount };
+               newStickers[stickerIndex] = { ...sticker, url: finalUrl, blob: processedBlob, status: 'completed', regenCount: newRegenCount };
                stickersRef.current = newStickers; 
                return { ...prev, stickers: newStickers };
            });
@@ -625,16 +469,15 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         
         // 2. Generate Image
         const base64 = await generateAutopilotSticker(freshPrompt, state.currentStyle.prompt, useTurbo, state.currentNiche.name, visualAnalysisRef.current);
-        const transparentBlob = await processImageForTransparency(base64);
-        const borderedBlob = await addStickerShadow(transparentBlob);
-        const finalUrl = URL.createObjectURL(borderedBlob);
+        const processedBlob = await processStickerImage(base64);
+        const finalUrl = URL.createObjectURL(processedBlob);
 
         // 3. Update Result
         setState(prev => {
              const list = [...prev.stickers];
              const idx = list.findIndex(s => s.id === newId);
              if (idx !== -1) {
-                 list[idx] = { ...list[idx], prompt: freshPrompt, url: finalUrl, blob: borderedBlob, status: 'completed' };
+                 list[idx] = { ...list[idx], prompt: freshPrompt, url: finalUrl, blob: processedBlob, status: 'completed' };
              }
              return { ...prev, stickers: list };
         });
@@ -642,7 +485,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         // Update Ref
         const refIdx = stickersRef.current.findIndex(s => s.id === newId);
         if (refIdx !== -1) {
-             stickersRef.current[refIdx] = { id: newId, prompt: freshPrompt, url: finalUrl, blob: borderedBlob, status: 'completed', regenCount: 0 };
+             stickersRef.current[refIdx] = { id: newId, prompt: freshPrompt, url: finalUrl, blob: processedBlob, status: 'completed', regenCount: 0 };
         }
         
         setNeedsZipUpdate(true);
@@ -661,26 +504,19 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
 
   // Helper: Get unique stickers for mockups to avoid redundancy across images
   const getUniqueBatchForMockup = (pool: Sticker[], count: number): string[] => {
-     // 1. Filter for valid stickers that haven't been used in a mockup yet
      const valid = pool.filter(s => s.status === 'completed' && s.url);
-     
-     // IMPORTANT FIX: FILTER OUT REPEATS
-     // Group stickers by prompt to ensure we don't pick 2 very similar ones if they exist
-     // But for now, simple ID filtering is enough if stickers are generated uniquely
-     
-     // Shuffle the entire valid pool first
      const shuffled = [...valid].sort(() => 0.5 - Math.random());
-     
-     // Select unique stickers
      const selected: Sticker[] = [];
+     const usedUrls = new Set<string>();
+     const usedPrompts = new Set<string>();
+
      for(const s of shuffled) {
          if (selected.length >= count) break;
+         const normalizedPrompt = s.prompt.toLowerCase().replace(/\s+/g, ' ').trim();
+         if (!s.url || usedUrls.has(s.url) || usedPrompts.has(normalizedPrompt)) continue;
+         usedUrls.add(s.url);
+         usedPrompts.add(normalizedPrompt);
          selected.push(s);
-     }
-     
-     // If we still need more (e.g. only 5 stickers total exist), loop back
-     while (selected.length < count && valid.length > 0) {
-         selected.push(valid[Math.floor(Math.random() * valid.length)]);
      }
 
      return selected.map(s => s.url!);
@@ -689,7 +525,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
   const getStickerRange = (stickers: Sticker[], start: number, end: number) => {
        const subset = stickers.slice(start, end);
        const valid = subset.filter(s => s.status === 'completed' && s.url);
-       return valid.map(s => s.url!);
+       return [...new Set(valid.map(s => s.url!))];
   };
 
   const handleRegenerateMockup = async (assetId: string) => {
@@ -726,7 +562,8 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
              asset.id!, 
              asset.type, 
              stickersForMockup, 
-             state.currentNiche.name
+             state.currentNiche.name,
+             validStickers.filter(sticker => sticker.status === 'completed' && sticker.url).length
           );
 
           setState(prev => {
@@ -926,17 +763,16 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
               const base64 = await generateAutopilotSticker(s.prompt, style.prompt, useTurbo, niche.name, analysis);
               
               // PROCESS: 1. Remove BLACK BG -> 2. Add Shadow (White border comes from AI)
-              const transparentBlob = await processImageForTransparency(base64);
-              const borderedBlob = await addStickerShadow(transparentBlob);
-              const finalUrl = URL.createObjectURL(borderedBlob);
+              const processedBlob = await processStickerImage(base64);
+              const finalUrl = URL.createObjectURL(processedBlob);
               
               setState(prev => {
                   const nextStickers = [...prev.stickers];
-                  nextStickers[index] = { ...s, url: finalUrl, blob: borderedBlob, status: 'completed', regenCount: attempts, prompt: s.prompt }; // Preserve original prompt unless updated
+                  nextStickers[index] = { ...s, url: finalUrl, blob: processedBlob, status: 'completed', regenCount: attempts, prompt: s.prompt }; // Preserve original prompt unless updated
                   const completedCount = nextStickers.filter(st => st.status === 'completed').length;
                   return { ...prev, stickers: nextStickers, progress: 10 + Math.round((completedCount / TARGET_STICKER_COUNT) * 60) };
               });
-              stickersRef.current[index] = { ...s, url: finalUrl, blob: borderedBlob, status: 'completed' };
+              stickersRef.current[index] = { ...s, url: finalUrl, blob: processedBlob, status: 'completed' };
               success = true;
 
             } catch (e: any) {
@@ -1012,7 +848,8 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
 
             if (stickersForMockup.length > 0 || (asset.type.includes('preview') && validStickers.length > 0)) {
                  // Try generating regardless of count, the grid function handles it
-                url = await generateSeedreamMockup(asset.id!, asset.type, stickersForMockup, niche!.name);
+                const completedStickerCount = validStickers.filter(sticker => sticker.status === 'completed' && sticker.url).length;
+                url = await generateSeedreamMockup(asset.id!, asset.type, stickersForMockup, niche!.name, completedStickerCount);
             } else {
                 addLog(`Skipping ${asset.title} - No stickers available.`);
                 setState(prev => {
@@ -1044,7 +881,8 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       setState(prev => ({ ...prev, status: 'copywriting', progress: 95 }));
       addLog("Generating SEO Listing Copy...");
       // PASS useTurbo to generate correct description
-      const rawListing = await generateAutopilotListing(niche!.name, style.name, useTurbo);
+      const completedStickerCount = stickersRef.current.filter(sticker => sticker.status === 'completed').length;
+      const rawListing = await generateAutopilotListing(niche!.name, style.name, useTurbo, completedStickerCount);
       setState(prev => ({ ...prev, rawListing, status: 'completed', progress: 100 }));
       addLog("PRODUCTION COMPLETE.");
       

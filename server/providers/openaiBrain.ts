@@ -60,9 +60,25 @@ export const generateBrainResponse = async (request: BrainRequest): Promise<Brai
   }
 
   const client = new OpenAI({ apiKey });
-  const input = request.messages?.length
-    ? request.messages.map(message => ({ role: message.role, content: message.content }))
-    : request.prompt!;
+  const imageInputs = (request.images || []).slice(0, 20);
+  const input = imageInputs.length
+    ? [
+        ...(request.messages || []).map(message => ({ role: message.role, content: message.content })),
+        {
+          role: 'user' as const,
+          content: [
+            { type: 'input_text' as const, text: request.prompt || 'Analyze the supplied images.' },
+            ...imageInputs.map(image => ({
+              type: 'input_image' as const,
+              image_url: image.dataUrl,
+              detail: image.detail || 'original'
+            }))
+          ]
+        }
+      ]
+    : request.messages?.length
+      ? request.messages.map(message => ({ role: message.role, content: message.content }))
+      : request.prompt!;
 
   const response = await client.responses.create({
     model: getOpenAIModel(),

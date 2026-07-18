@@ -1391,16 +1391,18 @@ export const generateAutopilotSticker = async (
   TECHNICAL RULES (DO NOT IGNORE):
   1. **SINGLE STICKER DESIGN ONLY**: Generate one clear primary subject in the center. Small supporting details named in the subject are allowed, but do not generate a sticker sheet, grid, pattern, or collection.
   2. **BACKGROUND**: SOLID BLACK HEX #000000. DO NOT USE DARK GRAY. DO NOT USE GRADIENTS. MUST BE FLAT BLACK.
+  2A. **BACKGROUND VALIDATION**: All four canvas corners and every pixel outside the white die-cut border must be the same uniform #000000. Never render a white page, gray card, checkerboard, paper texture or photographic surface behind the sticker.
   3. **BORDER**: Add one clean MEDIUM-THIN white die-cut border surrounding the object. Target a consistent border width of approximately 2.5-3.5% of the sticker's shorter dimension. It must remain visible at thumbnail size but must not look chunky, puffy, or halo-like.
   3A. **EDGE QUALITY**: The outside of the white border must be perfectly clean, continuous, and crisp. NO gray rim, NO dotted/dashed cut line, NO glow, NO texture, NO drop shadow, and NO second outline.
   4. **NO CROPPING**: The object must be floating in the center with padding on all sides.
   5. **NO CARDS**: Do NOT place the sticker on a paper card or square backing. It must be floating in void.
   6. **NATURAL OPENINGS**: Preserve openings that physically belong to the subject, such as the center of a ring, frame, hose loop, chain link, wheel, handle or scissors. Fill every intended empty opening with the exact same flat pure black (#000000) as the outer background so post-processing can make it transparent. Do not invent decorative holes or break a normally solid object.
   7. **COLOR RULE**: Except for those intentional empty openings, NEVER use pure black (#000000) inside the sticker. Use dark gray (#1A1A1A) for outlines and dark details so artwork cannot be mistaken for removable background.
+  8. **NO BLACK BLOBS**: Pure black is a removable matte color, not an artwork color. Do not place disconnected black spots, wedges, punctuation-like shapes or floating black islands anywhere inside the white border. Every pure-black interior area must be a clean physically meaningful opening bounded by the subject; otherwise render that area as normal colored artwork.
   
   ${strictConstraints}
   
-  NEGATIVE PROMPT (AVOID): ${negativeKeywords}, sticker sheet, sticker set, grid, pattern, multiple items, collection, cropping, blurry, text watermark, gray background, complex background, square crop, photo of a sticker on a table, realistic lighting on background, dark card backing, square paper behind sticker, accidental cutouts, unintended holes, broken silhouette, shadow, drop shadow, glow, oversized white border, extra-thick white outline, wide white halo, gray fringe, dotted outline, dashed cut line, textured edge.
+  NEGATIVE PROMPT (AVOID): ${negativeKeywords}, sticker sheet, sticker set, grid, pattern, multiple items, collection, cropping, blurry, text watermark, white background, gray background, complex background, square crop, photo of a sticker on a table, realistic lighting on background, dark card backing, square paper behind sticker, accidental cutouts, unintended holes, random black blobs, floating black marks, broken silhouette, shadow, drop shadow, glow, oversized white border, extra-thick white outline, wide white halo, gray fringe, dotted outline, dashed cut line, textured edge.
   `;
 
   return generateSeedreamImage(fullPrompt, useTurbo ? '1K' : '2K');

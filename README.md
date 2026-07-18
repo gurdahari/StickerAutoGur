@@ -58,9 +58,12 @@ The production server serves both the compiled React app and `/api/*` on `PORT` 
 - Downloadable sticker files never contain a baked-in drop shadow. Shadows are added only while composing marketing images.
 - Main covers and grid previews are built deterministically in browser Canvas from the completed sticker files. The image model cannot invent, redraw, or duplicate cover stickers.
 - Lifestyle mockups send up to five completed sticker PNGs to Seedream as reference images for natural placement on tablets, laptops, and journals. They render at 1K and are finalized locally at 2K; four lifestyle requests can run in parallel. If reference generation fails, the app falls back to generic scenery with clipped exact-pixel placement.
-- Preview-grid count adapts to the number of completed stickers, and the customer-facing how-to image is composed locally without another model request.
+- A 100-sticker product is delivered as five ZIPs of 20 PNGs. Original dimensions are preserved when possible; oversized batches are resized together with lossless PNG encoding to stay below 19 MB and target roughly 18–19 MB without adding filler data.
+- OpenAI selects 10–15 representative real designs for a landscape, hero-led first thumbnail; Canvas preserves the exact sticker pixels and prevents invented product art.
+- Preview-grid count adapts to the number of completed stickers, and the customer-facing four-step Etsy download/unzip/import guide is composed locally without another image-model request.
 - Niche analysis expands narrow phrases into a broader theme universe and 10–12 subject families. Direct motifs are capped while the selected visual style remains locked across the pack.
 - Cover badges and listing copy use the actual number of completed stickers, including partial test runs.
+- Listing copy follows a structured buyer-first format with an accurate file inventory, use cases, download steps, important digital-product details, and 13 validated Etsy tags.
 
 ## Configuration
 

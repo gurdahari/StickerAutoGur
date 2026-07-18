@@ -745,9 +745,9 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
 
       // WORKER QUEUE CONFIG
       // BytePlus currently allows up to 10 concurrent Seedream requests for an
-      // individual account. Keep some headroom for retries and mockup actions.
-      // Turbo renders 1K assets with 6 workers; Pro renders 2K with 4 workers.
-      const CONCURRENCY = useTurbo ? 6 : 4;
+      // individual account. Keep two slots of headroom for retries and manual
+      // actions. Turbo renders 1K assets with 8 workers; Pro uses 6 workers.
+      const CONCURRENCY = useTurbo ? 8 : 6;
       addLog(`Generating stickers with ${CONCURRENCY} parallel Seedream workers...`);
       
       await processWithQueue(stickerObjects, CONCURRENCY, async (s, index) => {
@@ -825,59 +825,58 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         { id: 'mockup_journal', type: 'journal', title: '11. Journal/Planner', url: null, status: 'pending' },
         { id: 'howto', type: 'howto', title: '12. How To Use', url: null, status: 'pending' },
       ];
-      
-      for (let i=0; i < assetsToGen.length; i++) {
-         if (stopSignal.current) break;
-         const asset = assetsToGen[i];
-         addLog(`Generating asset: ${asset.title}`);
-         try {
-            let url = "";
-            const validStickers = stickersRef.current;
-            let stickersForMockup: string[] = [];
-            
-            // LOGIC TO SLICE 100 STICKERS INTO 6 GRIDS
-            if (asset.id === 'preview_1') stickersForMockup = getStickerRange(validStickers, 0, 17);
-            else if (asset.id === 'preview_2') stickersForMockup = getStickerRange(validStickers, 17, 34);
-            else if (asset.id === 'preview_3') stickersForMockup = getStickerRange(validStickers, 34, 51);
-            else if (asset.id === 'preview_4') stickersForMockup = getStickerRange(validStickers, 51, 68);
-            else if (asset.id === 'preview_5') stickersForMockup = getStickerRange(validStickers, 68, 85);
-            else if (asset.id === 'preview_6') stickersForMockup = getStickerRange(validStickers, 85, 100);
-            
-            // LOGIC FOR MOCKUPS: USE "UNIQUE BATCH" TO AVOID REDUNDANCY
-            else if (asset.type === 'cover') stickersForMockup = getUniqueBatchForMockup(validStickers, 15); // INCREASED TO 25 for density
-            else if (asset.type === 'howto') stickersForMockup = getUniqueBatchForMockup(validStickers, 3);
-            else stickersForMockup = getUniqueBatchForMockup(validStickers, 8); // INCREASED TO 12 for variety
 
-            if (stickersForMockup.length > 0 || (asset.type.includes('preview') && validStickers.length > 0)) {
-                 // Try generating regardless of count, the grid function handles it
-                const completedStickerCount = validStickers.filter(sticker => sticker.status === 'completed' && sticker.url).length;
-                url = await generateSeedreamMockup(asset.id!, asset.type, stickersForMockup, niche!.name, completedStickerCount);
-            } else {
-                addLog(`Skipping ${asset.title} - No stickers available.`);
-                setState(prev => {
-                    const nextAssets = [...(prev.marketingAssets.length ? prev.marketingAssets : assetsToGen)];
-                    nextAssets[i] = { ...asset, status: 'error' };
-                    return { ...prev, marketingAssets: nextAssets, progress: 85 + (i * 2) };
-                });
-                continue; 
-            }
+      setState(prev => ({ ...prev, marketingAssets: assetsToGen }));
+      let finishedAssets = 0;
+      await processWithQueue(assetsToGen, 3, async (asset, i) => {
+        if (stopSignal.current) return;
+        addLog(`Generating asset: ${asset.title}`);
+        setState(prev => {
+          const nextAssets = [...prev.marketingAssets];
+          nextAssets[i] = { ...asset, status: 'generating' };
+          return { ...prev, marketingAssets: nextAssets };
+        });
 
-             setState(prev => {
-                const nextAssets = [...(prev.marketingAssets.length ? prev.marketingAssets : assetsToGen)];
-                nextAssets[i] = { ...asset, url, status: 'completed' };
-                return { ...prev, marketingAssets: nextAssets, progress: 85 + (i * 2) };
-            });
-            // Delay to allow API breathing room
-            await new Promise(r => setTimeout(r, 2000)); 
-         } catch (e: any) {
-             addLog(`Failed asset ${asset.title}. Error: ${e.message}`);
-             setState(prev => {
-                    const nextAssets = [...(prev.marketingAssets.length ? prev.marketingAssets : assetsToGen)];
-                    nextAssets[i] = { ...asset, status: 'error' };
-                    return { ...prev, marketingAssets: nextAssets };
-            });
-         }
-      }
+        try {
+          const validStickers = stickersRef.current;
+          let stickersForMockup: string[] = [];
+
+          if (asset.id === 'preview_1') stickersForMockup = getStickerRange(validStickers, 0, 17);
+          else if (asset.id === 'preview_2') stickersForMockup = getStickerRange(validStickers, 17, 34);
+          else if (asset.id === 'preview_3') stickersForMockup = getStickerRange(validStickers, 34, 51);
+          else if (asset.id === 'preview_4') stickersForMockup = getStickerRange(validStickers, 51, 68);
+          else if (asset.id === 'preview_5') stickersForMockup = getStickerRange(validStickers, 68, 85);
+          else if (asset.id === 'preview_6') stickersForMockup = getStickerRange(validStickers, 85, 100);
+          else if (asset.type === 'cover') stickersForMockup = getUniqueBatchForMockup(validStickers, 15);
+          else if (asset.type === 'howto') stickersForMockup = getUniqueBatchForMockup(validStickers, 3);
+          else stickersForMockup = getUniqueBatchForMockup(validStickers, 8);
+
+          if (!stickersForMockup.length) {
+            throw new Error('No completed stickers are available for this asset.');
+          }
+
+          const completedStickerCount = validStickers.filter(sticker => sticker.status === 'completed' && sticker.url).length;
+          const url = await generateSeedreamMockup(asset.id!, asset.type, stickersForMockup, niche!.name, completedStickerCount);
+          finishedAssets++;
+          setState(prev => {
+            const nextAssets = [...prev.marketingAssets];
+            nextAssets[i] = { ...asset, url, status: 'completed' };
+            return {
+              ...prev,
+              marketingAssets: nextAssets,
+              progress: 85 + Math.round((finishedAssets / assetsToGen.length) * 9)
+            };
+          });
+        } catch (e: any) {
+          finishedAssets++;
+          addLog(`Failed asset ${asset.title}. Error: ${e.message}`);
+          setState(prev => {
+            const nextAssets = [...prev.marketingAssets];
+            nextAssets[i] = { ...asset, status: 'error' };
+            return { ...prev, marketingAssets: nextAssets };
+          });
+        }
+      });
 
       if (stopSignal.current) throw new Error("Stopped by user");
       setState(prev => ({ ...prev, status: 'copywriting', progress: 95 }));

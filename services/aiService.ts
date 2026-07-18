@@ -338,7 +338,29 @@ const imageUrlToDataUrl = async (url: string, maxDimension = 1024): Promise<stri
   return canvas.toDataURL('image/png');
 };
 
-const finalizeGeneratedCover = async (source: string): Promise<string> => {
+const fitCoverText = (
+  context: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number,
+  maxSize: number,
+  minSize: number,
+  weight = 900
+) => {
+  let size = maxSize;
+  while (size > minSize) {
+    context.font = `${weight} ${size}px Inter, Arial Black, Arial, sans-serif`;
+    if (context.measureText(text).width <= maxWidth) break;
+    size -= 4;
+  }
+  return size;
+};
+
+const finalizeGeneratedCover = async (
+  source: string,
+  creative: CoverCreativeBrief,
+  stickerCount: number,
+  variant: number
+): Promise<string> => {
   const image = await loadCanvasImage(source);
   if (!image) throw new Error('Failed to load the full Seedream cover.');
   const canvas = document.createElement('canvas');
@@ -374,6 +396,74 @@ const finalizeGeneratedCover = async (source: string): Promise<string> => {
     canvas.width,
     canvas.height
   );
+
+  // Seedream owns the visual hero; exact typography is composed locally so a
+  // sellable cover can never contain misspellings, duplicated lines or fake copy.
+  const topShade = context.createLinearGradient(0, 0, 0, 840);
+  topShade.addColorStop(0, 'rgba(3, 7, 18, 0.94)');
+  topShade.addColorStop(0.68, 'rgba(3, 7, 18, 0.72)');
+  topShade.addColorStop(1, 'rgba(3, 7, 18, 0)');
+  context.fillStyle = topShade;
+  context.fillRect(0, 0, canvas.width, 900);
+
+  const accent = variant === 1 ? '#FB7185' : variant === 2 ? '#67E8F9' : '#FACC15';
+  const titleX = variant === 1 ? 1500 : 170;
+  const titleAlign: CanvasTextAlign = variant === 1 ? 'center' : 'left';
+  const titleMaxWidth = variant === 1 ? 2260 : 2080;
+  context.textAlign = titleAlign;
+  context.textBaseline = 'middle';
+
+  context.fillStyle = accent;
+  context.beginPath();
+  context.roundRect(variant === 1 ? 1030 : 170, 100, variant === 1 ? 940 : 760, 92, 46);
+  context.fill();
+  context.fillStyle = '#111827';
+  context.font = '900 38px Inter, Arial, sans-serif';
+  context.fillText('DIGITAL STICKER BUNDLE', variant === 1 ? 1500 : 550, 146);
+
+  const headlineSize = fitCoverText(context, creative.headline, titleMaxWidth, 176, 92);
+  context.font = `900 ${headlineSize}px Inter, Arial Black, Arial, sans-serif`;
+  context.lineWidth = 14;
+  context.strokeStyle = 'rgba(2, 6, 23, 0.92)';
+  context.strokeText(creative.headline, titleX, 350);
+  context.fillStyle = '#FFFFFF';
+  context.fillText(creative.headline, titleX, 350);
+
+  const subtitleSize = fitCoverText(context, creative.subtitle, titleMaxWidth, 62, 36, 800);
+  context.font = `800 ${subtitleSize}px Inter, Arial, sans-serif`;
+  context.fillStyle = accent;
+  context.fillText(creative.subtitle, titleX, 520);
+
+  const badgeX = variant === 1 ? 2660 : 2630;
+  const badgeY = 300;
+  context.textAlign = 'center';
+  context.shadowColor = 'rgba(0, 0, 0, 0.5)';
+  context.shadowBlur = 32;
+  context.shadowOffsetY = 16;
+  context.fillStyle = accent;
+  context.beginPath();
+  context.arc(badgeX, badgeY, 190, 0, Math.PI * 2);
+  context.fill();
+  context.shadowColor = 'transparent';
+  context.lineWidth = 14;
+  context.strokeStyle = '#FFFFFF';
+  context.stroke();
+  context.fillStyle = '#111827';
+  context.font = '900 108px Inter, Arial Black, Arial, sans-serif';
+  context.fillText(String(stickerCount), badgeX, badgeY - 22);
+  context.font = '900 38px Inter, Arial, sans-serif';
+  context.fillText('STICKERS', badgeX, badgeY + 78);
+
+  const footerWidth = 1720;
+  const footerX = (canvas.width - footerWidth) / 2;
+  context.fillStyle = 'rgba(2, 6, 23, 0.9)';
+  context.beginPath();
+  context.roundRect(footerX, 2205, footerWidth, 118, 59);
+  context.fill();
+  context.textAlign = 'center';
+  context.fillStyle = '#FFFFFF';
+  context.font = '900 44px Inter, Arial, sans-serif';
+  context.fillText('TRANSPARENT PNG  •  INSTANT DOWNLOAD', 1500, 2264);
   return canvas.toDataURL('image/jpeg', 0.95);
 };
 
@@ -430,6 +520,20 @@ const clampCoverPhrase = (value: string, maxChars: number, maxWords: number) => 
 
 const getCoverCopy = (rawNiche: string) => {
   const normalized = (rawNiche || 'Premium Sticker Collection').replace(/\s+/g, ' ').trim();
+  const lower = normalized.toLowerCase();
+  const knownMarketCopy = [
+    { match: /planner|planning|productivity|calendar|appointment|deadline|habit|routine/, title: 'PLAN YOUR DAY', subtitle: 'CALENDARS • GOALS • HABITS' },
+    { match: /nurse|nursing|medical|icu|healthcare/, title: 'NURSE LIFE', subtitle: 'SHIFTS • CARE • HUMOR' },
+    { match: /teacher|classroom|school|educator/, title: 'TEACHER LIFE', subtitle: 'CLASSROOM • PLANS • REWARDS' },
+    { match: /book|reading|reader|library|booktok/, title: 'BOOK LOVER', subtitle: 'READ • DREAM • REPEAT' },
+    { match: /fantasy|dragon|magic|romantasy/, title: 'FANTASY READER', subtitle: 'MAGIC • DRAGONS • BOOKS' },
+    { match: /forest|nature|camp|hiking|outdoor|granola/, title: 'WILD & FREE', subtitle: 'FOREST • TRAILS • ADVENTURE' },
+    { match: /dog|cat|pet|animal/, title: 'PET LOVER', subtitle: 'CUTE • PLAYFUL • LOYAL' },
+    { match: /wedding|bride|bridal|engagement/, title: 'WEDDING DAY', subtitle: 'LOVE • PLAN • CELEBRATE' },
+    { match: /anxiety|mental health|self.?care|wellness/, title: 'GENTLE REMINDERS', subtitle: 'BREATHE • REST • RESET' },
+    { match: /small business|entrepreneur|shop owner/, title: 'SMALL BIZ MAGIC', subtitle: 'PLAN • CREATE • GROW' }
+  ].find(candidate => candidate.match.test(lower));
+  if (knownMarketCopy) return knownMarketCopy;
   const parenthetical = normalized.match(/^(.*?)\s*\(([^)]+)\)\s*$/);
   const colon = !parenthetical ? normalized.match(/^([^:]+):\s*(.+)$/) : null;
   const broadSplit = !parenthetical && !colon
@@ -440,7 +544,12 @@ const getCoverCopy = (rawNiche: string) => {
     .replace(/\b(?:digital\s+)?stickers?\b/gi, '')
     .trim();
   const rawSubtitle = parenthetical?.[2] || colon?.[2] || broadSplit.slice(1).join(' • ') || 'Premium themed collection';
-  const title = clampCoverPhrase(rawTitle || normalized, 30, 4) || 'PREMIUM STICKERS';
+  const cleanTitle = (rawTitle || normalized)
+    .replace(/^(?:a|an|the)\s+/i, '')
+    .replace(/\b(?:complete|ultimate|premium|everyday|collection)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const title = clampCoverPhrase(cleanTitle || rawTitle || normalized, 30, 4) || 'STICKER FAVORITES';
   const subtitleParts = rawSubtitle
     .split(/[\/,|•]+/)
     .map(part => clampCoverPhrase(part, 16, 2))
@@ -1803,22 +1912,17 @@ export const generateSeedreamMockup = async (
         'Joyful scrapbook explosion: energetic diagonals, tactile cut-paper depth, playful scale and irresistible color.',
         'Luxury magazine campaign: sophisticated atmosphere, surprising asymmetry, rich contrast and polished visual drama.'
       ];
-      const fullCoverPrompt = `Design a scroll-stopping, finished Etsy hero thumbnail—not a catalog, dashboard or template.
+      const fullCoverPrompt = `Create the visual hero artwork for a scroll-stopping Etsy sticker-bundle cover.
 
 Creative concept: ${creative.visualConcept}
 Palette: ${creative.palette}
 Composition: ${creative.composition} ${artDirections[variant]}
-Type style: ${creative.typography}
-
-Render only this exact text:
-"${creative.headline}"
-"${creative.subtitle}"
-"${stickerCount} STICKERS"
-"DIGITAL DOWNLOAD"
 
 Use the ${coverReferenceCount} supplied stickers as the real products, each once. Preserve their artwork and white cut edges. Image 1 is the oversized hero; images 2-4 are strong anchors; the rest create a lively layered collage. No invented or duplicate stickers.
 
-Full-bleed 4:3 advertising art. Large emotional focal point, strong depth, bold niche-specific atmosphere and instant small-thumbnail readability. No three-column footer, feature table, beige corporate brochure, empty dead space, clipped text, extra words, logos or watermark. Keep text and products inside an 8% safe margin.`;
+Full-bleed 4:3 advertising art. Keep the upper 28% atmospheric, darker and visually calm for later typography; place the strongest sticker action in the middle and lower area. Large emotional focal point, dramatic depth and bold niche-specific atmosphere.
+
+ABSOLUTELY ZERO TEXT: no letters, numbers, words, captions, badges, logos, labels, watermark or fake writing. No catalog grid, footer, feature table, beige corporate brochure or empty dead space.`;
       try {
         const referenceImages = await Promise.all(
           uniqueUrls.slice(0, coverReferenceCount).map(url => imageUrlToDataUrl(url, 768))
@@ -1830,7 +1934,7 @@ Full-bleed 4:3 advertising art. Large emotional focal point, strong depth, bold 
           console.warn('2K landscape cover request was unavailable; retrying the same Seedream direction at standard landscape resolution.', highResolutionError);
           generatedCover = await generateSeedreamImage(fullCoverPrompt, '1K_LANDSCAPE', referenceImages);
         }
-        return finalizeGeneratedCover(generatedCover);
+        return finalizeGeneratedCover(generatedCover, creative, stickerCount, variant);
       } catch (error) {
         console.warn('Full Seedream cover generation failed; using the deterministic exact-pixel fallback.', error);
       }

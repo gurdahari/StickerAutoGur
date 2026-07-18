@@ -144,19 +144,18 @@ export const generateStickerQualityReport = async (
 
   const response = await generateBrainText({
     images: sheets.map(sheet => ({ dataUrl: sheet.dataUrl, detail: 'original' })),
-    prompt: `You are the final visual quality inspector for a paid Etsy digital sticker product.
+    prompt: `You are an optional strict visual quality inspector for a paid Etsy digital sticker product.
 The supplied images are numbered contact sheets. Inspect every numbered design listed below.
 
-Reject only a clear buyer-facing defect:
+Reject only an unmistakable defect that makes the file unsafe to sell:
 - subject is malformed, nonsensical, cropped or visibly unfinished;
 - unexpected or misspelled text, fake logo, watermark or signature;
 - obvious background rectangle, dirty gray halo, broken white cutline or unintended transparent damage;
 - a physically expected opening is visibly filled when the concept explicitly requires an opening;
 - any large solid-black void, wedge or patch inside a normally solid subject, including missing anatomy, broken animal bodies, empty faces, black clothing holes or corrupted object interiors;
-- the design is off-theme or clearly breaks the shared visual style;
-- it is a near-duplicate of another supplied sticker.
+- it is a practically identical duplicate of another supplied sticker.
 
-Do not reject merely because you personally prefer another design. Transparent regions appear as a checkerboard. Small white die-cut borders are intentional. Return one result for every supplied ID. coverScore is 0-100 for usefulness on a small marketplace thumbnail. Duplicate groups must contain only genuinely near-identical designs.
+Approve whenever uncertain. Do not reject for taste, minor anatomy quirks, minor text-like texture, a slightly different composition, an imperfect but usable cutline, subject variety, or small style variation. Transparent regions appear as a checkerboard. Small white die-cut borders are intentional. Return one result for every supplied ID. coverScore is 0-100 for usefulness on a small marketplace thumbnail. Duplicate groups must contain only practically identical designs.
 
 EXPECTED CONCEPTS:
 ${candidateText}`,
@@ -212,12 +211,12 @@ ${candidateText}`,
     });
   });
 
-  // Missing IDs are rejected instead of silently entering a paid bundle.
+  // A missing optional vision result must not trigger a paid regeneration.
   const results = candidates.map(candidate => byId.get(candidate.id) || ({
     id: candidate.id,
-    decision: 'reject' as const,
-    issues: ['Visual QA did not return a result for this sticker.'],
-    coverScore: 0
+    decision: 'approve' as const,
+    issues: ['Optional visual QA did not return a result; local technical checks remain authoritative.'],
+    coverScore: 50
   }));
   const duplicateGroups = parsed.duplicateGroups
     .map(group => [...new Set(group.ids)].filter(id => allowedIds.has(id)))

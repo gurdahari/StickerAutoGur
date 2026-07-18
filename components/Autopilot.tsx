@@ -809,27 +809,35 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       if (stopSignal.current) throw new Error("Stopped by user");
       setState(prev => ({ ...prev, status: 'marketing', progress: 85 }));
       addLog("Creating Mockups...");
-      
-      // EXPANDED ASSET LIST: 6 Grids + Journal Mockup + Goodnotes + Laptop + HowTo = 12 Assets
-      const assetsToGen: MarketingAsset[] = [
-        { id: 'cover', type: 'cover', title: '1. Main Cover (Dig. Download Badge)', url: null, status: 'pending' },
-        { id: 'preview_1', type: 'preview', title: '2. Grid Preview (Vol 1)', url: null, status: 'pending' },
-        { id: 'preview_2', type: 'preview', title: '3. Grid Preview (Vol 2)', url: null, status: 'pending' },
-        { id: 'preview_3', type: 'preview', title: '4. Grid Preview (Vol 3)', url: null, status: 'pending' },
-        { id: 'preview_4', type: 'preview', title: '5. Grid Preview (Vol 4)', url: null, status: 'pending' },
-        { id: 'preview_5', type: 'preview', title: '6. Grid Preview (Vol 5)', url: null, status: 'pending' },
-        { id: 'preview_6', type: 'preview', title: '7. Grid Preview (Vol 6)', url: null, status: 'pending' },
-        { id: 'mockup_goodnotes_1', type: 'goodnotes', title: '8. GoodNotes UI View', url: null, status: 'pending' },
-        { id: 'mockup_goodnotes_2', type: 'goodnotes', title: '9. GoodNotes Spread', url: null, status: 'pending' },
-        { id: 'mockup_laptop', type: 'laptop', title: '10. Laptop Skin', url: null, status: 'pending' },
-        { id: 'mockup_journal', type: 'journal', title: '11. Journal/Planner', url: null, status: 'pending' },
-        { id: 'howto', type: 'howto', title: '12. How To Use', url: null, status: 'pending' },
+
+      const availableStickerCount = stickersRef.current.filter(sticker => sticker.status === 'completed' && sticker.url).length;
+      const previewCount = Math.min(6, Math.ceil(availableStickerCount / 17));
+      const previewAssets: MarketingAsset[] = Array.from({ length: previewCount }, (_, index) => ({
+        id: `preview_${index + 1}`,
+        type: 'preview',
+        title: `Grid Preview (Vol ${index + 1})`,
+        url: null,
+        status: 'pending'
+      }));
+      const baseAssets: MarketingAsset[] = [
+        { id: 'cover', type: 'cover', title: 'Main Cover (Digital Download Badge)', url: null, status: 'pending' },
+        ...previewAssets,
+        { id: 'mockup_goodnotes_1', type: 'goodnotes', title: 'GoodNotes UI View', url: null, status: 'pending' },
+        { id: 'mockup_goodnotes_2', type: 'goodnotes', title: 'GoodNotes Spread', url: null, status: 'pending' },
+        { id: 'mockup_laptop', type: 'laptop', title: 'Laptop Skin', url: null, status: 'pending' },
+        { id: 'mockup_journal', type: 'journal', title: 'Journal/Planner', url: null, status: 'pending' },
+        { id: 'howto', type: 'howto', title: 'How To Use', url: null, status: 'pending' },
       ];
+      const assetsToGen: MarketingAsset[] = baseAssets.map((asset, index) => ({
+        ...asset,
+        title: `${index + 1}. ${asset.title}`
+      }));
 
       setState(prev => ({ ...prev, marketingAssets: assetsToGen }));
       let finishedAssets = 0;
-      await processWithQueue(assetsToGen, 3, async (asset, i) => {
+      await processWithQueue(assetsToGen, 6, async (asset, i) => {
         if (stopSignal.current) return;
+        const assetStartedAt = Date.now();
         addLog(`Generating asset: ${asset.title}`);
         setState(prev => {
           const nextAssets = [...prev.marketingAssets];
@@ -867,9 +875,15 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
               progress: 85 + Math.round((finishedAssets / assetsToGen.length) * 9)
             };
           });
+          const elapsedSeconds = Math.max(1, Math.round((Date.now() - assetStartedAt) / 1000));
+          const elapsedLabel = elapsedSeconds >= 60
+            ? `${Math.floor(elapsedSeconds / 60)}m ${elapsedSeconds % 60}s`
+            : `${elapsedSeconds}s`;
+          addLog(`Completed ${asset.title} in ${elapsedLabel}.`);
         } catch (e: any) {
           finishedAssets++;
-          addLog(`Failed asset ${asset.title}. Error: ${e.message}`);
+          const elapsedSeconds = Math.max(1, Math.round((Date.now() - assetStartedAt) / 1000));
+          addLog(`Failed asset ${asset.title} after ${elapsedSeconds}s. Error: ${e.message}`);
           setState(prev => {
             const nextAssets = [...prev.marketingAssets];
             nextAssets[i] = { ...asset, status: 'error' };

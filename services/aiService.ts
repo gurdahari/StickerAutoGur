@@ -100,6 +100,20 @@ const imageUrlToDataUrl = async (url: string): Promise<string> => {
   return canvas.toDataURL('image/png');
 };
 
+const upscaleMockupTo2K = async (source: string): Promise<string> => {
+  const image = await loadCanvasImage(source);
+  if (!image) throw new Error('Failed to load generated mockup for final rendering.');
+  const canvas = document.createElement('canvas');
+  canvas.width = 2048;
+  canvas.height = 2048;
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Canvas is unavailable for final mockup rendering.');
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = 'high';
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL('image/jpeg', 0.93);
+};
+
 const drawContainedSticker = (
   context: CanvasRenderingContext2D,
   image: HTMLImageElement,
@@ -418,6 +432,83 @@ const createHybridMockup = async (backgroundUrl: string, stickerUrls: string[], 
   context.restore();
 
   return canvas.toDataURL('image/jpeg', 0.92);
+};
+
+const createHowToComposite = async (stickerUrls: string[]): Promise<string> => {
+  const images = (await Promise.all(uniqueStickerUrls(stickerUrls).slice(0, 3).map(loadCanvasImage)))
+    .filter((image): image is HTMLImageElement => Boolean(image?.width));
+  if (!images.length) throw new Error('No valid stickers are available for the how-to image.');
+
+  const canvas = document.createElement('canvas');
+  canvas.width = 3000;
+  canvas.height = 3000;
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Canvas is unavailable for the how-to image.');
+
+  const background = context.createLinearGradient(0, 0, 3000, 3000);
+  background.addColorStop(0, '#FFF7ED');
+  background.addColorStop(0.52, '#FDF2F8');
+  background.addColorStop(1, '#ECFEFF');
+  context.fillStyle = background;
+  context.fillRect(0, 0, 3000, 3000);
+
+  context.textAlign = 'center';
+  context.textBaseline = 'middle';
+  context.fillStyle = '#172554';
+  context.font = '900 160px Inter, Arial, sans-serif';
+  context.fillText('HOW TO USE YOUR STICKERS', 1500, 245);
+  context.fillStyle = '#475569';
+  context.font = '700 66px Inter, Arial, sans-serif';
+  context.fillText('THREE QUICK STEPS • SIMPLE DIGITAL WORKFLOW', 1500, 430);
+
+  const steps = [
+    { title: 'DOWNLOAD', detail: 'Save the transparent PNG files' },
+    { title: 'IMPORT', detail: 'Open them in your favorite app' },
+    { title: 'CREATE', detail: 'Drag, resize and enjoy' }
+  ];
+  const cardWidth = 820;
+  const cardHeight = 1900;
+  const gap = 95;
+  const startX = (3000 - (cardWidth * 3 + gap * 2)) / 2;
+
+  steps.forEach((step, index) => {
+    const x = startX + index * (cardWidth + gap);
+    context.save();
+    context.shadowColor = 'rgba(30, 41, 59, 0.17)';
+    context.shadowBlur = 45;
+    context.shadowOffsetY = 24;
+    context.fillStyle = '#FFFFFF';
+    context.beginPath();
+    context.roundRect(x, 660, cardWidth, cardHeight, 70);
+    context.fill();
+    context.restore();
+
+    context.fillStyle = ['#FB7185', '#8B5CF6', '#06B6D4'][index];
+    context.beginPath();
+    context.arc(x + cardWidth / 2, 830, 92, 0, Math.PI * 2);
+    context.fill();
+    context.fillStyle = '#FFFFFF';
+    context.font = '900 88px Inter, Arial, sans-serif';
+    context.fillText(String(index + 1), x + cardWidth / 2, 830);
+
+    const image = images[index % images.length];
+    drawContainedSticker(context, image, x + cardWidth / 2, 1480, 650, 820, index === 1 ? 0.04 : -0.035, 0.65);
+
+    context.fillStyle = '#172554';
+    context.font = '900 82px Inter, Arial, sans-serif';
+    context.fillText(step.title, x + cardWidth / 2, 2180);
+    context.fillStyle = '#64748B';
+    context.font = '600 48px Inter, Arial, sans-serif';
+    const words = step.detail.split(' ');
+    const midpoint = Math.ceil(words.length / 2);
+    context.fillText(words.slice(0, midpoint).join(' '), x + cardWidth / 2, 2310);
+    context.fillText(words.slice(midpoint).join(' '), x + cardWidth / 2, 2380);
+  });
+
+  context.fillStyle = '#172554';
+  context.font = '800 64px Inter, Arial, sans-serif';
+  context.fillText('PERFECT FOR DIGITAL PLANNERS, NOTES & CREATIVE PROJECTS', 1500, 2780);
+  return canvas.toDataURL('image/jpeg', 0.93);
 };
 
 // --- GRID PREVIEW ---
@@ -856,6 +947,7 @@ export const generateSeedreamMockup = async (
     if (!uniqueUrls.length) throw new Error('No unique stickers are available for this marketing asset.');
     if (type === 'preview' || id.includes('preview')) return createGridComposite(uniqueUrls);
     if (type === 'cover') return createCoverComposite(uniqueUrls, niche, totalStickerCount);
+    if (type === 'howto' || id.includes('howto')) return createHowToComposite(uniqueUrls);
 
     const placement = type === 'goodnotes' || id.includes('goodnotes')
       ? id.endsWith('_2')
@@ -870,8 +962,9 @@ export const generateSeedreamMockup = async (
     const referencePrompt = `Use every supplied reference image as a finished sticker design. Create ${placement}. Place the supplied sticker designs naturally and professionally on the visible product surface. Preserve each reference design's subject, colors, line work, proportions, spelling, and white die-cut border as closely as possible. Keep every placed sticker fully inside the laptop, screen, page, or product boundary with comfortable margin; no sticker may float outside or be cropped. Use each supplied reference once. Do not invent, redraw, merge, replace, or add any sticker design. Do not add headings, captions, badges, labels, logos, watermarks, marketing copy, or extra readable text. The result must look like convincing commercial Etsy product photography, square composition, soft natural light, realistic scale and shadows.`;
 
     try {
-      const referenceImages = await Promise.all(uniqueUrls.slice(0, 8).map(imageUrlToDataUrl));
-      return await generateSeedreamImage(referencePrompt, '2K', referenceImages);
+      const referenceImages = await Promise.all(uniqueUrls.slice(0, 5).map(imageUrlToDataUrl));
+      const generatedMockup = await generateSeedreamImage(referencePrompt, '1K', referenceImages);
+      return await upscaleMockupTo2K(generatedMockup);
     } catch (e: any) {
       console.warn('Reference-based Seedream mockup failed; using the clipped exact-pixel fallback.', e);
     }

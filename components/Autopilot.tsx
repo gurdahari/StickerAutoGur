@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { AutopilotState, NicheIdea, StylePreset, Sticker, MarketingAsset, TrendResult, DiscoveredTrend, NicheVisualAnalysis, ProductionRunMode, QualityReport } from '../types';
 import { NICHE_IDEAS, STYLE_PRESETS } from '../data/presets';
 import { ensureProvidersConfigured, generateStickerPrompts, generateAutopilotSticker, generateAutopilotListing, generateSeedreamMockup, findViralNiche, getTrendAnalysis, discoverTopTrends, analyzeNicheVisuals, selectCoverStickerIds, assessNicheForProduction, generateReplacementStickerPrompts, createListingPreviewVideo } from '../services/aiService';
-import { expectsTransparentOpening, processStickerImage } from '../services/stickerProcessing';
+import { processStickerImage } from '../services/stickerProcessing';
 import { findVisualDuplicateGroups, inspectStickerLocally } from '../services/qualityControl';
 import { clearRunCheckpoint, loadRunCheckpoint, saveRunCheckpointMeta, saveStickerCheckpoint, saveStickerCheckpoints, type RunCheckpointMeta } from '../services/runPersistence';
 import { Play, Pause, RefreshCw, CheckCircle, Download, FileText, Image as ImageIcon, Box, Archive, Zap, Gauge, Copy, FastForward, RotateCcw, Beaker, DollarSign, AlertCircle, Scissors, Eye, Globe, Search, ExternalLink, X, ArrowRight, BarChart3, Plus, Palette, ShoppingBag, Loader2, Wand2, Laptop, Tablet, Grid, BookOpen, Layers, ShieldCheck, Save, Video } from 'lucide-react';
@@ -300,6 +300,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
   const turboModeRef = useRef(useTurbo);
   const seedreamWorkerLimitRef = useRef(10);
   const riskOverrideRef = useRef(allowRiskyNiche);
+  const replacementInFlightRef = useRef<Set<number>>(new Set());
 
   const targetStickerCount = runMode === 'production' ? PRODUCTION_STICKER_COUNT : TEST_STICKER_COUNT;
 
@@ -945,13 +946,26 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
 
   const handleRegenerateSticker = async (stickerId: number) => {
       if (!state.currentStyle || !state.currentNiche) return;
+      if (!['completed', 'error', 'paused'].includes(state.status)) {
+          addLog(`Manual replacement for Sticker #${stickerId} was blocked while the production pipeline is active.`);
+          return;
+      }
+      if (replacementInFlightRef.current.has(stickerId)) {
+          addLog(`Sticker #${stickerId} already has a replacement request in progress.`);
+          return;
+      }
+      const confirmed = window.confirm(
+        `Replace Sticker #${stickerId}?\n\nThis permanently changes the concept and can use up to two paid Seedream image calls. Use the purple repair button instead when only transparency needs fixing.`
+      );
+      if (!confirmed) return;
       
       const stickerIndex = state.stickers.findIndex(s => s.id === stickerId);
       if (stickerIndex === -1) return;
 
       const sticker = state.stickers[stickerIndex];
       const newRegenCount = (sticker.regenCount || 0) + 1;
-      addLog(`Replacing defective Sticker #${stickerId} with a fresh concept (Attempt ${newRegenCount})...`);
+      replacementInFlightRef.current.add(stickerId);
+      addLog(`Paid manual replacement confirmed for Sticker #${stickerId} (Attempt ${newRegenCount})...`);
 
       setState(prev => {
           const newStickers = [...prev.stickers];
@@ -1039,19 +1053,20 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
               newStickers[stickerIndex] = { ...sticker, status: sticker.url ? 'completed' : 'error', regenCount: newRegenCount };
               return { ...prev, stickers: newStickers };
           });
+      } finally {
+          replacementInFlightRef.current.delete(stickerId);
       }
   };
 
   const handleRepairStickerTransparency = async (stickerId: number) => {
+      if (!['completed', 'error', 'paused'].includes(state.status)) {
+          addLog(`Transparency repair for Sticker #${stickerId} was blocked while the production pipeline is active.`);
+          return;
+      }
       const stickerIndex = stickersRef.current.findIndex(sticker => sticker.id === stickerId);
       if (stickerIndex === -1) return;
       const sticker = stickersRef.current[stickerIndex];
       if (!sticker.url || !sticker.blob) return;
-
-      if (!expectsTransparentOpening(sticker.prompt)) {
-          addLog(`Sticker #${stickerId} is a solid-subject concept. Local carving was blocked; use Replace so black model corruption is not turned into a fake hole.`);
-          return;
-      }
 
       addLog(`Repairing transparent openings for Sticker #${stickerId} locally...`);
       setState(prev => {
@@ -1062,7 +1077,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       });
 
       try {
-          const processedBlob = await processStickerImage(sticker.url, sticker.prompt);
+          const processedBlob = await processStickerImage(sticker.url, sticker.prompt, true);
           const finalUrl = URL.createObjectURL(processedBlob);
           const repairedSticker = { ...sticker, url: finalUrl, blob: processedBlob, status: 'completed' as const, qaStatus: 'pending' as const, qaIssues: [], qaScore: undefined, perceptualHash: undefined };
 
@@ -1181,7 +1196,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
      if (valid.length <= count) return valid.map(sticker => sticker.url!);
 
      try {
-       addLog(`Choosing ${count} strongest real stickers for the main thumbnail...`);
+       addLog(`Choosing ${count} strongest existing stickers for the main thumbnail (selection only; no images will be replaced)...`);
        const selectedIds = await selectCoverStickerIds(
          valid.map(sticker => ({ id: sticker.id, prompt: sticker.prompt })),
          count
@@ -2284,15 +2299,17 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
                              <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
                                 <button 
                                     onClick={() => handleRegenerateSticker(s.id)}
-                                    className="bg-indigo-600 hover:bg-indigo-500 text-white p-2 rounded-full shadow-lg transform hover:scale-110 transition-all"
-                                    title="Replace defect with a fresh concept"
+                                    disabled={!['completed', 'error', 'paused'].includes(state.status)}
+                                    className="bg-indigo-600 hover:bg-indigo-500 text-white p-2 rounded-full shadow-lg transform hover:scale-110 transition-all disabled:opacity-35 disabled:cursor-not-allowed disabled:hover:scale-100"
+                                    title="Paid manual replacement — asks for confirmation and can use up to two Seedream calls"
                                 >
                                     <RefreshCw className="w-4 h-4" />
                                 </button>
                                 <button
                                     onClick={() => handleRepairStickerTransparency(s.id)}
-                                    className="bg-fuchsia-600 hover:bg-fuchsia-500 text-white p-2 rounded-full shadow-lg transform hover:scale-110 transition-all"
-                                    title="Repair a physically expected transparent opening"
+                                    disabled={!['completed', 'error', 'paused'].includes(state.status)}
+                                    className="bg-fuchsia-600 hover:bg-fuchsia-500 text-white p-2 rounded-full shadow-lg transform hover:scale-110 transition-all disabled:opacity-35 disabled:cursor-not-allowed disabled:hover:scale-100"
+                                    title="Free local transparency and black-matte-hole repair"
                                 >
                                     <Wand2 className="w-4 h-4" />
                                 </button>

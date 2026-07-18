@@ -52,6 +52,7 @@ export interface Sticker {
   qaScore?: number;
   perceptualHash?: string;
   replacementCount?: number;
+  manuallyAccepted?: boolean;
 }
 
 export type ProductionRunMode = 'production' | 'test';
@@ -72,6 +73,7 @@ export interface QualityReport {
   rejected: number;
   duplicateGroups: number[][];
   generatedAt: string;
+  manualOverrideCount?: number;
 }
 
 export interface ProductionMetrics {

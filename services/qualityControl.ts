@@ -1,5 +1,6 @@
 import type { Sticker, StickerQaMetrics } from '../types';
 import type { QaContactSheetInput } from './aiService';
+import { expectsTransparentOpening } from './stickerProcessing';
 
 export interface LocalStickerQaResult {
   id: number;
@@ -61,6 +62,72 @@ export const hammingDistance = (left: string, right: string) => {
   return distance;
 };
 
+const measureLargestSolidBlackComponent = (
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  artworkPixels: number
+) => {
+  const pixelCount = width * height;
+  const visited = new Uint8Array(pixelCount);
+  const queue = new Int32Array(pixelCount);
+  const minimumSpan = Math.max(8, Math.round(Math.min(width, height) * 0.025));
+  let largestDenseComponent = 0;
+
+  const isSolidBlack = (position: number) => {
+    const index = position * 4;
+    return data[index + 3] >= 220
+      && data[index] <= 12
+      && data[index + 1] <= 12
+      && data[index + 2] <= 12;
+  };
+
+  for (let seed = 0; seed < pixelCount; seed++) {
+    if (visited[seed] || !isSolidBlack(seed)) continue;
+    let start = 0;
+    let end = 0;
+    let minX = width;
+    let minY = height;
+    let maxX = -1;
+    let maxY = -1;
+    visited[seed] = 1;
+    queue[end++] = seed;
+    const enqueue = (neighbour: number) => {
+      if (visited[neighbour] || !isSolidBlack(neighbour)) return;
+      visited[neighbour] = 1;
+      queue[end++] = neighbour;
+    };
+
+    while (start < end) {
+      const position = queue[start++];
+      const x = position % width;
+      const y = Math.floor(position / width);
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+
+      if (x > 0) enqueue(position - 1);
+      if (x + 1 < width) enqueue(position + 1);
+      if (y > 0) enqueue(position - width);
+      if (y + 1 < height) enqueue(position + width);
+    }
+
+    const componentWidth = maxX - minX + 1;
+    const componentHeight = maxY - minY + 1;
+    const density = end / Math.max(1, componentWidth * componentHeight);
+    if (
+      Math.min(componentWidth, componentHeight) >= minimumSpan
+      && density >= 0.28
+      && end > largestDenseComponent
+    ) {
+      largestDenseComponent = end;
+    }
+  }
+
+  return largestDenseComponent / Math.max(1, artworkPixels);
+};
+
 export const inspectStickerLocally = async (sticker: Sticker): Promise<LocalStickerQaResult> => {
   if (!sticker.blob || sticker.blob.size === 0) {
     throw new Error(`Sticker #${sticker.id} has no PNG data.`);
@@ -98,6 +165,7 @@ export const inspectStickerLocally = async (sticker: Sticker): Promise<LocalStic
     transparentRatio: transparent / Math.max(1, pixelCount),
     artworkRatio: artwork / Math.max(1, pixelCount),
     softAlphaRatio: softAlpha / Math.max(1, artwork),
+    largestSolidBlackRatio: measureLargestSolidBlackComponent(data, image.width, image.height, artwork),
     touchesCanvasEdge
   };
   const issues: string[] = [];
@@ -107,6 +175,16 @@ export const inspectStickerLocally = async (sticker: Sticker): Promise<LocalStic
   if (metrics.artworkRatio < 0.035) issues.push('Artwork occupies too little of the exported canvas.');
   if (metrics.artworkRatio > 0.97) issues.push('Artwork fills the canvas and may contain an unremoved background.');
   if (metrics.softAlphaRatio > 0.045) issues.push('Excess semi-transparent pixels may create a visible halo.');
+  const subject = sticker.prompt.match(/SUBJECT:\s*([^|]+)/i)?.[1] || sticker.prompt;
+  const explicitlyBlackSubject = /\b(silhouette|solid black|black cat|black bear|black dog|black raven|black crow|black bat|black ink|vinyl record|tire|shadow figure)\b/i.test(subject);
+  const blackRegionLimit = expectsTransparentOpening(sticker.prompt)
+    ? 0.008
+    : explicitlyBlackSubject
+      ? 0.05
+      : 0.018;
+  if (metrics.largestSolidBlackRatio > blackRegionLimit) {
+    issues.push('Large solid-black interior region may be an unremoved opening or a Seedream artwork hallucination.');
+  }
   if (touchesCanvasEdge) issues.push('Artwork touches the canvas edge and may be cropped.');
 
   return {

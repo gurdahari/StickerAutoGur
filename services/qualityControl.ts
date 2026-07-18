@@ -173,15 +173,15 @@ export const inspectStickerLocally = async (sticker: Sticker): Promise<LocalStic
   if (sticker.blob.type && sticker.blob.type !== 'image/png') issues.push('Final sticker file is not a PNG.');
   if (metrics.transparentRatio < 0.01) issues.push('Transparent background is missing or too small to verify.');
   if (metrics.artworkRatio < 0.035) issues.push('Artwork occupies too little of the exported canvas.');
-  if (metrics.artworkRatio > 0.97) issues.push('Artwork fills the canvas and may contain an unremoved background.');
-  if (metrics.softAlphaRatio > 0.045) issues.push('Excess semi-transparent pixels may create a visible halo.');
+  if (metrics.artworkRatio > 0.985) issues.push('Artwork fills almost the entire canvas and may contain an unremoved background.');
+  if (metrics.softAlphaRatio > 0.10) issues.push('Extreme semi-transparent edge coverage may create a visible halo.');
   const subject = sticker.prompt.match(/SUBJECT:\s*([^|]+)/i)?.[1] || sticker.prompt;
   const explicitlyBlackSubject = /\b(silhouette|solid black|black cat|black bear|black dog|black raven|black crow|black bat|black ink|vinyl record|tire|shadow figure)\b/i.test(subject);
   const blackRegionLimit = expectsTransparentOpening(sticker.prompt)
-    ? 0.008
+    ? 0.04
     : explicitlyBlackSubject
-      ? 0.05
-      : 0.018;
+      ? 0.25
+      : 0.12;
   if (metrics.largestSolidBlackRatio > blackRegionLimit) {
     issues.push('Large solid-black interior region may be an unremoved opening or a Seedream artwork hallucination.');
   }

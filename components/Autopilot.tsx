@@ -1267,7 +1267,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
            else if (asset.type === 'howto') stickersForMockup = getUniqueBatchForMockup(validStickers, 4);
            else stickersForMockup = getUniqueBatchForMockup(validStickers, 8); 
 
-          if (['goodnotes', 'laptop', 'journal', 'lifestyle'].includes(asset.type)) {
+          if (['cover', 'goodnotes', 'laptop', 'journal', 'lifestyle'].includes(asset.type)) {
             updateMetrics({ seedreamMockupRequests: metricsRef.current.seedreamMockupRequests + 1 });
           }
           const url = await generateSeedreamMockup(
@@ -1434,8 +1434,8 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
     }));
     const baseAssets: MarketingAsset[] = [
       { id: 'cover_a', type: 'cover', title: 'Main Cover A (Seedream Art-Directed Hero)', url: null, status: 'pending' },
-      { id: 'cover_b', type: 'cover', title: 'Main Cover B (Editorial)', url: null, status: 'pending' },
-      { id: 'cover_c', type: 'cover', title: 'Main Cover C (Orbit Layout)', url: null, status: 'pending' },
+      { id: 'cover_b', type: 'cover', title: 'Main Cover B (Boutique Collage)', url: null, status: 'pending' },
+      { id: 'cover_c', type: 'cover', title: 'Main Cover C (Premium Catalog)', url: null, status: 'pending' },
       { id: 'included', type: 'included', title: 'What You Receive', url: null, status: 'pending' },
       { id: 'quality_proof', type: 'closeup', title: 'Transparent Edge Quality Proof', url: null, status: 'pending' },
       ...previewAssets,
@@ -1463,7 +1463,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       else if (asset.type === 'howto') urls = getUniqueBatchForMockup(valid, 4);
       else urls = getUniqueBatchForMockup(valid, 8);
       try {
-        if (['goodnotes', 'laptop', 'journal', 'lifestyle'].includes(asset.type)) {
+        if (['cover', 'goodnotes', 'laptop', 'journal', 'lifestyle'].includes(asset.type)) {
           updateMetrics({ seedreamMockupRequests: metricsRef.current.seedreamMockupRequests + 1 });
         }
         const url = await generateSeedreamMockup(asset.id!, asset.type, urls, niche.name, targetCount);
@@ -1805,8 +1805,8 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       }));
       const baseAssets: MarketingAsset[] = [
         { id: 'cover_a', type: 'cover', title: 'Main Cover A (Seedream Art-Directed Hero)', url: null, status: 'pending' },
-        { id: 'cover_b', type: 'cover', title: 'Main Cover B (Editorial)', url: null, status: 'pending' },
-        { id: 'cover_c', type: 'cover', title: 'Main Cover C (Orbit Layout)', url: null, status: 'pending' },
+        { id: 'cover_b', type: 'cover', title: 'Main Cover B (Boutique Collage)', url: null, status: 'pending' },
+        { id: 'cover_c', type: 'cover', title: 'Main Cover C (Premium Catalog)', url: null, status: 'pending' },
         { id: 'included', type: 'included', title: 'What You Receive', url: null, status: 'pending' },
         { id: 'quality_proof', type: 'closeup', title: 'Transparent Edge Quality Proof', url: null, status: 'pending' },
         ...previewAssets,
@@ -1860,7 +1860,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
           }
 
           const completedStickerCount = validStickers.filter(sticker => sticker.status === 'completed' && sticker.url).length;
-          if (['goodnotes', 'laptop', 'journal', 'lifestyle'].includes(asset.type)) {
+          if (['cover', 'goodnotes', 'laptop', 'journal', 'lifestyle'].includes(asset.type)) {
             updateMetrics({ seedreamMockupRequests: metricsRef.current.seedreamMockupRequests + 1 });
           }
           const url = await generateSeedreamMockup(asset.id!, asset.type, stickersForMockup, niche!.name, completedStickerCount);

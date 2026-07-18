@@ -47,18 +47,70 @@ export interface Sticker {
   status: 'pending' | 'generating' | 'completed' | 'error';
   blob?: Blob; // JPG/PNG blob
   regenCount?: number; // Track how many times this specific sticker has been retried
+  qaStatus?: 'pending' | 'approved' | 'rejected';
+  qaIssues?: string[];
+  qaScore?: number;
+  perceptualHash?: string;
+  replacementCount?: number;
+}
+
+export type ProductionRunMode = 'production' | 'test';
+
+export interface StickerQaMetrics {
+  width: number;
+  height: number;
+  transparentRatio: number;
+  artworkRatio: number;
+  softAlphaRatio: number;
+  touchesCanvasEdge: boolean;
+}
+
+export interface QualityReport {
+  checked: number;
+  approved: number;
+  rejected: number;
+  duplicateGroups: number[][];
+  generatedAt: string;
+}
+
+export interface ProductionMetrics {
+  seedreamRequests: number;
+  seedreamMockupRequests: number;
+  replacementImages: number;
+  rejectedImages: number;
+  qaRuns: number;
+  rateLimitEvents: number;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+export interface NichePreflight {
+  demandScore: number;
+  variationScore: number;
+  saturation: 'low' | 'medium' | 'high';
+  ipRisk: 'low' | 'medium' | 'high';
+  recommendation: 'proceed' | 'review' | 'block';
+  summary: string;
+  reasons: string[];
+  sources: { title: string; uri: string }[];
 }
 
 export interface AutopilotState {
-  status: 'idle' | 'researching' | 'generating_stickers' | 'zipping' | 'marketing' | 'copywriting' | 'completed' | 'error';
+  status: 'idle' | 'preflight' | 'researching' | 'generating_stickers' | 'quality_control' | 'zipping' | 'marketing' | 'copywriting' | 'paused' | 'completed' | 'error';
   currentNiche: NicheIdea | null;
   currentStyle: StylePreset | null;
+  runMode: ProductionRunMode;
+  targetCount: number;
   progress: number;
   stickers: Sticker[];
   zips: { name: string; blob: Blob }[];
   marketingAssets: MarketingAsset[];
   listing: GeneratedListing | null;
   logs: string[];
+  qualityReport: QualityReport | null;
+  metrics: ProductionMetrics;
+  preflight: NichePreflight | null;
+  checkpointUpdatedAt: string | null;
 }
 
 export interface MarketingAsset {
@@ -67,6 +119,8 @@ export interface MarketingAsset {
   title: string;
   url: string | null;
   status: 'pending' | 'generating' | 'completed' | 'error';
+  format?: 'image' | 'video';
+  mimeType?: string;
 }
 
 export interface ChatMessage {

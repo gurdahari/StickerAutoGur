@@ -48,7 +48,7 @@ const estimateBackground = (data: Uint8ClampedArray, width: number, height: numb
 // Only concepts with a real physical opening are eligible for enclosed-matte
 // removal. A large black patch on an animal or another solid subject is model
 // corruption and must be rejected/replaced, never carved into a new hole.
-export const expectsTransparentOpening = (itemPrompt = '') => /\b(frame|window|tube|hose|ring|hoop|loop|coil|chain|link|scissors|glasses|eyeglasses|stethoscope|wheel|tire|bracelet|necklace|keyring|carabiner|handle|mug|cup|teapot|basket|bag|bucket|padlock|lock|keyhole|door|doorway|arch|archway|tunnel|portal|tent|teepee|tipi|canopy|hood|helmet|mask|visor|cave|wreath|donut|doughnut|opening|cutout|negative space)\b/i.test(itemPrompt);
+export const expectsTransparentOpening = (itemPrompt = '') => /\b(frame|window|tube|tubing|pipe|hose|ring|hoop|loop|coil|chain|link|scissors|glasses|eyeglasses|stethoscope|wheel|tire|bracelet|necklace|keyring|carabiner|handle|mug|cup|teapot|bottle|flask|vial|beaker|cauldron|kettle|apparatus|alembic|retort|alchemy|laboratory|basket|bag|bucket|padlock|lock|keyhole|door|doorway|arch|archway|tunnel|portal|tent|teepee|tipi|canopy|hood|helmet|mask|visor|cave|wreath|donut|doughnut|opening|cutout|negative space)\b/i.test(itemPrompt);
 
 /**
  * Turns Seedream's flat matte background into a clean transparent PNG.
@@ -56,7 +56,11 @@ export const expectsTransparentOpening = (itemPrompt = '') => /\b(frame|window|t
  * only solid, background-colored enclosed regions that are large/dense enough
  * to be genuine openings rather than dark illustration details.
  */
-export const processStickerImage = async (source: string, itemPrompt = ''): Promise<Blob> => {
+export const processStickerImage = async (
+  source: string,
+  itemPrompt = '',
+  forceOpeningRepair = false
+): Promise<Blob> => {
   const image = await loadImage(source);
   const workingCanvas = document.createElement('canvas');
   workingCanvas.width = image.width;
@@ -122,9 +126,11 @@ export const processStickerImage = async (source: string, itemPrompt = ''): Prom
   // similar enclosed opening. Detect those separately using a strict matte-
   // color component test. The high density/core-ratio requirements protect
   // black outlines, lettering, eyes and textured dark artwork.
-  const expectsNaturalOpening = expectsTransparentOpening(itemPrompt);
+  const expectsNaturalOpening = forceOpeningRepair || expectsTransparentOpening(itemPrompt);
   const holeSeedTolerance = backgroundLuma < 70 ? 24 : 20;
   const holeGrowTolerance = backgroundLuma < 70 ? 80 : 58;
+  const blackHoleSeedLimit = 16;
+  const blackHoleGrowLimit = 34;
   const holeVisited = new Uint8Array(pixelCount);
   const minimumHoleArea = Math.max(
     expectsNaturalOpening ? 220 : 1200,
@@ -135,10 +141,23 @@ export const processStickerImage = async (source: string, itemPrompt = ''): Prom
     Math.round(Math.min(width, height) * (expectsNaturalOpening ? 0.01 : 0.025))
   );
 
+  const maximumFallbackBlackHoleArea = Math.round(pixelCount * 0.10);
+  const maximumChannel = (pixelIndex: number) => Math.max(
+    data[pixelIndex],
+    data[pixelIndex + 1],
+    data[pixelIndex + 2]
+  );
+  const isHoleSeed = (pixelIndex: number) =>
+    distanceFromBackground(pixelIndex) <= holeSeedTolerance
+    || (expectsNaturalOpening && maximumChannel(pixelIndex) <= blackHoleSeedLimit);
+  const isHoleGrowPixel = (pixelIndex: number) =>
+    distanceFromBackground(pixelIndex) <= holeGrowTolerance
+    || (expectsNaturalOpening && maximumChannel(pixelIndex) <= blackHoleGrowLimit);
+
   const queueHolePixel = (position: number) => {
     if (holeVisited[position]) return;
     const pixelIndex = position * 4;
-    if (data[pixelIndex + 3] === 0 || distanceFromBackground(pixelIndex) > holeGrowTolerance) return;
+    if (data[pixelIndex + 3] === 0 || !isHoleGrowPixel(pixelIndex)) return;
     holeVisited[position] = 1;
     queue[queueEnd++] = position;
   };
@@ -148,13 +167,14 @@ export const processStickerImage = async (source: string, itemPrompt = ''): Prom
     if (
       holeVisited[seed]
       || data[seedIndex + 3] === 0
-      || distanceFromBackground(seedIndex) > holeSeedTolerance
+      || !isHoleSeed(seedIndex)
     ) continue;
 
     queueStart = 0;
     queueEnd = 0;
     queueHolePixel(seed);
-    let corePixels = 0;
+    let backgroundCorePixels = 0;
+    let blackCorePixels = 0;
     let minHoleX = width;
     let minHoleY = height;
     let maxHoleX = -1;
@@ -166,7 +186,8 @@ export const processStickerImage = async (source: string, itemPrompt = ''): Prom
       const x = position % width;
       const y = Math.floor(position / width);
       const pixelIndex = position * 4;
-      if (distanceFromBackground(pixelIndex) <= holeSeedTolerance) corePixels++;
+      if (distanceFromBackground(pixelIndex) <= holeSeedTolerance) backgroundCorePixels++;
+      if (maximumChannel(pixelIndex) <= blackHoleSeedLimit) blackCorePixels++;
       minHoleX = Math.min(minHoleX, x);
       minHoleY = Math.min(minHoleY, y);
       maxHoleX = Math.max(maxHoleX, x);
@@ -183,13 +204,21 @@ export const processStickerImage = async (source: string, itemPrompt = ''): Prom
     const componentWidth = maxHoleX - minHoleX + 1;
     const componentHeight = maxHoleY - minHoleY + 1;
     const density = componentArea / Math.max(1, componentWidth * componentHeight);
-    const coreRatio = corePixels / Math.max(1, componentArea);
+    const backgroundCoreRatio = backgroundCorePixels / Math.max(1, componentArea);
+    const blackCoreRatio = blackCorePixels / Math.max(1, componentArea);
+    // Seedream occasionally obeys the instruction to render enclosed openings
+    // as pure black but ignores the requested black outer matte and renders it
+    // white. In that case, accept only compact, overwhelmingly pure-black
+    // components and cap their size so textured black artwork is preserved.
+    const usesFallbackBlackMatte = backgroundCoreRatio < 0.35 && blackCoreRatio >= 0.82;
+    const componentLooksLikeMatte = usesFallbackBlackMatte
+      ? componentArea <= maximumFallbackBlackHoleArea && density >= 0.52 && blackCoreRatio >= 0.82
+      : density >= 0.45 && backgroundCoreRatio >= 0.72;
     const isConfidentHole = expectsNaturalOpening
       && !touchesCanvasEdge
       && componentArea >= minimumHoleArea
       && Math.min(componentWidth, componentHeight) >= minimumHoleSpan
-      && density >= (expectsNaturalOpening ? 0.45 : 0.62)
-      && coreRatio >= (expectsNaturalOpening ? 0.72 : 0.88);
+      && componentLooksLikeMatte;
 
     if (isConfidentHole) {
       for (let index = 0; index < queueEnd; index++) {

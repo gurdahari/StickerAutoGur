@@ -1,10 +1,12 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { AutopilotState, NicheIdea, StylePreset, Sticker, MarketingAsset, TrendResult, DiscoveredTrend, NicheVisualAnalysis } from '../types';
+import { AutopilotState, NicheIdea, StylePreset, Sticker, MarketingAsset, TrendResult, DiscoveredTrend, NicheVisualAnalysis, ProductionRunMode, QualityReport } from '../types';
 import { NICHE_IDEAS, STYLE_PRESETS } from '../data/presets';
-import { ensureProvidersConfigured, generateStickerPrompts, generateAutopilotSticker, generateAutopilotListing, generateSeedreamMockup, findViralNiche, getTrendAnalysis, discoverTopTrends, analyzeNicheVisuals, selectCoverStickerIds } from '../services/aiService';
+import { ensureProvidersConfigured, generateStickerPrompts, generateAutopilotSticker, generateAutopilotListing, generateSeedreamMockup, findViralNiche, getTrendAnalysis, discoverTopTrends, analyzeNicheVisuals, selectCoverStickerIds, assessNicheForProduction, generateReplacementStickerPrompts, generateStickerQualityReport, createListingPreviewVideo } from '../services/aiService';
 import { processStickerImage } from '../services/stickerProcessing';
-import { Play, Pause, RefreshCw, CheckCircle, Download, FileText, Image as ImageIcon, Box, Archive, Zap, Gauge, Copy, FastForward, RotateCcw, Beaker, DollarSign, AlertCircle, Scissors, Eye, Globe, Search, ExternalLink, X, ArrowRight, BarChart3, Plus, Palette, ShoppingBag, Loader2, Wand2, Laptop, Tablet, Grid, BookOpen, Layers } from 'lucide-react';
+import { createQaContactSheets, findVisualDuplicateGroups, inspectStickerLocally } from '../services/qualityControl';
+import { clearRunCheckpoint, loadRunCheckpoint, saveRunCheckpointMeta, saveStickerCheckpoint, saveStickerCheckpoints, type RunCheckpointMeta } from '../services/runPersistence';
+import { Play, Pause, RefreshCw, CheckCircle, Download, FileText, Image as ImageIcon, Box, Archive, Zap, Gauge, Copy, FastForward, RotateCcw, Beaker, DollarSign, AlertCircle, Scissors, Eye, Globe, Search, ExternalLink, X, ArrowRight, BarChart3, Plus, Palette, ShoppingBag, Loader2, Wand2, Laptop, Tablet, Grid, BookOpen, Layers, ShieldCheck, Save, Video } from 'lucide-react';
 import JSZip from 'jszip';
 
 // --- SILENT AUDIO KEEP ALIVE ---
@@ -31,6 +33,10 @@ const dataURLToBlob = (dataURL: string): Blob => {
 
 const ETSY_ZIP_TARGET_BYTES = 18_600_000;
 const ETSY_ZIP_MAX_BYTES = 19_000_000;
+const PRODUCTION_STICKER_COUNT = 100;
+const TEST_STICKER_COUNT = 10;
+const PRODUCTION_REPLACEMENT_BUDGET = 25;
+const TEST_REPLACEMENT_BUDGET = 5;
 
 const formatFileSizeMb = (bytes: number) => `${(bytes / 1_000_000).toFixed(1)} MB`;
 
@@ -69,17 +75,77 @@ const resizePngBlob = async (blob: Blob, scale: number): Promise<Blob> => {
   });
 };
 
+const stickerSubjectSlug = (prompt: string, fallback: string) => {
+  const subject = prompt.match(/SUBJECT:\s*([^|]+)/i)?.[1] || fallback;
+  return subject
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 54) || fallback;
+};
+
+const sha256Hex = async (blob: Blob) => {
+  const digest = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
+  return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+};
+
+const createBuyerGuide = (nicheName: string, stickerCount: number) => `START HERE — ${nicheName}
+
+WHAT YOU RECEIVED
+- ${stickerCount} individual transparent PNG sticker files.
+- ${Math.ceil(stickerCount / 20)} ZIP download${Math.ceil(stickerCount / 20) === 1 ? '' : 's'} with up to 20 PNG files in each ZIP.
+- Every PNG is a separate design that can be moved and resized independently.
+
+HOW TO DOWNLOAD FROM ETSY
+1. Sign in to Etsy.com in a web browser.
+2. Open Account > Purchases and Reviews.
+3. Select Download Files beside your order.
+4. Save all five ZIP files. The Etsy mobile app may not download digital files, so use a browser or computer if needed.
+
+HOW TO OPEN THE FILES
+1. Extract or unzip every ZIP file.
+2. Open your planner, notes, presentation, design or creative app.
+3. Import the individual PNG you want to use.
+4. Drag, resize and arrange it in your project.
+
+IMPORTANT
+- This is a digital product; no physical item is shipped.
+- Screen colors can vary slightly.
+- Preview arrangements, devices and desk props are not included as separate files.
+- Do not resell, share, redistribute or claim the original PNG files as your own.
+`;
+
 const buildStickerZip = async (
   batch: Sticker[],
   pngBlobs: Blob[],
   nicheName: string,
-  startIndex: number
+  startIndex: number,
+  volume: number,
+  productCount: number
 ): Promise<Blob> => {
   const zip = new JSZip();
   const safeNiche = nicheName.replace(/[^a-zA-Z0-9]/g, '_');
-  batch.forEach((sticker, index) => {
-    zip.file(`${safeNiche}_${startIndex + index + 1}.png`, pngBlobs[index] || sticker.blob!);
-  });
+  const records = await Promise.all(batch.map(async (sticker, index) => {
+    const blob = pngBlobs[index] || sticker.blob!;
+    const number = String(startIndex + index + 1).padStart(3, '0');
+    const filename = `${number}_${stickerSubjectSlug(sticker.prompt, `${safeNiche}_${number}`)}.png`;
+    const image = await loadBlobImage(blob);
+    zip.file(filename, blob);
+    return {
+      number,
+      filename,
+      width: image.width,
+      height: image.height,
+      bytes: blob.size,
+      sha256: await sha256Hex(blob)
+    };
+  }));
+  const manifest = [
+    'number,filename,width,height,bytes,sha256',
+    ...records.map(record => `${record.number},"${record.filename}",${record.width},${record.height},${record.bytes},${record.sha256}`)
+  ].join('\n');
+  zip.file(`MANIFEST_Vol${volume}.csv`, manifest);
+  if (volume === 1) zip.file('START_HERE.txt', createBuyerGuide(nicheName, productCount));
   return zip.generateAsync({
     type: 'blob',
     compression: 'DEFLATE',
@@ -90,10 +156,12 @@ const buildStickerZip = async (
 const buildEtsySizedStickerZip = async (
   batch: Sticker[],
   nicheName: string,
-  startIndex: number
+  startIndex: number,
+  productCount: number
 ): Promise<{ blob: Blob; scale: number }> => {
   const originals = batch.map(sticker => sticker.blob!);
-  const originalZip = await buildStickerZip(batch, originals, nicheName, startIndex);
+  const volume = Math.floor(startIndex / 20) + 1;
+  const originalZip = await buildStickerZip(batch, originals, nicheName, startIndex, volume, productCount);
   if (originalZip.size <= ETSY_ZIP_MAX_BYTES) return { blob: originalZip, scale: 1 };
 
   // Find the highest common pixel scale whose PNG payload lands near 18.6 MB.
@@ -125,11 +193,11 @@ const buildEtsySizedStickerZip = async (
     };
   }
 
-  let zipBlob = await buildStickerZip(batch, best.blobs, nicheName, startIndex);
+  let zipBlob = await buildStickerZip(batch, best.blobs, nicheName, startIndex, volume, productCount);
   if (zipBlob.size > ETSY_ZIP_MAX_BYTES) {
     const saferScale = Math.max(0.15, best.scale * 0.96);
     const saferBlobs = await Promise.all(originals.map(blob => resizePngBlob(blob, saferScale)));
-    zipBlob = await buildStickerZip(batch, saferBlobs, nicheName, startIndex);
+    zipBlob = await buildStickerZip(batch, saferBlobs, nicheName, startIndex, volume, productCount);
     best = {
       blobs: saferBlobs,
       scale: saferScale
@@ -184,17 +252,35 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
     status: 'idle',
     currentNiche: null,
     currentStyle: null,
+    runMode: 'production',
+    targetCount: PRODUCTION_STICKER_COUNT,
     progress: 0,
     stickers: [],
     zips: [],
     marketingAssets: [],
     listing: null,
-    logs: []
+    logs: [],
+    qualityReport: null,
+    metrics: {
+      seedreamRequests: 0,
+      seedreamMockupRequests: 0,
+      replacementImages: 0,
+      rejectedImages: 0,
+      qaRuns: 0,
+      rateLimitEvents: 0,
+      startedAt: null,
+      finishedAt: null
+    },
+    preflight: null,
+    checkpointUpdatedAt: null
   });
   
   // DEFAULT TO TURBO MODE (TRUE) FOR SPEED
   const [useTurbo, setUseTurbo] = useState(true); 
   const [needsZipUpdate, setNeedsZipUpdate] = useState(false);
+  const [runMode, setRunMode] = useState<ProductionRunMode>('production');
+  const [allowRiskyNiche, setAllowRiskyNiche] = useState(false);
+  const [savedCheckpoint, setSavedCheckpoint] = useState<RunCheckpointMeta | null>(null);
   
   // Visual Analysis State to pass between stages
   const visualAnalysisRef = useRef<NicheVisualAnalysis | undefined>(undefined);
@@ -206,8 +292,14 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
   const audioRef = useRef<HTMLAudioElement | null>(null); // For background keep-alive
   const usedStickerIdsRef = useRef<Set<number>>(new Set()); // Tracks used stickers to avoid redundancy
   const wakeLockRef = useRef<any>(null); // For Screen Wake Lock API
+  const runIdRef = useRef<string | null>(null);
+  const logsRef = useRef<string[]>([]);
+  const metricsRef = useRef(state.metrics);
+  const preflightRef = useRef(state.preflight);
+  const turboModeRef = useRef(useTurbo);
+  const riskOverrideRef = useRef(allowRiskyNiche);
 
-  const TARGET_STICKER_COUNT = 100;
+  const targetStickerCount = runMode === 'production' ? PRODUCTION_STICKER_COUNT : TEST_STICKER_COUNT;
 
   // --- SMART STYLE MATCHING LOGIC ---
   const recommendStyleForNiche = (nicheId: number): string | null => {
@@ -291,6 +383,14 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       applyCustomNiche(initialNiche);
     }
   }, [initialNiche]);
+
+  useEffect(() => {
+    loadRunCheckpoint()
+      .then(checkpoint => {
+        if (checkpoint?.stickers.length) setSavedCheckpoint(checkpoint.meta);
+      })
+      .catch(error => console.warn('Checkpoint discovery failed:', error));
+  }, []);
 
   const requestWakeLock = async () => {
     try {
@@ -436,7 +536,46 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
   }, [state.logs]);
 
   const addLog = (msg: string) => {
-    setState(prev => ({ ...prev, logs: [...prev.logs, `[${new Date().toLocaleTimeString()}] ${msg}`] }));
+    const entry = `[${new Date().toLocaleTimeString()}] ${msg}`;
+    logsRef.current = [...logsRef.current, entry].slice(-500);
+    setState(prev => ({ ...prev, logs: [...prev.logs, entry] }));
+  };
+
+  const updateMetrics = (changes: Partial<typeof metricsRef.current>) => {
+    metricsRef.current = { ...metricsRef.current, ...changes };
+    setState(prev => ({ ...prev, metrics: metricsRef.current }));
+  };
+
+  const persistCheckpointMeta = async (
+    niche: NicheIdea,
+    style: StylePreset,
+    mode: ProductionRunMode,
+    targetCount: number,
+    analysis?: NicheVisualAnalysis,
+    preflight = preflightRef.current,
+    qualityReport = state.qualityReport,
+    rawListing = state.rawListing
+  ) => {
+    if (!runIdRef.current) return;
+    const meta: RunCheckpointMeta = {
+      id: runIdRef.current,
+      updatedAt: new Date().toISOString(),
+      currentNiche: niche,
+      currentStyle: style,
+      runMode: mode,
+      targetCount,
+      useTurbo: turboModeRef.current,
+      allowRiskyNiche: riskOverrideRef.current,
+      analysis,
+      qualityReport,
+      metrics: metricsRef.current,
+      preflight,
+      rawListing,
+      logs: logsRef.current
+    };
+    await saveRunCheckpointMeta(meta);
+    setSavedCheckpoint(meta);
+    setState(prev => ({ ...prev, checkpointUpdatedAt: meta.updatedAt }));
   };
 
   const checkApiKey = async () => {
@@ -460,17 +599,25 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       return 0;
   });
 
-  const packageStickers = async (currentStickers: Sticker[], nicheName: string) => {
-      const allSuccessfulStickers = currentStickers.filter(s => s.status === 'completed' && s.blob);
-      const successfulStickers = allSuccessfulStickers.slice(0, TARGET_STICKER_COUNT);
+  const packageStickers = async (
+    currentStickers: Sticker[],
+    nicheName: string,
+    mode: ProductionRunMode = runMode,
+    targetCount = targetStickerCount
+  ) => {
+      const allSuccessfulStickers = currentStickers.filter(s => s.status === 'completed' && s.blob && s.qaStatus === 'approved');
+      const successfulStickers = allSuccessfulStickers.slice(0, targetCount);
       const zips: { name: string; blob: Blob }[] = [];
       const chunkSize = 20; 
       const numberOfZips = Math.ceil(successfulStickers.length / chunkSize);
 
-      if (successfulStickers.length < TARGET_STICKER_COUNT) {
-        addLog(`Publication check: ${successfulStickers.length}/100 finished stickers. This test package is not yet a complete 100-sticker product.`);
-      } else if (allSuccessfulStickers.length > TARGET_STICKER_COUNT) {
-        addLog(`${allSuccessfulStickers.length - TARGET_STICKER_COUNT} extra completed sticker(s) were excluded to keep the Etsy product at exactly 100 files.`);
+      if (mode === 'production' && successfulStickers.length !== PRODUCTION_STICKER_COUNT) {
+        throw new Error(`Production gate blocked packaging: ${successfulStickers.length}/100 stickers are approved.`);
+      }
+      if (successfulStickers.length < targetCount) {
+        addLog(`Test package contains ${successfulStickers.length}/${targetCount} approved stickers.`);
+      } else if (allSuccessfulStickers.length > targetCount) {
+        addLog(`${allSuccessfulStickers.length - targetCount} extra approved sticker(s) were excluded to keep the product count exact.`);
       }
 
       for (let i = 0; i < numberOfZips; i++) {
@@ -479,13 +626,21 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         const batch = successfulStickers.slice(start, end);
         
         if (batch.length > 0) {
-            const packaged = await buildEtsySizedStickerZip(batch, nicheName, start);
+            const packaged = await buildEtsySizedStickerZip(batch, nicheName, start, targetCount);
             const qualityNote = packaged.scale < 0.995
               ? ` • optimized at ${Math.round(packaged.scale * 100)}% dimensions`
               : ' • original PNG dimensions preserved';
             addLog(`ZIP Vol ${i + 1}: ${batch.length} PNG files • ${formatFileSizeMb(packaged.blob.size)}${qualityNote}`);
             zips.push({ name: `StickerPack_Vol${i+1}_${nicheName.replace(/[^a-zA-Z0-9]/g, '')}.zip`, blob: packaged.blob });
         }
+      }
+      if (mode === 'production') {
+        const invalidZipCount = zips.length !== 5;
+        const oversized = zips.find(zip => zip.blob.size > ETSY_ZIP_MAX_BYTES);
+        if (invalidZipCount || oversized) {
+          throw new Error(`Production preflight failed: expected five valid ZIPs under 19 MB${oversized ? `; ${oversized.name} is oversized` : ''}.`);
+        }
+        addLog('Package preflight passed: 100 approved PNGs • 5 ZIPs • 20 PNGs per ZIP • all below 19 MB.');
       }
       return zips;
   };
@@ -508,6 +663,294 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
     await Promise.all(workers);
   }
 
+  async function processWithAdaptiveQueue<T>(
+    items: T[],
+    initialConcurrency: number,
+    processor: (item: T, index: number) => Promise<void>
+  ) {
+    const queue = items.map((item, index) => ({ item, index }));
+    const minimumConcurrency = Math.min(3, initialConcurrency);
+    let activeLimit = Math.min(initialConcurrency, items.length);
+    let consecutiveSuccesses = 0;
+    const workers = Array.from({ length: Math.min(initialConcurrency, items.length) }, (_, workerId) => (async () => {
+      while (queue.length > 0) {
+        if (stopSignal.current || skipToNextStageSignal.current) break;
+        while (workerId >= activeLimit && queue.length > 0 && !stopSignal.current && !skipToNextStageSignal.current) {
+          await new Promise(resolve => setTimeout(resolve, 300));
+        }
+        const next = queue.shift();
+        if (!next) break;
+        try {
+          await processor(next.item, next.index);
+          consecutiveSuccesses++;
+          if (consecutiveSuccesses >= 8 && activeLimit < initialConcurrency) {
+            activeLimit++;
+            consecutiveSuccesses = 0;
+            addLog(`Seedream queue recovered to ${activeLimit} parallel workers.`);
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (/\b429\b|rate.?limit|too many requests|\b5\d\d\b/i.test(message)) {
+            activeLimit = Math.max(minimumConcurrency, activeLimit - 1);
+            consecutiveSuccesses = 0;
+            updateMetrics({ rateLimitEvents: metricsRef.current.rateLimitEvents + 1 });
+            addLog(`Seedream pressure detected; temporarily reducing to ${activeLimit} workers.`);
+          }
+        }
+      }
+    })());
+    await Promise.all(workers);
+  }
+
+  const generateStickerQueue = async (
+    items: Sticker[],
+    niche: NicheIdea,
+    style: StylePreset,
+    analysis: NicheVisualAnalysis,
+    mode: ProductionRunMode,
+    targetCount: number,
+    turboMode: boolean,
+    isReplacement = false
+  ) => {
+    const initialConcurrency = turboMode ? 8 : 6;
+    const replacementBudget = mode === 'production' ? PRODUCTION_REPLACEMENT_BUDGET : TEST_REPLACEMENT_BUDGET;
+    const requestBudget = targetCount + replacementBudget;
+    addLog(`Generating ${items.length} sticker${items.length === 1 ? '' : 's'} with up to ${initialConcurrency} adaptive Seedream workers...`);
+
+    await processWithAdaptiveQueue(items, initialConcurrency, async sticker => {
+      if (stopSignal.current || skipToNextStageSignal.current) return;
+      let attempts = 0;
+      let lastError = '';
+      while (attempts < 3) {
+        if (metricsRef.current.seedreamRequests >= requestBudget) {
+          throw new Error(`Seedream request budget reached (${requestBudget}).`);
+        }
+        attempts++;
+        updateMetrics({
+          seedreamRequests: metricsRef.current.seedreamRequests + 1,
+          replacementImages: metricsRef.current.replacementImages + (isReplacement ? 1 : 0)
+        });
+        try {
+          const base64 = await generateAutopilotSticker(sticker.prompt, style.prompt, turboMode, niche.name, analysis);
+          const processedBlob = await processStickerImage(base64, sticker.prompt);
+          const previous = stickersRef.current.find(item => item.id === sticker.id);
+          if (previous?.url?.startsWith('blob:')) URL.revokeObjectURL(previous.url);
+          const completed: Sticker = {
+            ...sticker,
+            url: URL.createObjectURL(processedBlob),
+            blob: processedBlob,
+            status: 'completed',
+            regenCount: (sticker.regenCount || 0) + attempts - 1,
+            qaStatus: 'pending',
+            qaIssues: [],
+            qaScore: undefined,
+            perceptualHash: undefined,
+            replacementCount: sticker.replacementCount || 0
+          };
+          const currentIndex = stickersRef.current.findIndex(item => item.id === sticker.id);
+          if (currentIndex === -1) stickersRef.current.push(completed);
+          else stickersRef.current[currentIndex] = completed;
+          const completedCount = stickersRef.current.filter(item => item.status === 'completed').length;
+          setState(prev => ({
+            ...prev,
+            stickers: [...stickersRef.current],
+            progress: 10 + Math.round((Math.min(completedCount, targetCount) / targetCount) * 52)
+          }));
+          if (runIdRef.current) await saveStickerCheckpoint(runIdRef.current, completed);
+          return;
+        } catch (error) {
+          lastError = error instanceof Error ? error.message : String(error);
+          if (/request budget reached/i.test(lastError)) break;
+          if (attempts < 3) await new Promise(resolve => setTimeout(resolve, attempts * 900));
+        }
+      }
+
+      const failed: Sticker = {
+        ...sticker,
+        status: 'error',
+        url: null,
+        blob: undefined,
+        qaStatus: 'rejected',
+        qaIssues: [`Generation failed: ${lastError.slice(0, 180)}`]
+      };
+      const currentIndex = stickersRef.current.findIndex(item => item.id === sticker.id);
+      if (currentIndex === -1) stickersRef.current.push(failed);
+      else stickersRef.current[currentIndex] = failed;
+      setState(prev => ({ ...prev, stickers: [...stickersRef.current] }));
+      if (runIdRef.current) await saveStickerCheckpoint(runIdRef.current, failed);
+      addLog(`Sticker #${sticker.id} failed after ${attempts} attempt${attempts === 1 ? '' : 's'}: ${lastError.slice(0, 90)}`);
+      throw new Error(lastError || `Sticker #${sticker.id} failed.`);
+    });
+  };
+
+  const runStickerQualityControl = async (
+    currentStickers: Sticker[],
+    niche: NicheIdea,
+    style: StylePreset,
+    analysis: NicheVisualAnalysis,
+    mode: ProductionRunMode,
+    targetCount: number
+  ): Promise<{ stickers: Sticker[]; report: QualityReport }> => {
+    setState(prev => ({ ...prev, status: 'quality_control', progress: 65 }));
+    const candidates = currentStickers.filter(sticker => sticker.status === 'completed' && sticker.blob && sticker.qaStatus !== 'approved');
+    addLog(`Quality control: inspecting ${candidates.length} new sticker${candidates.length === 1 ? '' : 's'} locally...`);
+    updateMetrics({ qaRuns: metricsRef.current.qaRuns + 1 });
+    const working = currentStickers.map(sticker => ({ ...sticker }));
+    const localIssues = new Map<number, string[]>();
+
+    for (let start = 0; start < candidates.length; start += 8) {
+      const batch = candidates.slice(start, start + 8);
+      const results = await Promise.all(batch.map(sticker => inspectStickerLocally(sticker)));
+      results.forEach(result => {
+        const index = working.findIndex(sticker => sticker.id === result.id);
+        if (index === -1) return;
+        working[index].perceptualHash = result.perceptualHash;
+        if (result.issues.length) localIssues.set(result.id, result.issues);
+      });
+    }
+
+    // Compare pending replacements with the already-approved catalog as well as
+    // with one another. Keep a previously approved image, otherwise keep the
+    // lowest ID so the rule is deterministic.
+    const localDuplicateGroups = findVisualDuplicateGroups(
+      working.filter(sticker => sticker.status === 'completed' && sticker.perceptualHash)
+    );
+    const locallyRejectedDuplicateIds = new Set<number>();
+    localDuplicateGroups.forEach(group => {
+      const approved = group.find(id => working.find(sticker => sticker.id === id)?.qaStatus === 'approved');
+      const keeper = approved ?? Math.min(...group);
+      group.filter(id => id !== keeper).forEach(id => locallyRejectedDuplicateIds.add(id));
+    });
+
+    const visionCandidates = working.filter(sticker =>
+      candidates.some(candidate => candidate.id === sticker.id)
+      && !localIssues.has(sticker.id)
+      && !locallyRejectedDuplicateIds.has(sticker.id)
+    );
+    let visionReport = { results: [] as Awaited<ReturnType<typeof generateStickerQualityReport>>['results'], duplicateGroups: [] as number[][] };
+    if (visionCandidates.length) {
+      addLog(`OpenAI visual QA: reviewing ${visionCandidates.length} locally valid sticker${visionCandidates.length === 1 ? '' : 's'}...`);
+      const sheets = await createQaContactSheets(visionCandidates);
+      visionReport = await generateStickerQualityReport(
+        sheets,
+        visionCandidates.map(sticker => ({ id: sticker.id, prompt: sticker.prompt }))
+      );
+    }
+    const visionById = new Map(visionReport.results.map(result => [result.id, result]));
+    const visionDuplicateRejects = new Set<number>();
+    visionReport.duplicateGroups.forEach(group => {
+      const keeper = [...group]
+        .sort((left, right) => (visionById.get(right)?.coverScore || 0) - (visionById.get(left)?.coverScore || 0))[0];
+      group.filter(id => id !== keeper).forEach(id => visionDuplicateRejects.add(id));
+    });
+
+    candidates.forEach(candidate => {
+      const index = working.findIndex(sticker => sticker.id === candidate.id);
+      if (index === -1) return;
+      const issues = [
+        ...(localIssues.get(candidate.id) || []),
+        ...(locallyRejectedDuplicateIds.has(candidate.id) ? ['Perceptual duplicate of another catalog sticker.'] : []),
+        ...(visionDuplicateRejects.has(candidate.id) ? ['Visual duplicate identified during contact-sheet review.'] : [])
+      ];
+      const vision = visionById.get(candidate.id);
+      if (vision?.decision === 'reject') issues.push(...vision.issues);
+      working[index] = {
+        ...working[index],
+        qaStatus: issues.length ? 'rejected' : 'approved',
+        qaIssues: [...new Set(issues)],
+        qaScore: vision?.coverScore ?? working[index].qaScore ?? 50
+      };
+    });
+
+    const approved = working.filter(sticker => sticker.status === 'completed' && sticker.qaStatus === 'approved').length;
+    const rejected = working.filter(sticker => sticker.qaStatus === 'rejected').length;
+    const newlyRejected = candidates.filter(candidate => working.find(sticker => sticker.id === candidate.id)?.qaStatus === 'rejected').length;
+    updateMetrics({ rejectedImages: metricsRef.current.rejectedImages + newlyRejected });
+    const report: QualityReport = {
+      checked: working.filter(sticker => sticker.status === 'completed').length,
+      approved,
+      rejected,
+      duplicateGroups: [...localDuplicateGroups, ...visionReport.duplicateGroups],
+      generatedAt: new Date().toISOString()
+    };
+    stickersRef.current = working;
+    setState(prev => ({
+      ...prev,
+      stickers: working,
+      qualityReport: report,
+      progress: 70
+    }));
+    if (runIdRef.current) await saveStickerCheckpoints(runIdRef.current, working);
+    await persistCheckpointMeta(niche, style, mode, targetCount, analysis, preflightRef.current, report);
+    addLog(`Quality report: ${approved}/${targetCount} approved • ${rejected} rejected.`);
+    return { stickers: working, report };
+  };
+
+  const ensureApprovedInventory = async (
+    niche: NicheIdea,
+    style: StylePreset,
+    analysis: NicheVisualAnalysis,
+    mode: ProductionRunMode,
+    targetCount: number,
+    turboMode: boolean
+  ): Promise<{ stickers: Sticker[]; report: QualityReport }> => {
+    let quality = await runStickerQualityControl(stickersRef.current, niche, style, analysis, mode, targetCount);
+    const replacementBudget = mode === 'production' ? PRODUCTION_REPLACEMENT_BUDGET : TEST_REPLACEMENT_BUDGET;
+
+    while (quality.report.approved < targetCount) {
+      const remainingBudget = targetCount + replacementBudget - metricsRef.current.seedreamRequests;
+      const rejectedSlots = quality.stickers
+        .filter(sticker => sticker.qaStatus !== 'approved')
+        .slice(0, targetCount - quality.report.approved);
+      if (!rejectedSlots.length || remainingBudget < rejectedSlots.length) {
+        throw new Error(`Quality gate stopped the run at ${quality.report.approved}/${targetCount} approved stickers. The safe replacement budget is exhausted.`);
+      }
+
+      addLog(`Creating ${rejectedSlots.length} distinct replacement concept${rejectedSlots.length === 1 ? '' : 's'}...`);
+      const replacementPrompts = await generateReplacementStickerPrompts(
+        niche.name,
+        style,
+        rejectedSlots.length,
+        quality.stickers.map(sticker => sticker.prompt),
+        rejectedSlots.flatMap(sticker => sticker.qaIssues || []),
+        analysis
+      );
+      rejectedSlots.forEach((sticker, index) => {
+        const currentIndex = stickersRef.current.findIndex(item => item.id === sticker.id);
+        if (currentIndex === -1) return;
+        if (stickersRef.current[currentIndex].url?.startsWith('blob:')) URL.revokeObjectURL(stickersRef.current[currentIndex].url!);
+        stickersRef.current[currentIndex] = {
+          ...stickersRef.current[currentIndex],
+          prompt: replacementPrompts[index],
+          url: null,
+          blob: undefined,
+          status: 'pending',
+          qaStatus: 'pending',
+          qaIssues: [],
+          qaScore: undefined,
+          perceptualHash: undefined,
+          replacementCount: (stickersRef.current[currentIndex].replacementCount || 0) + 1
+        };
+      });
+      setState(prev => ({ ...prev, status: 'generating_stickers', stickers: [...stickersRef.current] }));
+      await generateStickerQueue(
+        rejectedSlots.map(sticker => stickersRef.current.find(item => item.id === sticker.id)!),
+        niche,
+        style,
+        analysis,
+        mode,
+        targetCount,
+        turboMode,
+        true
+      );
+      quality = await runStickerQualityControl(stickersRef.current, niche, style, analysis, mode, targetCount);
+    }
+    return {
+      stickers: quality.stickers.filter(sticker => sticker.qaStatus === 'approved').slice(0, targetCount),
+      report: quality.report
+    };
+  };
+
   const handleRegenerateSticker = async (stickerId: number) => {
       if (!state.currentStyle || !state.currentNiche) return;
       
@@ -521,7 +964,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       // SMART REGENERATION: If failed > 2 times, change prompt to avoid loop
       let promptToUse = sticker.prompt;
       if (newRegenCount >= 3) {
-          promptToUse = `${sticker.prompt.split('|')[0]} | COMPOSITION: Minimal, Simple, Isolated on White | TEXT: NONE`;
+          promptToUse = `${sticker.prompt.split('|')[0]} | COMPOSITION: Minimal, simple, centered and fully visible | TEXT: NONE`;
           addLog(`⚠️ Attempt ${newRegenCount}: Simplifying prompt logic for Sticker #${stickerId}`);
       }
 
@@ -532,20 +975,27 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       });
 
       try {
+           updateMetrics({ seedreamRequests: metricsRef.current.seedreamRequests + 1 });
            const base64 = await generateAutopilotSticker(promptToUse, state.currentStyle.prompt, useTurbo, state.currentNiche.name, visualAnalysisRef.current);
            
            const processedBlob = await processStickerImage(base64, promptToUse);
            const finalUrl = URL.createObjectURL(processedBlob);
+           const updatedSticker: Sticker = { ...sticker, prompt: promptToUse, url: finalUrl, blob: processedBlob, status: 'completed', regenCount: newRegenCount, qaStatus: 'pending', qaIssues: [], qaScore: undefined, perceptualHash: undefined };
+           const refIndex = stickersRef.current.findIndex(item => item.id === stickerId);
+           if (refIndex === -1) stickersRef.current.push(updatedSticker);
+           else stickersRef.current[refIndex] = updatedSticker;
 
            setState(prev => {
                const newStickers = [...prev.stickers];
-               newStickers[stickerIndex] = { ...sticker, url: finalUrl, blob: processedBlob, status: 'completed', regenCount: newRegenCount };
-               stickersRef.current = newStickers; 
+               const currentIndex = newStickers.findIndex(item => item.id === stickerId);
+               if (currentIndex === -1) newStickers.push(updatedSticker);
+               else newStickers[currentIndex] = updatedSticker;
                return { ...prev, stickers: newStickers };
            });
            
            addLog(`Sticker #${stickerId} updated.`);
            setNeedsZipUpdate(true); 
+           if (runIdRef.current) await saveStickerCheckpoint(runIdRef.current, updatedSticker);
 
       } catch (e: any) {
           addLog(`Error regenerating sticker #${stickerId}: ${e.message}`);
@@ -574,7 +1024,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       try {
           const processedBlob = await processStickerImage(sticker.url, sticker.prompt);
           const finalUrl = URL.createObjectURL(processedBlob);
-          const repairedSticker = { ...sticker, url: finalUrl, blob: processedBlob, status: 'completed' as const };
+          const repairedSticker = { ...sticker, url: finalUrl, blob: processedBlob, status: 'completed' as const, qaStatus: 'pending' as const, qaIssues: [], qaScore: undefined, perceptualHash: undefined };
 
           setState(prev => {
               const nextStickers = [...prev.stickers];
@@ -583,6 +1033,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
               return { ...prev, stickers: nextStickers };
           });
           stickersRef.current[stickerIndex] = repairedSticker;
+          if (runIdRef.current) await saveStickerCheckpoint(runIdRef.current, repairedSticker);
           if (sticker.url.startsWith('blob:')) URL.revokeObjectURL(sticker.url);
           setNeedsZipUpdate(true);
           addLog(`Sticker #${stickerId} transparency repaired without regeneration.`);
@@ -627,6 +1078,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         const freshPrompt = prompts[0] || placeholder.prompt;
         
         // 2. Generate Image
+        updateMetrics({ seedreamRequests: metricsRef.current.seedreamRequests + 1 });
         const base64 = await generateAutopilotSticker(freshPrompt, state.currentStyle.prompt, useTurbo, state.currentNiche.name, visualAnalysisRef.current);
         const processedBlob = await processStickerImage(base64, freshPrompt);
         const finalUrl = URL.createObjectURL(processedBlob);
@@ -636,7 +1088,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
              const list = [...prev.stickers];
              const idx = list.findIndex(s => s.id === newId);
              if (idx !== -1) {
-                 list[idx] = { ...list[idx], prompt: freshPrompt, url: finalUrl, blob: processedBlob, status: 'completed' };
+                 list[idx] = { ...list[idx], prompt: freshPrompt, url: finalUrl, blob: processedBlob, status: 'completed', qaStatus: 'pending', qaIssues: [], qaScore: undefined, perceptualHash: undefined };
              }
              return { ...prev, stickers: list };
         });
@@ -644,7 +1096,8 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         // Update Ref
         const refIdx = stickersRef.current.findIndex(s => s.id === newId);
         if (refIdx !== -1) {
-             stickersRef.current[refIdx] = { id: newId, prompt: freshPrompt, url: finalUrl, blob: processedBlob, status: 'completed', regenCount: 0 };
+             stickersRef.current[refIdx] = { id: newId, prompt: freshPrompt, url: finalUrl, blob: processedBlob, status: 'completed', regenCount: 0, qaStatus: 'pending', qaIssues: [], replacementCount: 0 };
+             if (runIdRef.current) await saveStickerCheckpoint(runIdRef.current, stickersRef.current[refIdx]);
         }
         
         setNeedsZipUpdate(true);
@@ -663,7 +1116,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
 
   // Helper: Get unique stickers for mockups to avoid redundancy across images
   const getUniqueBatchForMockup = (pool: Sticker[], count: number): string[] => {
-     const valid = pool.filter(s => s.status === 'completed' && s.url);
+     const valid = pool.filter(s => s.status === 'completed' && s.url && s.qaStatus === 'approved');
      const shuffled = [...valid].sort(() => 0.5 - Math.random());
      const selected: Sticker[] = [];
      const usedUrls = new Set<string>();
@@ -682,7 +1135,9 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
   };
 
   const getModelSelectedCoverBatch = async (pool: Sticker[], count = 12): Promise<string[]> => {
-     const valid = pool.filter(sticker => sticker.status === 'completed' && sticker.url);
+     const valid = pool
+       .filter(sticker => sticker.status === 'completed' && sticker.url && sticker.qaStatus === 'approved')
+       .sort((left, right) => (right.qaScore || 0) - (left.qaScore || 0));
      if (valid.length <= count) return valid.map(sticker => sticker.url!);
 
      try {
@@ -717,7 +1172,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
 
   const getStickerRange = (stickers: Sticker[], start: number, end: number) => {
        const subset = stickers.slice(start, end);
-       const valid = subset.filter(s => s.status === 'completed' && s.url);
+       const valid = subset.filter(s => s.status === 'completed' && s.url && s.qaStatus === 'approved');
        return [...new Set(valid.map(s => s.url!))];
   };
 
@@ -736,8 +1191,8 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
 
       try {
           const validStickers = stickersRef.current
-            .filter(sticker => sticker.status === 'completed' && sticker.url)
-            .slice(0, TARGET_STICKER_COUNT);
+            .filter(sticker => sticker.status === 'completed' && sticker.url && sticker.qaStatus === 'approved')
+            .slice(0, state.targetCount);
           let stickersForMockup: string[] = [];
 
           // Expanded Logic to slice 100 stickers into 6 grids
@@ -750,9 +1205,14 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
            
            // Use Unique Batch Logic for Mockups to avoid repeats
            else if (asset.type === 'cover') stickersForMockup = await getModelSelectedCoverBatch(validStickers, 15);
+           else if (asset.type === 'closeup') stickersForMockup = getUniqueBatchForMockup(validStickers, 4);
+           else if (asset.type === 'included') stickersForMockup = getUniqueBatchForMockup(validStickers, 8);
            else if (asset.type === 'howto') stickersForMockup = getUniqueBatchForMockup(validStickers, 4);
            else stickersForMockup = getUniqueBatchForMockup(validStickers, 8); 
 
+          if (['goodnotes', 'laptop', 'journal', 'lifestyle'].includes(asset.type)) {
+            updateMetrics({ seedreamMockupRequests: metricsRef.current.seedreamMockupRequests + 1 });
+          }
           const url = await generateSeedreamMockup(
              asset.id!, 
              asset.type, 
@@ -760,7 +1220,6 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
              state.currentNiche.name,
              validStickers.filter(sticker => sticker.status === 'completed' && sticker.url).length
           );
-
           setState(prev => {
               const nextAssets = [...prev.marketingAssets];
               nextAssets[assetIndex] = { ...asset, url: url, status: 'completed' };
@@ -779,13 +1238,27 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
   };
 
   const handleUpdateZips = async () => {
-      if (!state.currentNiche) return;
-      addLog("Updating ZIP archives with new stickers...");
-      setState(prev => ({...prev, status: 'zipping'})); 
-      const zips = await packageStickers(stickersRef.current, state.currentNiche.name);
-      setState(prev => ({ ...prev, zips, status: 'completed' }));
-      setNeedsZipUpdate(false);
-      addLog("ZIPs updated successfully.");
+      if (!state.currentNiche || !state.currentStyle || !visualAnalysisRef.current) return;
+      try {
+        addLog('Re-running quality control before updating ZIP archives...');
+        const quality = await ensureApprovedInventory(
+          state.currentNiche,
+          state.currentStyle,
+          visualAnalysisRef.current,
+          state.runMode,
+          state.targetCount,
+          useTurbo
+        );
+        stickersRef.current = quality.stickers;
+        setState(prev => ({...prev, status: 'zipping'}));
+        const zips = await packageStickers(quality.stickers, state.currentNiche.name, state.runMode, state.targetCount);
+        setState(prev => ({ ...prev, zips, status: 'completed', qualityReport: quality.report }));
+        setNeedsZipUpdate(false);
+        addLog('ZIPs updated and production preflight passed.');
+      } catch (error) {
+        addLog(`ZIP update blocked: ${error instanceof Error ? error.message : String(error)}`);
+        setState(prev => ({ ...prev, status: 'error' }));
+      }
   };
 
   const handleDownloadAll = async () => {
@@ -802,14 +1275,14 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         const masterZip = new JSZip();
 
         addLog("Packaging latest stickers into ZIPs...");
-        const freshZips = await packageStickers(stickersRef.current, state.currentNiche.name);
+        const freshZips = await packageStickers(stickersRef.current, state.currentNiche.name, state.runMode, state.targetCount);
 
         const stickersFolder = masterZip.folder("1_Sticker_Packs");
         freshZips.forEach(z => {
           stickersFolder?.file(z.name, z.blob);
         });
 
-        const mockupsFolder = masterZip.folder("2_Listing_Images");
+        const mockupsFolder = masterZip.folder("2_Listing_Assets");
         for (const asset of state.marketingAssets) {
            if (asset.url && asset.status === 'completed') {
                try {
@@ -823,7 +1296,10 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
                    }
                    
                    const safeName = asset.title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
-                   mockupsFolder?.file(`${safeName}.jpg`, blob);
+                   const extension = asset.format === 'video'
+                     ? (asset.mimeType?.includes('mp4') ? 'mp4' : 'webm')
+                     : 'jpg';
+                   mockupsFolder?.file(`${safeName}.${extension}`, blob);
                } catch (e) {
                    console.error("Failed to add asset to zip", e);
                }
@@ -833,6 +1309,17 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         if (state.rawListing) {
            masterZip.file("3_SEO_Listing_Copy.txt", state.rawListing);
         }
+        if (state.qualityReport) {
+          masterZip.file('4_PRODUCTION_QA_REPORT.json', JSON.stringify({
+            niche: state.currentNiche.name,
+            runMode: state.runMode,
+            targetCount: state.targetCount,
+            quality: state.qualityReport,
+            metrics: state.metrics,
+            preflight: state.preflight
+          }, null, 2));
+        }
+        masterZip.file('5_PERFORMANCE_TRACKER.csv', 'date,listing_url,cover_variant,impressions,clicks,favorites,orders,revenue,notes\n');
 
         const content = await masterZip.generateAsync({ type: 'blob' });
         const url = URL.createObjectURL(content);
@@ -865,9 +1352,218 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
     }
   };
 
+  const finishRecoveredProduction = async (
+    niche: NicheIdea,
+    style: StylePreset,
+    analysis: NicheVisualAnalysis,
+    mode: ProductionRunMode,
+    targetCount: number,
+    turboMode: boolean,
+    qualityReport: QualityReport,
+    preflight: RunCheckpointMeta['preflight']
+  ) => {
+    setState(prev => ({ ...prev, status: 'zipping', progress: 75 }));
+    addLog('Packaging recovered run after quality approval...');
+    const zips = await packageStickers(stickersRef.current, niche.name, mode, targetCount);
+    setState(prev => ({ ...prev, zips, status: 'marketing', progress: 85 }));
+
+    const previewCount = Math.min(6, Math.ceil(targetCount / 17));
+    const previewAssets: MarketingAsset[] = Array.from({ length: previewCount }, (_, index) => ({
+      id: `preview_${index + 1}`,
+      type: 'preview',
+      title: `Grid Preview (Vol ${index + 1})`,
+      url: null,
+      status: 'pending'
+    }));
+    const baseAssets: MarketingAsset[] = [
+      { id: 'cover_a', type: 'cover', title: 'Main Cover A (Hero Collage)', url: null, status: 'pending' },
+      { id: 'cover_b', type: 'cover', title: 'Main Cover B (Editorial)', url: null, status: 'pending' },
+      { id: 'cover_c', type: 'cover', title: 'Main Cover C (Orbit Layout)', url: null, status: 'pending' },
+      { id: 'included', type: 'included', title: 'What You Receive', url: null, status: 'pending' },
+      { id: 'quality_proof', type: 'closeup', title: 'Transparent Edge Quality Proof', url: null, status: 'pending' },
+      ...previewAssets,
+      { id: 'mockup_goodnotes_1', type: 'goodnotes', title: 'GoodNotes UI View', url: null, status: 'pending' },
+      { id: 'mockup_goodnotes_2', type: 'goodnotes', title: 'GoodNotes Spread', url: null, status: 'pending' },
+      { id: 'mockup_laptop', type: 'laptop', title: 'Laptop Skin', url: null, status: 'pending' },
+      { id: 'mockup_journal', type: 'journal', title: 'Journal/Planner', url: null, status: 'pending' },
+      { id: 'howto', type: 'howto', title: 'How To Use', url: null, status: 'pending' }
+    ];
+    const assets = baseAssets.map((asset, index) => ({ ...asset, title: `${index + 1}. ${asset.title}` }));
+    setState(prev => ({ ...prev, marketingAssets: assets }));
+    const approved = stickersRef.current.filter(sticker => sticker.qaStatus === 'approved' && sticker.url).slice(0, targetCount);
+    const coverUrls = await getModelSelectedCoverBatch(approved, 15);
+    let finished = 0;
+
+    await processWithQueue(assets, 6, async (asset, index) => {
+      const valid = approved;
+      let urls: string[] = [];
+      if (asset.id?.startsWith('preview_')) {
+        const page = Number(asset.id.split('_')[1]) - 1;
+        urls = getStickerRange(valid, page * 17, Math.min(valid.length, page * 17 + 17));
+      } else if (asset.type === 'cover') urls = coverUrls;
+      else if (asset.type === 'closeup') urls = getUniqueBatchForMockup(valid, 4);
+      else if (asset.type === 'included') urls = getUniqueBatchForMockup(valid, 8);
+      else if (asset.type === 'howto') urls = getUniqueBatchForMockup(valid, 4);
+      else urls = getUniqueBatchForMockup(valid, 8);
+      try {
+        if (['goodnotes', 'laptop', 'journal', 'lifestyle'].includes(asset.type)) {
+          updateMetrics({ seedreamMockupRequests: metricsRef.current.seedreamMockupRequests + 1 });
+        }
+        const url = await generateSeedreamMockup(asset.id!, asset.type, urls, niche.name, targetCount);
+        assets[index] = { ...asset, url, status: 'completed' };
+      } catch (error) {
+        assets[index] = { ...asset, status: 'error' };
+        addLog(`Recovered-run asset failed: ${asset.title}. ${error instanceof Error ? error.message : String(error)}`);
+      }
+      finished++;
+      setState(prev => ({
+        ...prev,
+        marketingAssets: [...assets],
+        progress: 85 + Math.round((finished / assets.length) * 9)
+      }));
+    });
+
+    const criticalIds = new Set(['cover_a', 'included', 'quality_proof', 'howto', 'preview_1']);
+    const failedCritical = assets.filter(asset => criticalIds.has(asset.id || '') && asset.status !== 'completed');
+    if (failedCritical.length) throw new Error(`Recovered run is missing critical listing assets: ${failedCritical.map(asset => asset.title).join(', ')}.`);
+    try {
+      const video = await createListingPreviewVideo(
+        assets.filter(asset => asset.url && ['cover', 'closeup', 'included', 'howto'].includes(asset.type)).map(asset => asset.url!)
+      );
+      const videoAsset: MarketingAsset = {
+        id: 'listing_video',
+        type: 'social',
+        title: 'Listing Preview Video',
+        url: video.url,
+        status: 'completed',
+        format: 'video',
+        mimeType: video.mimeType
+      };
+      assets.push(videoAsset);
+      setState(prev => ({ ...prev, marketingAssets: [...assets] }));
+    } catch (error) {
+      addLog(`Listing video skipped: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    setState(prev => ({ ...prev, status: 'copywriting', progress: 95 }));
+    const rawListing = await generateAutopilotListing(niche.name, style.name, turboMode, targetCount);
+    metricsRef.current = { ...metricsRef.current, finishedAt: new Date().toISOString() };
+    await persistCheckpointMeta(niche, style, mode, targetCount, analysis, preflight, qualityReport, rawListing);
+    setState(prev => ({
+      ...prev,
+      rawListing,
+      status: 'completed',
+      progress: 100,
+      qualityReport,
+      metrics: metricsRef.current
+    }));
+    addLog(`${mode === 'production' ? 'PRODUCTION' : 'TEST'} COMPLETE after checkpoint recovery.`);
+  };
+
+  const resumeSavedRun = async () => {
+    try {
+      await checkApiKey();
+      const checkpoint = await loadRunCheckpoint();
+      if (!checkpoint) throw new Error('No saved production checkpoint was found.');
+      const { meta, stickers } = checkpoint;
+      runIdRef.current = meta.id;
+      logsRef.current = meta.logs || [];
+      metricsRef.current = { rejectedImages: 0, seedreamMockupRequests: 0, ...meta.metrics };
+      preflightRef.current = meta.preflight;
+      setRunMode(meta.runMode);
+      setUseTurbo(meta.useTurbo);
+      setAllowRiskyNiche(meta.allowRiskyNiche);
+      turboModeRef.current = meta.useTurbo;
+      riskOverrideRef.current = meta.allowRiskyNiche;
+      stopSignal.current = false;
+      skipToNextStageSignal.current = false;
+      stickersRef.current = stickers;
+      visualAnalysisRef.current = meta.analysis;
+      setState(prev => ({
+        ...prev,
+        status: 'generating_stickers',
+        currentNiche: meta.currentNiche,
+        currentStyle: meta.currentStyle,
+        runMode: meta.runMode,
+        targetCount: meta.targetCount,
+        stickers,
+        zips: [],
+        marketingAssets: [],
+        rawListing: undefined,
+        logs: meta.logs || [],
+        qualityReport: meta.qualityReport,
+        metrics: metricsRef.current,
+        preflight: meta.preflight,
+        checkpointUpdatedAt: meta.updatedAt,
+        progress: Math.min(62, 10 + Math.round((stickers.filter(sticker => sticker.status === 'completed').length / meta.targetCount) * 52))
+      }));
+      addLog(`Resuming saved ${meta.runMode} run from ${new Date(meta.updatedAt).toLocaleString()}...`);
+      if (audioRef.current) audioRef.current.play().catch(error => console.warn('Audio play blocked', error));
+      await requestWakeLock();
+      const analysis = meta.analysis || await analyzeNicheVisuals(meta.currentNiche.name);
+      visualAnalysisRef.current = analysis;
+      const missing = stickersRef.current.filter(sticker => sticker.status !== 'completed' || !sticker.blob);
+      if (missing.length) {
+        await generateStickerQueue(missing, meta.currentNiche, meta.currentStyle, analysis, meta.runMode, meta.targetCount, meta.useTurbo);
+      }
+      if (stopSignal.current) throw new Error('Stopped by user');
+      if (skipToNextStageSignal.current) {
+        setState(prev => ({ ...prev, status: 'paused' }));
+        addLog('Recovered run paused safely.');
+        return;
+      }
+      const quality = await ensureApprovedInventory(meta.currentNiche, meta.currentStyle, analysis, meta.runMode, meta.targetCount, meta.useTurbo);
+      stickersRef.current = quality.stickers;
+      await finishRecoveredProduction(
+        meta.currentNiche,
+        meta.currentStyle,
+        analysis,
+        meta.runMode,
+        meta.targetCount,
+        meta.useTurbo,
+        quality.report,
+        meta.preflight
+      );
+    } catch (error) {
+      addLog(`RESUME ERROR: ${error instanceof Error ? error.message : String(error)}`);
+      setState(prev => ({ ...prev, status: 'error' }));
+    } finally {
+      audioRef.current?.pause();
+      releaseWakeLock();
+    }
+  };
+
+  const discardSavedRun = async () => {
+    await clearRunCheckpoint();
+    setSavedCheckpoint(null);
+    addLog('Saved checkpoint removed. Generated files currently visible in this tab were not deleted.');
+  };
+
   const runAutopilot = async () => {
     try {
       await checkApiKey();
+      const activeMode = runMode;
+      const activeTarget = activeMode === 'production' ? PRODUCTION_STICKER_COUNT : TEST_STICKER_COUNT;
+      turboModeRef.current = useTurbo;
+      riskOverrideRef.current = allowRiskyNiche;
+      stickersRef.current.forEach(sticker => {
+        if (sticker.url?.startsWith('blob:')) URL.revokeObjectURL(sticker.url);
+      });
+      state.marketingAssets.forEach(asset => {
+        if (asset.url?.startsWith('blob:')) URL.revokeObjectURL(asset.url);
+      });
+      runIdRef.current = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+      logsRef.current = [];
+      metricsRef.current = {
+        seedreamRequests: 0,
+        seedreamMockupRequests: 0,
+        replacementImages: 0,
+        rejectedImages: 0,
+        qaRuns: 0,
+        rateLimitEvents: 0,
+        startedAt: new Date().toISOString(),
+        finishedAt: null
+      };
       stopSignal.current = false;
       skipToNextStageSignal.current = false;
       setNeedsZipUpdate(false);
@@ -880,22 +1576,24 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       // START WAKE LOCK
       await requestWakeLock();
       
-      // --- CRITICAL FIX: RESET LISTING & ASSET STATE ---
-      // This forces the "SEO Copywriting" stage to run again at the end, even if previous runs failed.
-      setState(prev => ({ 
-          ...prev, 
-          status: 'researching', 
+      setState(prev => ({
+          ...prev,
+          status: 'preflight',
+          runMode: activeMode,
+          targetCount: activeTarget,
           progress: 5,
           listing: null,
           rawListing: undefined,
-          // We keep stickers if they exist, but reset marketing assets to force regeneration for the new set
-          marketingAssets: prev.marketingAssets.map(asset => ({
-             ...asset,
-             status: 'pending',
-             url: null
-          }))
+          stickers: [],
+          zips: [],
+          marketingAssets: [],
+          logs: [],
+          qualityReport: null,
+          preflight: null,
+          metrics: metricsRef.current,
+          checkpointUpdatedAt: null
       }));
-      addLog(`Starting Production Run...`);
+      addLog(`Starting ${activeMode === 'production' ? '100-sticker production' : '10-sticker test'} run...`);
       
       const niche = availableNiches.find(n => n.id === selectedNicheId);
       const rawStyle = availableStyles.find(s => s.id === selectedStyleId) || availableStyles[0];
@@ -921,84 +1619,52 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
 
       setState(prev => ({ ...prev, currentNiche: niche!, currentStyle: style }));
 
+      addLog(`Market and rights preflight for "${niche.name}"...`);
+      const preflight = await assessNicheForProduction(niche.name);
+      preflightRef.current = preflight;
+      setState(prev => ({ ...prev, preflight }));
+      addLog(`Preflight: demand ${preflight.demandScore}/100 • variety ${preflight.variationScore}/100 • IP risk ${preflight.ipRisk}.`);
+      if ((preflight.recommendation === 'block' || preflight.ipRisk === 'high') && !allowRiskyNiche) {
+        throw new Error(`Niche preflight blocked this paid run: ${preflight.summary} Enable the manual rights-review override only if you have verified permission.`);
+      }
+
       // --- STEP 0: ANALYZE NICHE VISUALS ---
+      setState(prev => ({ ...prev, status: 'researching' }));
       addLog(`🧠 Analyzing buyer intent for "${niche.name}"...`);
       const analysis = await analyzeNicheVisuals(niche.name);
       visualAnalysisRef.current = analysis;
       addLog(`Visual Archetype Detected: ${analysis.archetype}`);
 
-      addLog(`Brainstorming sticker concepts (${TARGET_STICKER_COUNT})...`);
+      addLog(`Brainstorming sticker concepts (${activeTarget})...`);
       // Pass the analysis to prompt generation so it knows to make Frames if needed
-      const prompts = await generateStickerPrompts(niche.name, style, TARGET_STICKER_COUNT, analysis);
+      const prompts = await generateStickerPrompts(niche.name, style, activeTarget, analysis);
       
       const stickerObjects: Sticker[] = prompts.map((p, i) => ({
-        id: i + 1, prompt: p, url: null, status: 'pending', regenCount: 0
+        id: i + 1, prompt: p, url: null, status: 'pending', regenCount: 0, qaStatus: 'pending', qaIssues: [], replacementCount: 0
       }));
       
       setState(prev => ({ ...prev, stickers: stickerObjects, status: 'generating_stickers' }));
       stickersRef.current = stickerObjects;
+      await saveStickerCheckpoints(runIdRef.current, stickerObjects);
+      await persistCheckpointMeta(niche, style, activeMode, activeTarget, analysis, preflight, null);
 
-      // WORKER QUEUE CONFIG
-      // BytePlus currently allows up to 10 concurrent Seedream requests for an
-      // individual account. Keep two slots of headroom for retries and manual
-      // actions. Turbo renders 1K assets with 8 workers; Pro uses 6 workers.
-      const CONCURRENCY = useTurbo ? 8 : 6;
-      addLog(`Generating stickers with ${CONCURRENCY} parallel Seedream workers...`);
-      
-      await processWithQueue(stickerObjects, CONCURRENCY, async (s, index) => {
-          if (stopSignal.current || skipToNextStageSignal.current) return;
-          
-          // AUTO-RETRY LOGIC
-          let attempts = 0;
-          const MAX_ATTEMPTS = 3;
-          let success = false;
-          let lastError = "";
-
-          while(attempts < MAX_ATTEMPTS && !success) {
-            try {
-              // PASS ANALYSIS to generation so it renders frames correctly
-              const base64 = await generateAutopilotSticker(s.prompt, style.prompt, useTurbo, niche.name, analysis);
-              
-              // PROCESS: 1. Remove BLACK BG -> 2. Add Shadow (White border comes from AI)
-              const processedBlob = await processStickerImage(base64, s.prompt);
-              const finalUrl = URL.createObjectURL(processedBlob);
-              
-              setState(prev => {
-                  const nextStickers = [...prev.stickers];
-                  nextStickers[index] = { ...s, url: finalUrl, blob: processedBlob, status: 'completed', regenCount: attempts, prompt: s.prompt }; // Preserve original prompt unless updated
-                  const completedCount = nextStickers.filter(st => st.status === 'completed').length;
-                  return { ...prev, stickers: nextStickers, progress: 10 + Math.round((completedCount / TARGET_STICKER_COUNT) * 60) };
-              });
-              stickersRef.current[index] = { ...s, url: finalUrl, blob: processedBlob, status: 'completed' };
-              success = true;
-
-            } catch (e: any) {
-              attempts++;
-              lastError = e.message || "Unknown error";
-              if (attempts < MAX_ATTEMPTS) {
-                 // Fast Retry
-                 await new Promise(r => setTimeout(r, 1000 * attempts));
-              }
-            }
-          }
-
-          if (!success) {
-            console.error(`Final failure for sticker ${s.id}: ${lastError}`);
-            addLog(`Error Sticker #${s.id}: ${lastError.slice(0, 50)}`);
-            setState(prev => {
-                const nextStickers = [...prev.stickers];
-                nextStickers[index] = { ...s, status: 'error' };
-                return { ...prev, stickers: nextStickers };
-            });
-          }
-      });
+      await generateStickerQueue(stickerObjects, niche, style, analysis, activeMode, activeTarget, useTurbo);
 
       if (stopSignal.current) throw new Error("Stopped by user");
-      
+      if (skipToNextStageSignal.current) {
+        skipToNextStageSignal.current = false;
+        await persistCheckpointMeta(niche, style, activeMode, activeTarget, analysis, preflight, null);
+        setState(prev => ({ ...prev, status: 'paused' }));
+        addLog('Run paused safely. Use RESUME SAVED RUN to continue the missing stickers.');
+        return;
+      }
+
+      const qualityResult = await ensureApprovedInventory(niche, style, analysis, activeMode, activeTarget, useTurbo);
+      stickersRef.current = qualityResult.stickers;
       skipToNextStageSignal.current = false; 
       setState(prev => ({ ...prev, status: 'zipping', progress: 75 }));
       addLog(`Packaging ZIP files...`);
-      const zips = await packageStickers(stickersRef.current, niche!.name);
+      const zips = await packageStickers(stickersRef.current, niche!.name, activeMode, activeTarget);
       setState(prev => ({ ...prev, zips }));
 
       if (stopSignal.current) throw new Error("Stopped by user");
@@ -1006,8 +1672,8 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       addLog("Creating Mockups...");
 
       const availableStickerCount = Math.min(
-        TARGET_STICKER_COUNT,
-        stickersRef.current.filter(sticker => sticker.status === 'completed' && sticker.url).length
+        activeTarget,
+        stickersRef.current.filter(sticker => sticker.status === 'completed' && sticker.url && sticker.qaStatus === 'approved').length
       );
       const previewCount = Math.min(6, Math.ceil(availableStickerCount / 17));
       const previewAssets: MarketingAsset[] = Array.from({ length: previewCount }, (_, index) => ({
@@ -1018,7 +1684,11 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         status: 'pending'
       }));
       const baseAssets: MarketingAsset[] = [
-        { id: 'cover', type: 'cover', title: 'Main Cover (Digital Download Badge)', url: null, status: 'pending' },
+        { id: 'cover_a', type: 'cover', title: 'Main Cover A (Hero Collage)', url: null, status: 'pending' },
+        { id: 'cover_b', type: 'cover', title: 'Main Cover B (Editorial)', url: null, status: 'pending' },
+        { id: 'cover_c', type: 'cover', title: 'Main Cover C (Orbit Layout)', url: null, status: 'pending' },
+        { id: 'included', type: 'included', title: 'What You Receive', url: null, status: 'pending' },
+        { id: 'quality_proof', type: 'closeup', title: 'Transparent Edge Quality Proof', url: null, status: 'pending' },
         ...previewAssets,
         { id: 'mockup_goodnotes_1', type: 'goodnotes', title: 'GoodNotes UI View', url: null, status: 'pending' },
         { id: 'mockup_goodnotes_2', type: 'goodnotes', title: 'GoodNotes Spread', url: null, status: 'pending' },
@@ -1032,6 +1702,10 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       }));
 
       setState(prev => ({ ...prev, marketingAssets: assetsToGen }));
+      const approvedForMarketing = stickersRef.current
+        .filter(sticker => sticker.status === 'completed' && sticker.url && sticker.qaStatus === 'approved')
+        .slice(0, activeTarget);
+      const selectedCoverUrls = await getModelSelectedCoverBatch(approvedForMarketing, 15);
       let finishedAssets = 0;
       await processWithQueue(assetsToGen, 6, async (asset, i) => {
         if (stopSignal.current) return;
@@ -1045,8 +1719,8 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
 
         try {
           const validStickers = stickersRef.current
-            .filter(sticker => sticker.status === 'completed' && sticker.url)
-            .slice(0, TARGET_STICKER_COUNT);
+            .filter(sticker => sticker.status === 'completed' && sticker.url && sticker.qaStatus === 'approved')
+            .slice(0, activeTarget);
           let stickersForMockup: string[] = [];
 
           if (asset.id === 'preview_1') stickersForMockup = getStickerRange(validStickers, 0, 17);
@@ -1055,7 +1729,9 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
           else if (asset.id === 'preview_4') stickersForMockup = getStickerRange(validStickers, 51, 68);
           else if (asset.id === 'preview_5') stickersForMockup = getStickerRange(validStickers, 68, 85);
           else if (asset.id === 'preview_6') stickersForMockup = getStickerRange(validStickers, 85, 100);
-          else if (asset.type === 'cover') stickersForMockup = await getModelSelectedCoverBatch(validStickers, 15);
+          else if (asset.type === 'cover') stickersForMockup = selectedCoverUrls;
+          else if (asset.type === 'closeup') stickersForMockup = getUniqueBatchForMockup(validStickers, 4);
+          else if (asset.type === 'included') stickersForMockup = getUniqueBatchForMockup(validStickers, 8);
           else if (asset.type === 'howto') stickersForMockup = getUniqueBatchForMockup(validStickers, 4);
           else stickersForMockup = getUniqueBatchForMockup(validStickers, 8);
 
@@ -1064,8 +1740,12 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
           }
 
           const completedStickerCount = validStickers.filter(sticker => sticker.status === 'completed' && sticker.url).length;
+          if (['goodnotes', 'laptop', 'journal', 'lifestyle'].includes(asset.type)) {
+            updateMetrics({ seedreamMockupRequests: metricsRef.current.seedreamMockupRequests + 1 });
+          }
           const url = await generateSeedreamMockup(asset.id!, asset.type, stickersForMockup, niche!.name, completedStickerCount);
           finishedAssets++;
+          assetsToGen[i] = { ...asset, url, status: 'completed' };
           setState(prev => {
             const nextAssets = [...prev.marketingAssets];
             nextAssets[i] = { ...asset, url, status: 'completed' };
@@ -1082,6 +1762,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
           addLog(`Completed ${asset.title} in ${elapsedLabel}.`);
         } catch (e: any) {
           finishedAssets++;
+          assetsToGen[i] = { ...asset, status: 'error' };
           const elapsedSeconds = Math.max(1, Math.round((Date.now() - assetStartedAt) / 1000));
           addLog(`Failed asset ${asset.title} after ${elapsedSeconds}s. Error: ${e.message}`);
           setState(prev => {
@@ -1092,17 +1773,47 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         }
       });
 
+      const criticalAssetIds = new Set(['cover_a', 'included', 'quality_proof', 'howto', 'preview_1']);
+      const currentAssets = assetsToGen;
+      const failedCritical = currentAssets.filter(asset => criticalAssetIds.has(asset.id || '') && asset.status !== 'completed');
+      if (failedCritical.length) {
+        throw new Error(`Critical listing asset preflight failed: ${failedCritical.map(asset => asset.title).join(', ')}.`);
+      }
+
+      try {
+        addLog('Creating a short listing preview video from actual listing images...');
+        const videoSourceUrls = currentAssets
+          .filter(asset => asset.status === 'completed' && asset.url && ['cover', 'closeup', 'included', 'howto'].includes(asset.type))
+          .map(asset => asset.url!);
+        const video = await createListingPreviewVideo(videoSourceUrls);
+        const videoAsset: MarketingAsset = {
+          id: 'listing_video',
+          type: 'social',
+          title: 'Listing Preview Video',
+          url: video.url,
+          status: 'completed',
+          format: 'video',
+          mimeType: video.mimeType
+        };
+        setState(prev => ({ ...prev, marketingAssets: [...prev.marketingAssets, videoAsset] }));
+        addLog(`Listing preview video created (${video.mimeType || 'browser video'}).`);
+      } catch (videoError) {
+        addLog(`Listing video skipped: ${videoError instanceof Error ? videoError.message : String(videoError)}`);
+      }
+
       if (stopSignal.current) throw new Error("Stopped by user");
       setState(prev => ({ ...prev, status: 'copywriting', progress: 95 }));
       addLog("Generating SEO Listing Copy...");
       // PASS useTurbo to generate correct description
       const completedStickerCount = Math.min(
-        TARGET_STICKER_COUNT,
-        stickersRef.current.filter(sticker => sticker.status === 'completed').length
+        activeTarget,
+        stickersRef.current.filter(sticker => sticker.status === 'completed' && sticker.qaStatus === 'approved').length
       );
       const rawListing = await generateAutopilotListing(niche!.name, style.name, useTurbo, completedStickerCount);
-      setState(prev => ({ ...prev, rawListing, status: 'completed', progress: 100 }));
-      addLog("PRODUCTION COMPLETE.");
+      metricsRef.current = { ...metricsRef.current, finishedAt: new Date().toISOString() };
+      await persistCheckpointMeta(niche, style, activeMode, activeTarget, analysis, preflight, qualityResult.report, rawListing);
+      setState(prev => ({ ...prev, rawListing, status: 'completed', progress: 100, metrics: metricsRef.current }));
+      addLog(`${activeMode === 'production' ? 'PRODUCTION' : 'TEST'} COMPLETE: ${completedStickerCount} visually approved stickers.`);
       
     } catch (e: any) {
       addLog(`ERROR: ${e.message}`);
@@ -1141,6 +1852,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       if (type.includes('goodnotes')) return <Tablet className="w-6 h-6 text-pink-400" />;
       if (type.includes('preview')) return <Grid className="w-6 h-6 text-emerald-400" />;
       if (type.includes('howto')) return <Layers className="w-6 h-6 text-blue-400" />;
+      if (type.includes('social')) return <Video className="w-6 h-6 text-cyan-400" />;
       return <BookOpen className="w-6 h-6 text-orange-400" />;
   };
 
@@ -1235,7 +1947,12 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
              <div className="flex flex-col items-start gap-1">
                  <div 
                     className="flex items-center gap-2 bg-slate-900 p-2 rounded-lg border border-slate-700 cursor-pointer hover:bg-slate-800 transition-colors"
-                    onClick={() => setUseTurbo(!useTurbo)}
+                    onClick={() => {
+                      if (['idle', 'completed', 'error', 'paused'].includes(state.status)) {
+                        turboModeRef.current = !useTurbo;
+                        setUseTurbo(!useTurbo);
+                      }
+                    }}
                  >
                     <div className={`p-2 rounded-md transition-colors ${useTurbo ? 'bg-yellow-500 text-black shadow-lg' : 'text-slate-500'}`}>
                         <Zap className="w-4 h-4" />
@@ -1250,16 +1967,63 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
                  <div className="flex items-center gap-1 ml-1">
                      <DollarSign className="w-3 h-3 text-emerald-400" />
                      <span className="text-[10px] text-slate-400 font-mono">
-                        100 stickers + listing + marketing assets
+                        {targetStickerCount} base images + up to {runMode === 'production' ? PRODUCTION_REPLACEMENT_BUDGET : TEST_REPLACEMENT_BUDGET} safe replacements
                      </span>
                  </div>
+                 <div className="flex items-center gap-1 mt-2 bg-slate-900 border border-slate-700 rounded-lg p-1">
+                   <button
+                     onClick={() => setRunMode('production')}
+                     disabled={!['idle', 'completed', 'error', 'paused'].includes(state.status)}
+                     className={`px-3 py-1.5 rounded text-xs font-bold ${runMode === 'production' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-white'}`}
+                   >
+                     PRODUCTION · 100
+                   </button>
+                   <button
+                     onClick={() => setRunMode('test')}
+                     disabled={!['idle', 'completed', 'error', 'paused'].includes(state.status)}
+                     className={`px-3 py-1.5 rounded text-xs font-bold ${runMode === 'test' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}`}
+                   >
+                     TEST · 10
+                   </button>
+                 </div>
+                 <label className="flex items-start gap-2 mt-2 max-w-md text-[10px] text-slate-400 cursor-pointer">
+                   <input
+                     type="checkbox"
+                     checked={allowRiskyNiche}
+                     onChange={event => {
+                       riskOverrideRef.current = event.target.checked;
+                       setAllowRiskyNiche(event.target.checked);
+                     }}
+                     disabled={!['idle', 'completed', 'error', 'paused'].includes(state.status)}
+                     className="mt-0.5"
+                   />
+                   I manually reviewed rights for a high-risk branded niche. This override is not legal clearance.
+                 </label>
              </div>
 
-             {state.status === 'idle' || state.status === 'completed' || state.status === 'error' ? (
-               <div className="flex gap-2">
+             {state.status === 'idle' || state.status === 'completed' || state.status === 'error' || state.status === 'paused' ? (
+               <div className="flex flex-wrap justify-end gap-2">
+                 {savedCheckpoint && (
+                   <>
+                     <button
+                       onClick={resumeSavedRun}
+                       className="bg-blue-600 hover:bg-blue-500 text-white px-5 py-3 rounded-xl font-bold shadow-lg flex items-center gap-2"
+                     >
+                       <Save className="w-5 h-5" /> RESUME SAVED RUN
+                     </button>
+                     <button
+                       onClick={discardSavedRun}
+                       className="bg-slate-700 hover:bg-slate-600 text-slate-200 px-3 py-3 rounded-xl text-xs font-bold"
+                     >
+                       DISCARD SAVE
+                     </button>
+                   </>
+                 )}
                  <button 
                    onClick={runAutopilot}
-                   className="bg-emerald-600 hover:bg-emerald-500 text-white px-8 py-3 rounded-xl font-bold text-lg shadow-lg flex items-center gap-2 hover:scale-105 transition-transform"
+                   disabled={Boolean(savedCheckpoint)}
+                   title={savedCheckpoint ? 'Resume or discard the saved run before starting a new one.' : 'Start a new production run'}
+                   className="bg-emerald-600 hover:bg-emerald-500 text-white px-8 py-3 rounded-xl font-bold text-lg shadow-lg flex items-center gap-2 hover:scale-105 transition-transform disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:scale-100"
                  >
                    <Play className="w-6 h-6 fill-white" /> START PRODUCTION
                  </button>
@@ -1270,11 +2034,11 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
                     <button 
                        onClick={() => { 
                            skipToNextStageSignal.current = true;
-                           addLog("User requested skip. Finishing current batch and moving to packaging...");
+                           addLog("Pause requested. Finishing active requests and saving a checkpoint...");
                        }}
                        className="bg-amber-500 hover:bg-amber-400 text-black px-6 py-4 rounded-xl font-bold text-sm shadow-lg flex items-center gap-2 animate-pulse"
                      >
-                       <FastForward className="w-5 h-5 fill-black" /> FINISH NOW
+                       <FastForward className="w-5 h-5 fill-black" /> PAUSE SAFELY
                      </button>
                   )}
                   <button 
@@ -1337,9 +2101,31 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
                     <div>
                       <label className="text-xs text-slate-500 uppercase">Completed</label>
                       <div className="text-2xl font-bold text-emerald-400">
-                        {state.stickers.filter(s => s.status === 'completed').length} / {TARGET_STICKER_COUNT}
+                        {state.stickers.filter(s => s.qaStatus === 'approved').length} / {state.targetCount}
                       </div>
                     </div>
+                    <div className="grid grid-cols-2 gap-3 text-xs">
+                      <div className="bg-slate-900 rounded p-3 border border-slate-700">
+                        <div className="text-slate-500 uppercase">Seedream calls</div>
+                        <div className="text-white font-bold text-lg">{state.metrics.seedreamRequests + state.metrics.seedreamMockupRequests}</div>
+                        <div className="text-[9px] text-slate-500">{state.metrics.seedreamRequests} stickers + {state.metrics.seedreamMockupRequests} mockups</div>
+                      </div>
+                      <div className="bg-slate-900 rounded p-3 border border-slate-700">
+                        <div className="text-slate-500 uppercase">QA rejected</div>
+                        <div className="text-amber-400 font-bold text-lg">{state.metrics.rejectedImages}</div>
+                      </div>
+                    </div>
+                    {state.preflight && (
+                      <div className="bg-slate-900 rounded p-3 border border-slate-700 text-xs space-y-1">
+                        <div className="flex items-center gap-2 text-white font-bold">
+                          <ShieldCheck className="w-4 h-4 text-emerald-400" /> Market Preflight
+                        </div>
+                        <div className="text-slate-400">Demand {state.preflight.demandScore}/100 • Variety {state.preflight.variationScore}/100</div>
+                        <div className={state.preflight.ipRisk === 'high' ? 'text-red-400' : state.preflight.ipRisk === 'medium' ? 'text-amber-400' : 'text-emerald-400'}>
+                          IP risk: {state.preflight.ipRisk}
+                        </div>
+                      </div>
+                    )}
                  </div>
                ) : (
                  <div className="text-slate-500 text-sm">Waiting to start...</div>
@@ -1367,7 +2153,14 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
                </div>
                <div className="grid grid-cols-5 md:grid-cols-6 gap-2">
                   {state.stickers.map((s) => (
-                    <div key={s.id} className="aspect-square bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] bg-slate-700 rounded border border-slate-700 overflow-hidden relative group">
+                    <div
+                      key={s.id}
+                      title={s.qaIssues?.join(' • ') || `Sticker #${s.id}`}
+                      className={`aspect-square bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] bg-slate-700 rounded border overflow-hidden relative group ${s.qaStatus === 'approved' ? 'border-emerald-500/70' : s.qaStatus === 'rejected' ? 'border-red-500' : 'border-slate-700'}`}
+                    >
+                       <div className={`absolute top-1 left-1 z-10 text-[8px] font-black px-1.5 py-0.5 rounded ${s.qaStatus === 'approved' ? 'bg-emerald-600 text-white' : s.qaStatus === 'rejected' ? 'bg-red-600 text-white' : 'bg-slate-900/80 text-slate-300'}`}>
+                         #{s.id}{s.qaStatus === 'approved' ? ' ✓' : s.qaStatus === 'rejected' ? ' ✕' : ''}
+                       </div>
                        {s.status === 'completed' && s.url ? (
                          <>
                              <img src={s.url} className="w-full h-full object-contain p-1" />
@@ -1524,21 +2317,30 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
                                 <div className={`${asset.type === 'cover' ? 'aspect-[5/4]' : 'aspect-square'} bg-slate-900 relative flex items-center justify-center`}>
                                      {asset.status === 'completed' && asset.url ? (
                                          <>
-                                            <img src={asset.url} className="w-full h-full object-cover" />
+                                            {asset.format === 'video' ? (
+                                              <video src={asset.url} className="w-full h-full object-cover" controls muted loop playsInline />
+                                            ) : (
+                                              <img src={asset.url} className="w-full h-full object-cover" />
+                                            )}
                                             <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-2">
                                                 <button 
-                                                  onClick={() => downloadAsset(asset.url!, `${asset.type}.jpg`)}
+                                                  onClick={() => downloadAsset(
+                                                    asset.url!,
+                                                    asset.format === 'video'
+                                                      ? `listing_preview.${asset.mimeType?.includes('mp4') ? 'mp4' : 'webm'}`
+                                                      : `${asset.id || asset.type}.jpg`
+                                                  )}
                                                   className="bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-full text-xs font-bold"
                                                 >
-                                                  Download JPG
+                                                  Download {asset.format === 'video' ? 'Video' : 'JPG'}
                                                 </button>
-                                                <button 
+                                                {asset.format !== 'video' && <button
                                                   onClick={() => handleRegenerateMockup(asset.id!)}
                                                   className="bg-slate-700 hover:bg-slate-600 text-white p-2 rounded-full"
                                                   title="Regenerate"
                                                 >
                                                   <RefreshCw className="w-4 h-4" />
-                                                </button>
+                                                </button>}
                                             </div>
                                          </>
                                      ) : (

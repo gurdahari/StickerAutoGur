@@ -30,7 +30,7 @@ export interface BrainResult {
   sources: SourceLink[];
 }
 
-export type ImageSize = '1K' | '2K' | '4K';
+export type ImageSize = '1K' | '1K_LANDSCAPE' | '2K' | '4K';
 
 export interface ImageRequest {
   prompt: string;

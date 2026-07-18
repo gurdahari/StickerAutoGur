@@ -47,10 +47,11 @@ const estimateBackground = (data: Uint8ClampedArray, width: number, height: numb
 
 /**
  * Turns Seedream's flat matte background into a clean transparent PNG.
- * Only pixels connected to the canvas edge are treated as background, so dark
- * details inside the sticker remain protected by the white die-cut border.
+ * Exterior background is removed first. A second conservative pass removes
+ * only solid, background-colored enclosed regions that are large/dense enough
+ * to be genuine openings rather than dark illustration details.
  */
-export const processStickerImage = async (source: string): Promise<Blob> => {
+export const processStickerImage = async (source: string, itemPrompt = ''): Promise<Blob> => {
   const image = await loadImage(source);
   const workingCanvas = document.createElement('canvas');
   workingCanvas.width = image.width;
@@ -110,6 +111,85 @@ export const processStickerImage = async (source: string): Promise<Blob> => {
     if (x + 1 < width) tryQueue(x + 1, y);
     if (y > 0) tryQueue(x, y - 1);
     if (y + 1 < height) tryQueue(x, y + 1);
+  }
+
+  // Edge flood-fill intentionally cannot reach a hose loop, ring, frame or
+  // similar enclosed opening. Detect those separately using a strict matte-
+  // color component test. The high density/core-ratio requirements protect
+  // black outlines, lettering, eyes and textured dark artwork.
+  const expectsNaturalOpening = /\b(frame|window|tube|hose|ring|hoop|loop|coil|chain|link|scissors|glasses|eyeglasses|stethoscope|wheel|tire|bracelet|necklace|keyring|carabiner)\b/i.test(itemPrompt);
+  const holeSeedTolerance = backgroundLuma < 70 ? 24 : 20;
+  const holeGrowTolerance = backgroundLuma < 70 ? 80 : 58;
+  const holeVisited = new Uint8Array(pixelCount);
+  const minimumHoleArea = Math.max(
+    expectsNaturalOpening ? 220 : 1200,
+    Math.round(pixelCount * (expectsNaturalOpening ? 0.0012 : 0.006))
+  );
+  const minimumHoleSpan = Math.max(
+    expectsNaturalOpening ? 8 : 18,
+    Math.round(Math.min(width, height) * (expectsNaturalOpening ? 0.01 : 0.025))
+  );
+
+  const queueHolePixel = (position: number) => {
+    if (holeVisited[position]) return;
+    const pixelIndex = position * 4;
+    if (data[pixelIndex + 3] === 0 || distanceFromBackground(pixelIndex) > holeGrowTolerance) return;
+    holeVisited[position] = 1;
+    queue[queueEnd++] = position;
+  };
+
+  for (let seed = 0; seed < pixelCount; seed++) {
+    const seedIndex = seed * 4;
+    if (
+      holeVisited[seed]
+      || data[seedIndex + 3] === 0
+      || distanceFromBackground(seedIndex) > holeSeedTolerance
+    ) continue;
+
+    queueStart = 0;
+    queueEnd = 0;
+    queueHolePixel(seed);
+    let corePixels = 0;
+    let minHoleX = width;
+    let minHoleY = height;
+    let maxHoleX = -1;
+    let maxHoleY = -1;
+    let touchesCanvasEdge = false;
+
+    while (queueStart < queueEnd) {
+      const position = queue[queueStart++];
+      const x = position % width;
+      const y = Math.floor(position / width);
+      const pixelIndex = position * 4;
+      if (distanceFromBackground(pixelIndex) <= holeSeedTolerance) corePixels++;
+      minHoleX = Math.min(minHoleX, x);
+      minHoleY = Math.min(minHoleY, y);
+      maxHoleX = Math.max(maxHoleX, x);
+      maxHoleY = Math.max(maxHoleY, y);
+      if (x === 0 || y === 0 || x === width - 1 || y === height - 1) touchesCanvasEdge = true;
+
+      if (x > 0) queueHolePixel(position - 1);
+      if (x + 1 < width) queueHolePixel(position + 1);
+      if (y > 0) queueHolePixel(position - width);
+      if (y + 1 < height) queueHolePixel(position + width);
+    }
+
+    const componentArea = queueEnd;
+    const componentWidth = maxHoleX - minHoleX + 1;
+    const componentHeight = maxHoleY - minHoleY + 1;
+    const density = componentArea / Math.max(1, componentWidth * componentHeight);
+    const coreRatio = corePixels / Math.max(1, componentArea);
+    const isConfidentHole = !touchesCanvasEdge
+      && componentArea >= minimumHoleArea
+      && Math.min(componentWidth, componentHeight) >= minimumHoleSpan
+      && density >= (expectsNaturalOpening ? 0.45 : 0.62)
+      && coreRatio >= (expectsNaturalOpening ? 0.72 : 0.88);
+
+    if (isConfidentHole) {
+      for (let index = 0; index < queueEnd; index++) {
+        data[queue[index] * 4 + 3] = 0;
+      }
+    }
   }
 
   const hasTransparentNeighbor = (x: number, y: number) => {

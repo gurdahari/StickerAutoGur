@@ -1189,7 +1189,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
      return selected.map(s => s.url!);
   };
 
-  const getModelSelectedCoverBatch = async (pool: Sticker[], count = 12): Promise<string[]> => {
+  const getModelSelectedCoverBatch = async (pool: Sticker[], count = 14): Promise<string[]> => {
      const valid = pool
        .filter(sticker => sticker.status === 'completed' && sticker.url && sticker.qaStatus === 'approved')
        .sort((left, right) => (right.qaScore || 0) - (left.qaScore || 0));
@@ -1259,7 +1259,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
            else if (asset.id === 'preview_6') stickersForMockup = getStickerRange(validStickers, 85, 100);
            
            // Use Unique Batch Logic for Mockups to avoid repeats
-           else if (asset.type === 'cover') stickersForMockup = await getModelSelectedCoverBatch(validStickers, 15);
+           else if (asset.type === 'cover') stickersForMockup = await getModelSelectedCoverBatch(validStickers, 14);
            else if (asset.type === 'closeup') stickersForMockup = getUniqueBatchForMockup(validStickers, 4);
            else if (asset.type === 'included') stickersForMockup = getUniqueBatchForMockup(validStickers, 8);
            else if (asset.type === 'howto') stickersForMockup = getUniqueBatchForMockup(validStickers, 4);
@@ -1431,9 +1431,9 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       status: 'pending'
     }));
     const baseAssets: MarketingAsset[] = [
-      { id: 'cover_a', type: 'cover', title: 'Main Cover A (Seedream Art-Directed Hero)', url: null, status: 'pending' },
-      { id: 'cover_b', type: 'cover', title: 'Main Cover B (Boutique Collage)', url: null, status: 'pending' },
-      { id: 'cover_c', type: 'cover', title: 'Main Cover C (Premium Catalog)', url: null, status: 'pending' },
+      { id: 'cover_a', type: 'cover', title: 'Main Cover A (Full Seedream Hero)', url: null, status: 'pending' },
+      { id: 'cover_b', type: 'cover', title: 'Main Cover B (Full Seedream Editorial)', url: null, status: 'pending' },
+      { id: 'cover_c', type: 'cover', title: 'Main Cover C (Full Seedream Catalog)', url: null, status: 'pending' },
       { id: 'included', type: 'included', title: 'What You Receive', url: null, status: 'pending' },
       { id: 'quality_proof', type: 'closeup', title: 'Transparent Edge Quality Proof', url: null, status: 'pending' },
       ...previewAssets,
@@ -1446,7 +1446,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
     const assets = baseAssets.map((asset, index) => ({ ...asset, title: `${index + 1}. ${asset.title}` }));
     setState(prev => ({ ...prev, marketingAssets: assets }));
     const approved = stickersRef.current.filter(sticker => sticker.qaStatus === 'approved' && sticker.url).slice(0, targetCount);
-    const coverUrls = await getModelSelectedCoverBatch(approved, 15);
+    const coverUrls = await getModelSelectedCoverBatch(approved, 14);
     let finished = 0;
 
     await processWithQueue(assets, 6, async (asset, index) => {
@@ -1802,9 +1802,9 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         status: 'pending'
       }));
       const baseAssets: MarketingAsset[] = [
-        { id: 'cover_a', type: 'cover', title: 'Main Cover A (Seedream Art-Directed Hero)', url: null, status: 'pending' },
-        { id: 'cover_b', type: 'cover', title: 'Main Cover B (Boutique Collage)', url: null, status: 'pending' },
-        { id: 'cover_c', type: 'cover', title: 'Main Cover C (Premium Catalog)', url: null, status: 'pending' },
+        { id: 'cover_a', type: 'cover', title: 'Main Cover A (Full Seedream Hero)', url: null, status: 'pending' },
+        { id: 'cover_b', type: 'cover', title: 'Main Cover B (Full Seedream Editorial)', url: null, status: 'pending' },
+        { id: 'cover_c', type: 'cover', title: 'Main Cover C (Full Seedream Catalog)', url: null, status: 'pending' },
         { id: 'included', type: 'included', title: 'What You Receive', url: null, status: 'pending' },
         { id: 'quality_proof', type: 'closeup', title: 'Transparent Edge Quality Proof', url: null, status: 'pending' },
         ...previewAssets,
@@ -1823,7 +1823,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       const approvedForMarketing = stickersRef.current
         .filter(sticker => sticker.status === 'completed' && sticker.url && sticker.qaStatus === 'approved')
         .slice(0, activeTarget);
-      const selectedCoverUrls = await getModelSelectedCoverBatch(approvedForMarketing, 15);
+      const selectedCoverUrls = await getModelSelectedCoverBatch(approvedForMarketing, 14);
       let finishedAssets = 0;
       await processWithQueue(assetsToGen, 6, async (asset, i) => {
         if (stopSignal.current) return;

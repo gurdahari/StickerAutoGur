@@ -76,8 +76,9 @@ The production server serves both the compiled React app and `/api/*` on `PORT` 
 2. The market/rights preflight runs before any paid Seedream request.
 3. Seedream generates with adaptive concurrency. Rate-limit pressure automatically lowers the worker count and successful requests gradually restore it.
 4. Local inspection and OpenAI contact-sheet QA approve or reject every image. Rejected slots receive distinct replacement concepts until the target is met or the safety budget stops the run.
-5. Only approved files reach ZIP packaging, covers, mockups, listing copy and the final download.
+5. Only QA-approved or explicitly manually accepted files reach ZIP packaging, covers, mockups, listing copy and the final download.
 6. **PAUSE SAFELY** finishes active requests and saves the run. **RESUME SAVED RUN** continues only unfinished work.
+7. If the replacement budget ends but all target PNGs exist, **FINISH WITH 100 GENERATED** explicitly accepts the remaining rejected images for manual seller review and continues directly to ZIPs, mockups and listing copy without another replacement loop.
 
 ## Configuration
 

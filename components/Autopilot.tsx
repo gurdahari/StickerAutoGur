@@ -1242,7 +1242,9 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       if (assetIndex === -1 || !state.currentNiche) return;
 
       const asset = state.marketingAssets[assetIndex];
-      addLog(`Refining Mockup: ${asset.title}...`);
+      addLog(asset.type === 'cover'
+        ? `Creating a fresh creative direction and full Seedream hero: ${asset.title}...`
+        : `Refining Mockup: ${asset.title}...`);
       
       setState(prev => {
           const nextAssets = [...prev.marketingAssets];
@@ -1836,6 +1838,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         if (stopSignal.current) return;
         const assetStartedAt = Date.now();
         addLog(`Generating asset: ${asset.title}`);
+        if (asset.id === 'cover_a') addLog('Creative director: studying the real sticker set before Seedream composes the three hero directions...');
         setState(prev => {
           const nextAssets = [...prev.marketingAssets];
           nextAssets[i] = { ...asset, status: 'generating' };

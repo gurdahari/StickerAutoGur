@@ -744,9 +744,11 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       stickersRef.current = stickerObjects;
 
       // WORKER QUEUE CONFIG
-      // Turbo: 3 Concurrent Workers (Safer to avoid 429s)
-      // Pro: 2 Concurrent Workers (High Fidelity)
-      const CONCURRENCY = useTurbo ? 3 : 2;
+      // BytePlus currently allows up to 10 concurrent Seedream requests for an
+      // individual account. Keep some headroom for retries and mockup actions.
+      // Turbo renders 1K assets with 6 workers; Pro renders 2K with 4 workers.
+      const CONCURRENCY = useTurbo ? 6 : 4;
+      addLog(`Generating stickers with ${CONCURRENCY} parallel Seedream workers...`);
       
       await processWithQueue(stickerObjects, CONCURRENCY, async (s, index) => {
           if (stopSignal.current || skipToNextStageSignal.current) return;

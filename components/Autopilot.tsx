@@ -433,11 +433,11 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
   const handleAutoDetectTrend = async () => {
       await checkApiKey();
       setIsTrendSearching(true);
-      addLog("🔎 Scanning Etsy & Pinterest for top breakouts...");
+      addLog("🔎 Scanning current market signals for a broad 100-sticker opportunity...");
       try {
           const viralNiche = await findViralNiche();
           applyCustomNiche(viralNiche);
-          addLog(`✅ SUCCESS: Found best-seller: "${viralNiche}"`);
+          addLog(`✅ Broad opportunity selected: "${viralNiche}"`);
       } catch (e: any) {
           addLog(`Trend Scan Failed: ${e.message}`);
           console.error(e);
@@ -454,7 +454,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
     
     try {
         const [analysis, trends] = await Promise.all([
-            getTrendAnalysis("What are the absolute hottest trending digital sticker aesthetics on Etsy and Pinterest right now? Be specific."),
+            getTrendAnalysis("Which broad digital-sticker buyer markets and specific emerging angles show the strongest current demand signals?"),
             discoverTopTrends()
         ]);
 
@@ -469,11 +469,12 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
 
   const handleAddTrend = (trend: DiscoveredTrend) => {
       const dateStr = new Date().toLocaleDateString();
+      const productionName = trend.productionNiche || trend.name;
       
       const newNiche: NicheIdea = {
           id: Date.now(),
-          name: trend.name,
-          category: `🚀 Detected ${dateStr}`,
+          name: productionName,
+          category: `${trend.scope === 'broad' ? '💰 Broad Market' : '⚡ Micro Trend'} · ${dateStr}`,
           isNew: true
       };
       
@@ -491,7 +492,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       setSelectedNicheId(newNiche.id);
       setSelectedStyleId(newStyle.id);
       
-      addLog(`Imported Trend: "${trend.name}" + Style: "${trend.styleName}"`);
+      addLog(`Imported ${trend.scope} opportunity: "${trend.name}" → production niche "${productionName}".`);
       setShowTrendModal(false);
   };
 
@@ -504,11 +505,12 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
 
       discoveredTrends.forEach((trend, idx) => {
          const timestamp = Date.now() + idx; 
+         const productionName = trend.productionNiche || trend.name;
          
          const newNiche: NicheIdea = {
               id: timestamp,
-              name: trend.name,
-              category: `🚀 Detected ${dateStr}`,
+              name: productionName,
+              category: `${trend.scope === 'broad' ? '💰 Broad Market' : '⚡ Micro Trend'} · ${dateStr}`,
               isNew: true
           };
           newNiches.push(newNiche);
@@ -528,7 +530,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       setSelectedNicheId(newNiches[0].id);
       setSelectedStyleId(newStyles[0].id);
       
-      addLog(`Mass Import: Added ${newNiches.length} new trends to library.`);
+      addLog(`Mass Import: Added ${newNiches.length} balanced broad and micro opportunities to the niche library.`);
       setShowTrendModal(false);
   };
 
@@ -2508,7 +2510,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       {/* TREND ANALYSIS MODAL */}
       {showTrendModal && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div className="bg-slate-800 border border-slate-700 rounded-2xl w-full max-w-2xl max-h-[85vh] flex flex-col shadow-2xl animate-in fade-in zoom-in duration-200">
+            <div className="bg-slate-800 border border-slate-700 rounded-2xl w-full max-w-4xl max-h-[85vh] flex flex-col shadow-2xl animate-in fade-in zoom-in duration-200">
                 <div className="p-6 border-b border-slate-700 flex justify-between items-center">
                     <div className="flex items-center gap-3">
                         <Globe className="w-6 h-6 text-purple-400" />
@@ -2525,7 +2527,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
                 <div className="p-6 overflow-y-auto flex-1">
                     <div className="mb-6 bg-slate-900/50 p-6 rounded-xl border border-slate-700 text-center">
                         <div className="mb-4 text-slate-400 text-sm">
-                            OpenAI web search will inspect current marketplace and social trend signals to discover 5 breakout sticker trends.
+                            OpenAI web search will build two opportunity lanes: 5 broad buyer markets with room for 100 varied designs, plus 5 timely micro-trends mapped to broader production niches. Demand scores are signals, not guaranteed sales.
                         </div>
                         <button 
                             onClick={handleManualTrendAnalyze}
@@ -2554,7 +2556,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
                                      <div className="flex justify-between items-center mb-3">
                                          <h3 className="text-xs uppercase font-bold text-slate-500 flex items-center gap-2">
                                              <Zap className="w-4 h-4 text-yellow-500" /> 
-                                             Discovered Breakout Trends
+                                             Balanced Market Opportunities
                                          </h3>
                                          <button
                                             onClick={handleAddAllTrends}
@@ -2563,28 +2565,62 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
                                             <Plus className="w-3 h-3" /> Import All ({discoveredTrends.length})
                                          </button>
                                      </div>
-                                     <div className="grid grid-cols-1 gap-3">
-                                         {discoveredTrends.map((trend, i) => (
-                                             <div key={i} className="bg-slate-900 p-4 rounded-xl border border-slate-700 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 hover:border-indigo-500/50 transition-colors">
-                                                 <div className="flex-1">
-                                                     <div className="flex items-center gap-2 mb-1">
-                                                         <span className="text-lg font-bold text-white">{trend.name}</span>
-                                                         <span className="text-xs bg-slate-800 text-slate-300 px-2 py-0.5 rounded border border-slate-700">{trend.category}</span>
+                                     <div className="space-y-6">
+                                         {([
+                                             { scope: 'broad' as const, title: 'Broad Money Markets', subtitle: 'Durable buyer categories with enough range for a real 100-design collection.', accent: 'emerald' },
+                                             { scope: 'micro' as const, title: 'Emerging Micro Trends', subtitle: 'Specific timely angles, expanded into a broader production universe before generation.', accent: 'amber' }
+                                         ]).map((lane) => {
+                                             const laneTrends = discoveredTrends.filter((trend) => trend.scope === lane.scope);
+                                             if (laneTrends.length === 0) return null;
+                                             return (
+                                                 <section key={lane.scope}>
+                                                     <div className="mb-2">
+                                                         <div className={`text-sm font-bold ${lane.accent === 'emerald' ? 'text-emerald-300' : 'text-amber-300'}`}>{lane.title}</div>
+                                                         <div className="text-xs text-slate-500">{lane.subtitle}</div>
                                                      </div>
-                                                     <p className="text-sm text-slate-400 mb-2">{trend.description}</p>
-                                                     <div className="flex items-center gap-2 text-xs text-indigo-400">
-                                                         <Palette className="w-3 h-3" />
-                                                         <span>Suggested Style: {trend.styleName}</span>
+                                                     <div className="grid grid-cols-1 gap-3">
+                                                         {laneTrends.map((trend, i) => (
+                                                             <div key={`${lane.scope}-${i}`} className={`bg-slate-900 p-4 rounded-xl border ${lane.scope === 'broad' ? 'border-emerald-900/80 hover:border-emerald-500/60' : 'border-amber-900/80 hover:border-amber-500/60'} transition-colors`}>
+                                                                 <div className="flex flex-col sm:flex-row justify-between items-start gap-4">
+                                                                     <div className="flex-1 min-w-0">
+                                                                         <div className="flex flex-wrap items-center gap-2 mb-1">
+                                                                             <span className="text-lg font-bold text-white">{trend.name}</span>
+                                                                             <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded border ${trend.scope === 'broad' ? 'bg-emerald-950 text-emerald-300 border-emerald-800' : 'bg-amber-950 text-amber-300 border-amber-800'}`}>{trend.scope}</span>
+                                                                             <span className="text-xs bg-slate-800 text-slate-300 px-2 py-0.5 rounded border border-slate-700">{trend.category}</span>
+                                                                         </div>
+                                                                         <p className="text-sm text-slate-400 mb-3">{trend.description}</p>
+                                                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+                                                                             <div className="bg-slate-950/70 rounded-lg p-2 border border-slate-800">
+                                                                                 <span className="text-slate-500">Buyer: </span><span className="text-slate-200">{trend.targetBuyer}</span>
+                                                                             </div>
+                                                                             <div className="bg-slate-950/70 rounded-lg p-2 border border-slate-800">
+                                                                                 <span className="text-slate-500">Why it can sell: </span><span className="text-slate-200">{trend.whyItSells}</span>
+                                                                             </div>
+                                                                             <div className="md:col-span-2 bg-indigo-950/30 rounded-lg p-2 border border-indigo-900/50">
+                                                                                 <span className="text-indigo-400">100-sticker production niche: </span><span className="text-indigo-100">{trend.productionNiche}</span>
+                                                                             </div>
+                                                                         </div>
+                                                                         <div className="flex flex-wrap items-center gap-3 mt-3 text-xs">
+                                                                             <span className="text-slate-300">Demand <strong className="text-white">{trend.demandScore}/100</strong></span>
+                                                                             <span className="text-slate-300">Variety <strong className="text-white">{trend.varietyScore}/100</strong></span>
+                                                                             <span className="text-slate-300">Competition <strong className="text-white capitalize">{trend.competition}</strong></span>
+                                                                             <span className="flex items-center gap-1 text-indigo-400"><Palette className="w-3 h-3" /> {trend.styleName}</span>
+                                                                         </div>
+                                                                         <p className="mt-2 text-[11px] text-slate-500">Signal: {trend.evidenceSummary}</p>
+                                                                     </div>
+                                                                     <button
+                                                                        onClick={() => handleAddTrend(trend)}
+                                                                        className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 shadow-lg w-full sm:w-auto justify-center shrink-0"
+                                                                     >
+                                                                         <Plus className="w-4 h-4" /> Use Opportunity
+                                                                     </button>
+                                                                 </div>
+                                                             </div>
+                                                         ))}
                                                      </div>
-                                                 </div>
-                                                 <button 
-                                                    onClick={() => handleAddTrend(trend)}
-                                                    className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 shadow-lg w-full sm:w-auto justify-center"
-                                                 >
-                                                     <Plus className="w-4 h-4" /> Add to Library
-                                                 </button>
-                                             </div>
-                                         ))}
+                                                 </section>
+                                             );
+                                         })}
                                      </div>
                                  </div>
                              )}

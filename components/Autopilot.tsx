@@ -912,7 +912,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         .filter(sticker => sticker.qaStatus !== 'approved')
         .slice(0, targetCount - quality.report.approved);
       if (!rejectedSlots.length || remainingBudget < rejectedSlots.length) {
-        throw new Error(`Quality gate stopped the run at ${quality.report.approved}/${targetCount} approved stickers. The safe replacement budget is exhausted.`);
+        throw new Error(`Quality gate paused at ${quality.report.approved}/${targetCount} approved stickers. The safe replacement budget is exhausted. If all ${targetCount} images exist, use FINISH WITH ${targetCount} GENERATED to continue without another replacement loop.`);
       }
 
       addLog(`Creating ${rejectedSlots.length} distinct replacement concept${rejectedSlots.length === 1 ? '' : 's'}...`);
@@ -1420,7 +1420,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
     preflight: RunCheckpointMeta['preflight']
   ) => {
     setState(prev => ({ ...prev, status: 'zipping', progress: 75 }));
-    addLog('Packaging recovered run after quality approval...');
+    addLog('Packaging recovered run after the final inventory decision...');
     const zips = await packageStickers(stickersRef.current, niche.name, mode, targetCount);
     setState(prev => ({ ...prev, zips, status: 'marketing', progress: 85 }));
 
@@ -1515,6 +1515,68 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       metrics: metricsRef.current
     }));
     addLog(`${mode === 'production' ? 'PRODUCTION' : 'TEST'} COMPLETE after checkpoint recovery.`);
+  };
+
+  const finishWithGeneratedInventory = async () => {
+    if (!state.currentNiche || !state.currentStyle || !visualAnalysisRef.current) return;
+    const completed = stickersRef.current
+      .filter(sticker => sticker.status === 'completed' && sticker.blob && sticker.url)
+      .slice(0, state.targetCount);
+    if (completed.length < state.targetCount) {
+      addLog(`Cannot continue yet: only ${completed.length}/${state.targetCount} generated PNGs exist.`);
+      return;
+    }
+
+    const completedIds = new Set(completed.map(sticker => sticker.id));
+    const manualOverrideCount = completed.filter(sticker => sticker.qaStatus !== 'approved').length;
+    const overridden = stickersRef.current.map(sticker => completedIds.has(sticker.id)
+      ? {
+          ...sticker,
+          qaStatus: 'approved' as const,
+          manuallyAccepted: sticker.qaStatus !== 'approved' || sticker.manuallyAccepted,
+          qaIssues: sticker.qaIssues || []
+        }
+      : sticker
+    );
+    const overrideReport: QualityReport = {
+      checked: state.targetCount,
+      approved: state.targetCount,
+      rejected: 0,
+      duplicateGroups: state.qualityReport?.duplicateGroups || [],
+      generatedAt: new Date().toISOString(),
+      manualOverrideCount
+    };
+
+    stickersRef.current = overridden;
+    setState(prev => ({
+      ...prev,
+      status: 'zipping',
+      progress: 75,
+      stickers: overridden,
+      qualityReport: overrideReport
+    }));
+    addLog(`Manual finish selected: continuing with ${state.targetCount} generated PNGs. ${manualOverrideCount} QA-rejected image${manualOverrideCount === 1 ? '' : 's'} kept for manual review; no more sticker replacements will run.`);
+    if (runIdRef.current) await saveStickerCheckpoints(runIdRef.current, overridden);
+
+    try {
+      await finishRecoveredProduction(
+        state.currentNiche,
+        state.currentStyle,
+        visualAnalysisRef.current,
+        state.runMode,
+        state.targetCount,
+        useTurbo,
+        overrideReport,
+        state.preflight
+      );
+      setNeedsZipUpdate(false);
+    } catch (error) {
+      addLog(`FINISH ERROR: ${error instanceof Error ? error.message : String(error)}`);
+      setState(prev => ({ ...prev, status: 'error' }));
+    } finally {
+      audioRef.current?.pause();
+      releaseWakeLock();
+    }
   };
 
   const resumeSavedRun = async () => {
@@ -2061,6 +2123,19 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
 
              {state.status === 'idle' || state.status === 'completed' || state.status === 'error' || state.status === 'paused' ? (
                <div className="flex flex-wrap justify-end gap-2">
+                 {['error', 'paused'].includes(state.status)
+                   && state.stickers.filter(sticker => sticker.status === 'completed' && sticker.blob && sticker.url).length >= state.targetCount
+                   && state.currentNiche
+                   && state.currentStyle
+                   && (
+                     <button
+                       onClick={finishWithGeneratedInventory}
+                       className="bg-amber-500 hover:bg-amber-400 text-black px-5 py-3 rounded-xl font-black shadow-lg flex items-center gap-2"
+                       title="Skip any remaining QA replacement loop and continue with all generated PNGs"
+                     >
+                       <FastForward className="w-5 h-5 fill-black" /> FINISH WITH {state.targetCount} GENERATED
+                     </button>
+                   )}
                  {savedCheckpoint && (
                    <>
                      <button
@@ -2214,10 +2289,10 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
                     <div
                       key={s.id}
                       title={s.qaIssues?.join(' • ') || `Sticker #${s.id}`}
-                      className={`aspect-square bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] bg-slate-700 rounded border overflow-hidden relative group ${s.qaStatus === 'approved' ? 'border-emerald-500/70' : s.qaStatus === 'rejected' ? 'border-red-500' : 'border-slate-700'}`}
+                      className={`aspect-square bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] bg-slate-700 rounded border overflow-hidden relative group ${s.manuallyAccepted ? 'border-amber-400' : s.qaStatus === 'approved' ? 'border-emerald-500/70' : s.qaStatus === 'rejected' ? 'border-red-500' : 'border-slate-700'}`}
                     >
-                       <div className={`absolute top-1 left-1 z-10 text-[8px] font-black px-1.5 py-0.5 rounded ${s.qaStatus === 'approved' ? 'bg-emerald-600 text-white' : s.qaStatus === 'rejected' ? 'bg-red-600 text-white' : 'bg-slate-900/80 text-slate-300'}`}>
-                         #{s.id}{s.qaStatus === 'approved' ? ' ✓' : s.qaStatus === 'rejected' ? ' ✕' : ''}
+                       <div className={`absolute top-1 left-1 z-10 text-[8px] font-black px-1.5 py-0.5 rounded ${s.manuallyAccepted ? 'bg-amber-500 text-black' : s.qaStatus === 'approved' ? 'bg-emerald-600 text-white' : s.qaStatus === 'rejected' ? 'bg-red-600 text-white' : 'bg-slate-900/80 text-slate-300'}`}>
+                         #{s.id}{s.manuallyAccepted ? ' !' : s.qaStatus === 'approved' ? ' ✓' : s.qaStatus === 'rejected' ? ' ✕' : ''}
                        </div>
                        {s.status === 'completed' && s.url ? (
                          <>

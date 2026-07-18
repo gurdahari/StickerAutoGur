@@ -10,7 +10,14 @@ interface BrainResult {
 interface ProviderHealth {
   status: string;
   providers: {
-    openai: { configured: boolean; model: string };
+    openai: {
+      configured: boolean;
+      model: string;
+      keyHint?: string | null;
+      keySource?: string | null;
+      keyLocation?: string | null;
+      lastSuccessfulRequestAt?: string | null;
+    };
     seedream: {
       configured: boolean;
       model: string;
@@ -35,6 +42,11 @@ const apiRequest = async <T>(path: string, init?: RequestInit): Promise<T> => {
     throw new Error(payload.error || `API request failed with status ${response.status}.`);
   }
   return payload;
+};
+
+const isProviderAuthenticationError = (error: unknown): boolean => {
+  const message = error instanceof Error ? error.message : String(error);
+  return /\b(?:401|403)\b|incorrect api key|invalid api key|authentication|unauthorized/i.test(message);
 };
 
 const generateBrainText = async (options: {
@@ -649,6 +661,7 @@ export const analyzeNichePotential = async (nicheName: string): Promise<number> 
       const score = parseInt(response.text.trim() || "50");
       return isNaN(score) ? 50 : score;
   } catch (e) {
+      if (isProviderAuthenticationError(e)) throw e;
       return 50;
   }
 };
@@ -708,6 +721,7 @@ export const analyzeNicheVisuals = async (nicheName: string): Promise<NicheVisua
       });
       return JSON.parse(response.text.trim());
   } catch (e) {
+      if (isProviderAuthenticationError(e)) throw e;
       console.error("Failed to parse visual analysis", e);
       return { 
           archetype: 'OBJECT', 
@@ -820,6 +834,7 @@ export const generateStickerPrompts = async (niche: string, style: StylePreset, 
       }
       return uniquePrompts.slice(0, COUNT);
   } catch (e) {
+      if (isProviderAuthenticationError(e)) throw e;
       console.error(`Failed to parse prompts`, e);
       return Array.from({ length: COUNT }, (_, index) => {
         const family = fallbackFamilies[index % fallbackFamilies.length] || 'thematic object';

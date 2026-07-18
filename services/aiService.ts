@@ -11,7 +11,13 @@ interface ProviderHealth {
   status: string;
   providers: {
     openai: { configured: boolean; model: string };
-    seedream: { configured: boolean; model: string };
+    seedream: {
+      configured: boolean;
+      model: string;
+      keyHint?: string | null;
+      keySource?: string | null;
+      lastSuccessfulRequestAt?: string | null;
+    };
   };
 }
 
@@ -798,7 +804,7 @@ export const generateAutopilotSticker = async (
   TECHNICAL RULES (DO NOT IGNORE):
   1. **SINGLE STICKER DESIGN ONLY**: Generate one clear primary subject in the center. Small supporting details named in the subject are allowed, but do not generate a sticker sheet, grid, pattern, or collection.
   2. **BACKGROUND**: SOLID BLACK HEX #000000. DO NOT USE DARK GRAY. DO NOT USE GRADIENTS. MUST BE FLAT BLACK.
-  3. **BORDER**: MANDATORY THICK WHITE DIE-CUT BORDER surrounding the object. This border protects the sticker content.
+  3. **BORDER**: Add one clean MEDIUM-THIN white die-cut border surrounding the object. Target a consistent border width of approximately 2.5-3.5% of the sticker's shorter dimension. It must remain visible at thumbnail size but must not look chunky, puffy, or halo-like.
   3A. **EDGE QUALITY**: The outside of the white border must be perfectly clean, continuous, and crisp. NO gray rim, NO dotted/dashed cut line, NO glow, NO texture, NO drop shadow, and NO second outline.
   4. **NO CROPPING**: The object must be floating in the center with padding on all sides.
   5. **NO CARDS**: Do NOT place the sticker on a paper card or square backing. It must be floating in void.
@@ -807,7 +813,7 @@ export const generateAutopilotSticker = async (
   
   ${strictConstraints}
   
-  NEGATIVE PROMPT (AVOID): ${negativeKeywords}, sticker sheet, sticker set, grid, pattern, multiple items, collection, cropping, blurry, text watermark, gray background, complex background, square crop, photo of a sticker on a table, realistic lighting on background, dark card backing, square paper behind sticker, holes, loops, empty space inside, transparent gaps, rings, chains, shadow, drop shadow, glow, gray fringe, dotted outline, dashed cut line, textured edge.
+  NEGATIVE PROMPT (AVOID): ${negativeKeywords}, sticker sheet, sticker set, grid, pattern, multiple items, collection, cropping, blurry, text watermark, gray background, complex background, square crop, photo of a sticker on a table, realistic lighting on background, dark card backing, square paper behind sticker, holes, loops, empty space inside, transparent gaps, rings, chains, shadow, drop shadow, glow, oversized white border, extra-thick white outline, wide white halo, gray fringe, dotted outline, dashed cut line, textured edge.
   `;
 
   return generateSeedreamImage(fullPrompt, useTurbo ? '1K' : '2K');

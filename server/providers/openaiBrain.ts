@@ -9,6 +9,15 @@ Be commercially useful, specific, honest about uncertainty, and follow the reque
 const getApiKey = () => process.env.OPENAI_API_KEY?.trim();
 export const getOpenAIModel = () => process.env.OPENAI_MODEL?.trim() || 'gpt-5.6';
 export const isOpenAIConfigured = () => Boolean(getApiKey());
+export const getOpenAIKeyHint = () => {
+  const apiKey = getApiKey();
+  return apiKey ? `...${apiKey.slice(-4)}` : null;
+};
+export const getOpenAIKeySource = () => process.env.OPENAI_API_KEY?.trim()
+  ? 'OPENAI_API_KEY'
+  : null;
+let lastSuccessfulRequestAt: string | null = null;
+export const getOpenAILastSuccessfulRequestAt = () => lastSuccessfulRequestAt;
 
 const getReasoningEffort = (): ReasoningEffort => {
   const value = process.env.OPENAI_REASONING_EFFORT?.trim().toLowerCase();
@@ -70,6 +79,8 @@ export const generateBrainResponse = async (request: BrainRequest): Promise<Brai
       }
     } : undefined
   });
+
+  lastSuccessfulRequestAt = new Date().toISOString();
 
   return {
     text: response.output_text || '',

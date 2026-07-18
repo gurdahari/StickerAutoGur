@@ -379,19 +379,35 @@ const drawContainedSticker = (
   context.restore();
 };
 
+const getCoverCopy = (rawNiche: string) => {
+  const normalized = (rawNiche || 'Premium Sticker Collection').replace(/\s+/g, ' ').trim();
+  const parenthetical = normalized.match(/^(.*?)\s*\(([^)]+)\)\s*$/);
+  const colon = !parenthetical ? normalized.match(/^([^:]+):\s*(.+)$/) : null;
+  const rawTitle = (parenthetical?.[1] || colon?.[1] || normalized)
+    .replace(/\b(?:digital\s+)?stickers?\s+bundle\b/gi, '')
+    .replace(/\b(?:digital\s+)?stickers?\b/gi, '')
+    .trim();
+  const rawSubtitle = parenthetical?.[2] || colon?.[2] || 'Premium themed collection';
+  return {
+    title: (rawTitle || normalized).toUpperCase(),
+    subtitle: rawSubtitle
+      .replace(/[\/|]+/g, ' • ')
+      .replace(/\s*•\s*/g, ' • ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toUpperCase()
+  };
+};
+
 const getCoverTitleLayout = (
   context: CanvasRenderingContext2D,
-  rawTitle: string,
+  title: string,
   maxWidth: number
 ) => {
-  const title = (rawTitle || 'Premium Sticker Collection').replace(/\s+/g, ' ').trim().toUpperCase();
   const words = title.split(' ');
   let lines = [title];
 
-  // Strong marketplace covers use a compact two-level headline. Choose the
-  // most visually balanced word break instead of shrinking a long niche name
-  // into one weak line.
-  if (words.length >= 3 || title.length > 22) {
+  if (title.length > 24 && words.length >= 3) {
     context.font = '900 120px Inter, Arial, sans-serif';
     let best: { lines: string[]; score: number } | null = null;
     for (let split = 1; split < words.length; split++) {
@@ -403,7 +419,7 @@ const getCoverTitleLayout = (
     if (best) lines = best.lines;
   }
 
-  let fontSize = lines.length === 1 ? 190 : 164;
+  let fontSize = lines.length === 1 ? 210 : 168;
   const minimumFontSize = lines.length === 1 ? 92 : 78;
   while (fontSize > minimumFontSize) {
     context.font = `900 ${fontSize}px Inter, Arial, sans-serif`;
@@ -438,15 +454,17 @@ const createCoverComposite = async (
   if (!context) throw new Error('Canvas is unavailable for cover generation.');
 
   const palettes = [
-    { start: '#14B8A6', middle: '#3B82F6', end: '#A855F7', accent: '#FB7185', accent2: '#FDE047', ink: '#071A2D' },
-    { start: '#EC4899', middle: '#8B5CF6', end: '#06B6D4', accent: '#FB7185', accent2: '#FDE68A', ink: '#2E1065' },
-    { start: '#0EA5E9', middle: '#6366F1', end: '#D946EF', accent: '#F97316', accent2: '#A3E635', ink: '#082F49' },
-    { start: '#F59E0B', middle: '#EF4444', end: '#9333EA', accent: '#22D3EE', accent2: '#FDE047', ink: '#3F0D12' }
+    { start: '#EADFC8', middle: '#A9B58E', end: '#66745A', accent: '#D96C4A', accent2: '#F0C75E', ink: '#263126' },
+    { start: '#F7E7E1', middle: '#C6A6B6', end: '#745B75', accent: '#D95D75', accent2: '#F2C66D', ink: '#35263B' },
+    { start: '#DCE8ED', middle: '#86A6B6', end: '#405B70', accent: '#E07A5F', accent2: '#F2CC8F', ink: '#1F3342' },
+    { start: '#F4E6C8', middle: '#D49A6A', end: '#8C5D4B', accent: '#4F8A7B', accent2: '#F3CF6D', ink: '#3B2B25' }
   ];
   const nicheHash = [...(nicheName || 'sticker')]
     .reduce((hash, character) => ((hash * 31) + character.charCodeAt(0)) >>> 0, 7);
   const coverVariant = Math.abs(variant) % 3;
-  const palette = palettes[(nicheHash + coverVariant) % palettes.length];
+  const natureNiche = /mushroom|fern|forest|nature|granola|hike|camp|botanical|garden|cottage|outdoor|mountain/i.test(nicheName);
+  const palette = palettes[natureNiche ? 0 : (nicheHash + coverVariant) % palettes.length];
+  const coverCopy = getCoverCopy(nicheName);
   const background = coverVariant === 1
     ? context.createLinearGradient(width, 0, 0, height)
     : coverVariant === 2
@@ -466,58 +484,43 @@ const createCoverComposite = async (
       renderedWidth,
       renderedHeight
     );
-    // A translucent brand gradient keeps headline/badge contrast predictable
-    // while preserving Seedream's art-directed depth and retail energy.
-    context.globalAlpha = 0.38;
+    context.globalAlpha = 0.10;
   }
   context.fillStyle = background;
   context.fillRect(0, 0, width, height);
   context.globalAlpha = 1;
 
-  const centerGlow = context.createRadialGradient(1500, 1280, 120, 1500, 1280, 1500);
-  centerGlow.addColorStop(0, 'rgba(255, 255, 255, 0.34)');
-  centerGlow.addColorStop(0.55, 'rgba(255, 255, 255, 0.09)');
-  centerGlow.addColorStop(1, 'rgba(255, 255, 255, 0)');
+  const centerGlow = context.createRadialGradient(1500, 1320, 120, 1500, 1320, 1450);
+  centerGlow.addColorStop(0, 'rgba(255, 250, 232, 0.26)');
+  centerGlow.addColorStop(0.58, 'rgba(255, 250, 232, 0.07)');
+  centerGlow.addColorStop(1, 'rgba(9, 15, 12, 0.10)');
   context.fillStyle = centerGlow;
   context.fillRect(0, 0, width, height);
 
-  // Retail-style burst and confetti create energy without adding generated
-  // product art. All product imagery below remains exact completed PNG pixels.
+  const headlineShade = context.createLinearGradient(0, 0, 0, 640);
+  headlineShade.addColorStop(0, 'rgba(9, 14, 12, 0.78)');
+  headlineShade.addColorStop(0.72, 'rgba(9, 14, 12, 0.48)');
+  headlineShade.addColorStop(1, 'rgba(9, 14, 12, 0)');
+  context.fillStyle = headlineShade;
+  context.fillRect(0, 0, width, 660);
+
+  // A subtle merchandising stage preserves the niche-specific Seedream art
+  // while keeping every exact PNG readable and crop-safe.
   context.save();
-  context.translate(width / 2, 1390);
-  for (let ray = 0; ray < 24; ray++) {
-    context.rotate((Math.PI * 2) / 24);
-    context.fillStyle = ray % 2 === 0 ? 'rgba(255, 255, 255, 0.045)' : 'rgba(255, 255, 255, 0.018)';
-    context.beginPath();
-    context.moveTo(240, -34);
-    context.lineTo(1760, -108);
-    context.lineTo(1760, 108);
-    context.closePath();
-    context.fill();
-  }
-  context.restore();
-
-  for (let index = 0; index < 48; index++) {
-    const x = 70 + ((index * 547 + nicheHash) % (width - 140));
-    const y = 70 + ((index * 311 + nicheHash * 3) % (height - 140));
-    const radius = 5 + (index % 4) * 3;
-    context.fillStyle = index % 3 === 0 ? 'rgba(253, 224, 71, 0.36)' : 'rgba(255, 255, 255, 0.18)';
-    context.beginPath();
-    context.arc(x, y, radius, 0, Math.PI * 2);
-    context.fill();
-  }
-
-  context.strokeStyle = 'rgba(255, 255, 255, 0.82)';
-  context.lineWidth = 24;
-  context.strokeRect(34, 34, width - 68, height - 68);
-
-  context.save();
-  context.fillStyle = 'rgba(7, 18, 45, 0.20)';
-  context.strokeStyle = 'rgba(255, 255, 255, 0.34)';
+  context.fillStyle = 'rgba(12, 20, 16, 0.20)';
+  context.strokeStyle = 'rgba(255, 245, 216, 0.32)';
   context.lineWidth = 7;
   context.beginPath();
-  context.roundRect(105, 805, 2790, 1195, 110);
+  context.roundRect(72, 620, 2856, 1400, 88);
   context.fill();
+  context.stroke();
+  context.restore();
+
+  context.save();
+  context.strokeStyle = 'rgba(255, 246, 222, 0.82)';
+  context.lineWidth = 14;
+  context.beginPath();
+  context.roundRect(24, 24, width - 48, height - 48, 48);
   context.stroke();
   context.restore();
 
@@ -526,103 +529,111 @@ const createCoverComposite = async (
   context.save();
   context.fillStyle = palette.accent2;
   context.shadowColor = 'rgba(0, 0, 0, 0.28)';
-  context.shadowBlur = 22;
+  context.shadowBlur = 14;
+  context.shadowOffsetY = 7;
   context.beginPath();
-  context.roundRect(820, 66, 1360, 150, 75);
+  context.roundRect(125, 68, 1040, 98, 49);
   context.fill();
   context.shadowBlur = 0;
   context.fillStyle = palette.ink;
-  context.font = '900 58px Inter, Arial, sans-serif';
-  context.fillText('THE ULTIMATE DIGITAL STICKER BUNDLE', width / 2, 142);
+  context.font = '900 39px Inter, Arial, sans-serif';
+  context.fillText('DIGITAL STICKER BUNDLE', 645, 119);
   context.restore();
 
-  const titleLayout = getCoverTitleLayout(context, nicheName, 2360);
+  const titleLayout = getCoverTitleLayout(context, coverCopy.title, 2150);
   const titleLineHeight = titleLayout.fontSize * 0.92;
-  const titleCenterY = titleLayout.lines.length === 1 ? 415 : 430;
+  const titleCenterY = titleLayout.lines.length === 1 ? 320 : 328;
   const firstTitleY = titleCenterY - ((titleLayout.lines.length - 1) * titleLineHeight) / 2;
   context.font = `900 ${titleLayout.fontSize}px Inter, Arial, sans-serif`;
   context.lineJoin = 'round';
-  context.lineWidth = Math.max(18, titleLayout.fontSize * 0.12);
+  context.lineWidth = Math.max(12, titleLayout.fontSize * 0.075);
   titleLayout.lines.forEach((line, index) => {
     const y = firstTitleY + index * titleLineHeight;
     context.save();
-    context.fillStyle = palette.accent;
-    context.strokeStyle = palette.ink;
-    context.shadowColor = 'rgba(0, 0, 0, 0.34)';
-    context.shadowBlur = 26;
-    context.strokeText(line, width / 2 + 12, y + 15);
-    context.fillText(line, width / 2 + 12, y + 15);
-    context.shadowBlur = 0;
-    context.fillStyle = '#FFFFFF';
-    context.strokeStyle = palette.ink;
-    context.strokeText(line, width / 2, y);
-    context.fillText(line, width / 2, y);
+    context.fillStyle = '#FFF7E5';
+    context.strokeStyle = 'rgba(10, 16, 13, 0.92)';
+    context.shadowColor = 'rgba(0, 0, 0, 0.38)';
+    context.shadowBlur = 18;
+    context.shadowOffsetY = 9;
+    context.strokeText(line, 1260, y);
+    context.fillText(line, 1260, y);
     context.restore();
   });
 
+  let subtitleFontSize = 48;
+  while (subtitleFontSize > 30) {
+    context.font = `900 ${subtitleFontSize}px Inter, Arial, sans-serif`;
+    if (context.measureText(coverCopy.subtitle).width <= 1960) break;
+    subtitleFontSize -= 2;
+  }
   context.save();
-  context.fillStyle = 'rgba(255, 255, 255, 0.94)';
-  context.strokeStyle = palette.ink;
-  context.lineWidth = 8;
+  context.fillStyle = 'rgba(10, 16, 13, 0.78)';
+  context.strokeStyle = palette.accent2;
+  context.lineWidth = 5;
   context.beginPath();
-  context.roundRect(790, 664, 1420, 112, 56);
+  context.roundRect(250, 480, 2010, 76, 38);
   context.fill();
   context.stroke();
-  context.fillStyle = palette.ink;
-  context.font = '900 44px Inter, Arial, sans-serif';
-  context.fillText(`${images.length} ACTUAL STICKER DESIGNS SHOWN`, width / 2, 722);
+  context.fillStyle = '#FFF7E5';
+  context.font = `900 ${subtitleFontSize}px Inter, Arial, sans-serif`;
+  context.fillText(coverCopy.subtitle, 1255, 519);
   context.restore();
 
   const stickerCount = Math.max(images.length, totalStickerCount);
-  // Ordered visual hierarchy: the OpenAI selector puts the strongest concept
-  // first, then supporting designs, then accents. Draw accents first so the
-  // hero remains unmistakable at small Etsy thumbnail sizes.
-  const baseSlots = [
-    { x: 1500, y: 1410, w: 760, h: 760, r: 0.01, shadow: 1.65 },
-    { x: 905, y: 1200, w: 570, h: 570, r: -0.11, shadow: 1.35 },
-    { x: 2095, y: 1195, w: 570, h: 570, r: 0.11, shadow: 1.35 },
-    { x: 880, y: 1695, w: 545, h: 545, r: 0.09, shadow: 1.30 },
-    { x: 2120, y: 1685, w: 545, h: 545, r: -0.09, shadow: 1.30 },
-    { x: 405, y: 1015, w: 390, h: 390, r: -0.14, shadow: 1.0 },
-    { x: 2595, y: 1035, w: 390, h: 390, r: 0.14, shadow: 1.0 },
-    { x: 405, y: 1480, w: 415, h: 415, r: 0.11, shadow: 1.0 },
-    { x: 2595, y: 1480, w: 415, h: 415, r: -0.11, shadow: 1.0 },
-    { x: 1180, y: 940, w: 355, h: 355, r: -0.07, shadow: 0.95 },
-    { x: 1820, y: 940, w: 355, h: 355, r: 0.07, shadow: 0.95 },
-    { x: 1180, y: 1880, w: 335, h: 335, r: -0.04, shadow: 1.0 },
-    { x: 1820, y: 1880, w: 335, h: 335, r: 0.04, shadow: 1.0 },
-    { x: 545, y: 1870, w: 310, h: 310, r: -0.10, shadow: 0.9 },
-    { x: 2455, y: 1860, w: 310, h: 310, r: 0.10, shadow: 0.9 }
+  const layoutSets = [
+    [
+      { x: 1500, y: 1390, w: 780, h: 780, r: 0.00, shadow: 1.60 },
+      { x: 820, y: 1120, w: 555, h: 555, r: -0.08, shadow: 1.25 },
+      { x: 2180, y: 1120, w: 555, h: 555, r: 0.08, shadow: 1.25 },
+      { x: 830, y: 1660, w: 510, h: 510, r: 0.07, shadow: 1.20 },
+      { x: 2170, y: 1660, w: 510, h: 510, r: -0.07, shadow: 1.20 },
+      { x: 350, y: 980, w: 330, h: 330, r: -0.10, shadow: 0.95 },
+      { x: 2650, y: 980, w: 330, h: 330, r: 0.10, shadow: 0.95 },
+      { x: 350, y: 1450, w: 350, h: 350, r: 0.08, shadow: 0.95 },
+      { x: 2650, y: 1450, w: 350, h: 350, r: -0.08, shadow: 0.95 },
+      { x: 1180, y: 790, w: 315, h: 315, r: -0.05, shadow: 0.90 },
+      { x: 1820, y: 790, w: 315, h: 315, r: 0.05, shadow: 0.90 },
+      { x: 1190, y: 1850, w: 300, h: 300, r: -0.04, shadow: 0.90 },
+      { x: 1810, y: 1850, w: 300, h: 300, r: 0.04, shadow: 0.90 },
+      { x: 590, y: 1880, w: 280, h: 280, r: -0.07, shadow: 0.85 },
+      { x: 2410, y: 1880, w: 280, h: 280, r: 0.07, shadow: 0.85 }
+    ],
+    [
+      { x: 1500, y: 1370, w: 720, h: 720, r: -0.015, shadow: 1.55 },
+      { x: 900, y: 1110, w: 530, h: 530, r: -0.06, shadow: 1.20 },
+      { x: 2100, y: 1110, w: 530, h: 530, r: 0.06, shadow: 1.20 },
+      { x: 900, y: 1650, w: 500, h: 500, r: 0.06, shadow: 1.15 },
+      { x: 2100, y: 1650, w: 500, h: 500, r: -0.06, shadow: 1.15 },
+      { x: 390, y: 900, w: 330, h: 330, r: -0.08, shadow: 0.90 },
+      { x: 2610, y: 900, w: 330, h: 330, r: 0.08, shadow: 0.90 },
+      { x: 370, y: 1340, w: 350, h: 350, r: 0.07, shadow: 0.90 },
+      { x: 2630, y: 1340, w: 350, h: 350, r: -0.07, shadow: 0.90 },
+      { x: 1180, y: 785, w: 300, h: 300, r: -0.04, shadow: 0.85 },
+      { x: 1820, y: 785, w: 300, h: 300, r: 0.04, shadow: 0.85 },
+      { x: 1180, y: 1850, w: 300, h: 300, r: 0.03, shadow: 0.85 },
+      { x: 1820, y: 1850, w: 300, h: 300, r: -0.03, shadow: 0.85 },
+      { x: 580, y: 1810, w: 285, h: 285, r: -0.07, shadow: 0.85 },
+      { x: 2420, y: 1810, w: 285, h: 285, r: 0.07, shadow: 0.85 }
+    ],
+    [
+      { x: 1500, y: 1420, w: 760, h: 760, r: 0.012, shadow: 1.60 },
+      { x: 790, y: 1220, w: 520, h: 520, r: -0.09, shadow: 1.20 },
+      { x: 2210, y: 1220, w: 520, h: 520, r: 0.09, shadow: 1.20 },
+      { x: 880, y: 1700, w: 465, h: 465, r: 0.06, shadow: 1.10 },
+      { x: 2120, y: 1700, w: 465, h: 465, r: -0.06, shadow: 1.10 },
+      { x: 390, y: 1010, w: 325, h: 325, r: -0.08, shadow: 0.90 },
+      { x: 2610, y: 1010, w: 325, h: 325, r: 0.08, shadow: 0.90 },
+      { x: 370, y: 1510, w: 340, h: 340, r: 0.07, shadow: 0.90 },
+      { x: 2630, y: 1510, w: 340, h: 340, r: -0.07, shadow: 0.90 },
+      { x: 1120, y: 800, w: 310, h: 310, r: -0.04, shadow: 0.85 },
+      { x: 1880, y: 800, w: 310, h: 310, r: 0.04, shadow: 0.85 },
+      { x: 1210, y: 1880, w: 280, h: 280, r: -0.03, shadow: 0.85 },
+      { x: 1790, y: 1880, w: 280, h: 280, r: 0.03, shadow: 0.85 },
+      { x: 610, y: 1880, w: 270, h: 270, r: -0.06, shadow: 0.80 },
+      { x: 2390, y: 1880, w: 270, h: 270, r: 0.06, shadow: 0.80 }
+    ]
   ];
-  const slots = baseSlots.map((slot, index) => {
-    if (coverVariant === 1) {
-      if (index === 0) return { ...slot, x: 1040, y: 1430, w: 820, h: 820, r: -0.035 };
-      const column = index % 3;
-      return {
-        ...slot,
-        x: 1740 + column * 365,
-        y: 960 + Math.floor((index - 1) / 3) * 335,
-        w: Math.min(slot.w, index < 5 ? 430 : 310),
-        h: Math.min(slot.h, index < 5 ? 430 : 310),
-        r: column === 0 ? -0.07 : column === 2 ? 0.07 : 0
-      };
-    }
-    if (coverVariant === 2) {
-      if (index === 0) return { ...slot, y: 1325, w: 720, h: 720 };
-      const angle = ((index - 1) / Math.max(1, images.length - 1)) * Math.PI * 2 - Math.PI / 2;
-      const radiusX = index < 8 ? 920 : 1220;
-      const radiusY = index < 8 ? 515 : 700;
-      return {
-        ...slot,
-        x: 1500 + Math.cos(angle) * radiusX,
-        y: 1420 + Math.sin(angle) * radiusY,
-        w: index < 8 ? 420 : 300,
-        h: index < 8 ? 420 : 300,
-        r: angle * 0.035
-      };
-    }
-    return slot;
-  });
+  const slots = layoutSets[coverVariant];
   for (let index = images.length - 1; index >= 1; index--) {
     const slot = slots[index];
     drawContainedSticker(context, images[index], slot.x, slot.y, slot.w, slot.h, slot.r, slot.shadow);
@@ -632,37 +643,57 @@ const createCoverComposite = async (
 
   // Draw the quantity badge last so sticker art can never obscure its text.
   context.save();
-  context.translate(2370, 890);
+  context.translate(2580, 330);
   context.shadowColor = 'rgba(0, 0, 0, 0.35)';
   context.shadowBlur = 30;
   context.fillStyle = palette.accent2;
-  context.strokeStyle = '#FFFFFF';
-  context.lineWidth = 18;
+  context.strokeStyle = '#FFF7E5';
+  context.lineWidth = 16;
   context.beginPath();
-  context.arc(0, 0, 184, 0, Math.PI * 2);
+  context.arc(0, 0, 190, 0, Math.PI * 2);
   context.fill();
   context.stroke();
   context.shadowBlur = 0;
   context.fillStyle = palette.ink;
-  context.font = '900 108px Inter, Arial, sans-serif';
+  context.font = '900 112px Inter, Arial, sans-serif';
   context.fillText(String(stickerCount), 0, -32);
-  context.font = '900 43px Inter, Arial, sans-serif';
+  context.font = '900 39px Inter, Arial, sans-serif';
   context.fillText(stickerCount === 1 ? 'STICKER' : 'STICKERS', 0, 62);
   context.restore();
 
   context.save();
-  context.fillStyle = palette.accent;
-  context.shadowColor = 'rgba(0, 0, 0, 0.32)';
-  context.shadowBlur = 28;
+  context.fillStyle = 'rgba(8, 14, 11, 0.96)';
+  context.strokeStyle = 'rgba(255, 246, 222, 0.78)';
+  context.lineWidth = 8;
+  context.shadowColor = 'rgba(0, 0, 0, 0.34)';
+  context.shadowBlur = 18;
   context.beginPath();
-  context.roundRect(260, 2040, 2480, 285, 110);
+  context.roundRect(120, 2075, 2760, 245, 54);
   context.fill();
+  context.stroke();
   context.shadowBlur = 0;
-  context.fillStyle = '#FFFFFF';
-  context.font = '900 70px Inter, Arial, sans-serif';
-  context.fillText(`${stickerCount} INDIVIDUAL PNG STICKERS`, width / 2, 2125);
-  context.font = '800 43px Inter, Arial, sans-serif';
-  context.fillText('TRANSPARENT • PRE-CROPPED • INSTANT DOWNLOAD', width / 2, 2225);
+  const benefits = [
+    ['TRANSPARENT PNG', 'CLEAN INDIVIDUAL FILES'],
+    ['READY TO USE', 'DRAG • RESIZE • CREATE'],
+    ['INSTANT DOWNLOAD', 'NO PHYSICAL ITEM']
+  ];
+  benefits.forEach(([heading, detail], index) => {
+    const centerX = 570 + index * 930;
+    if (index > 0) {
+      context.strokeStyle = 'rgba(255, 246, 222, 0.28)';
+      context.lineWidth = 4;
+      context.beginPath();
+      context.moveTo(centerX - 465, 2115);
+      context.lineTo(centerX - 465, 2280);
+      context.stroke();
+    }
+    context.fillStyle = palette.accent2;
+    context.font = '900 43px Inter, Arial, sans-serif';
+    context.fillText(heading, centerX, 2155);
+    context.fillStyle = '#FFF7E5';
+    context.font = '800 29px Inter, Arial, sans-serif';
+    context.fillText(detail, centerX, 2243);
+  });
   context.restore();
 
   return canvas.toDataURL('image/jpeg', 0.94);
@@ -1633,14 +1664,17 @@ export const generateSeedreamMockup = async (
     if (type === 'preview' || id.includes('preview')) return createGridComposite(uniqueUrls);
     if (type === 'cover') {
       const variant = id.endsWith('_b') ? 1 : id.endsWith('_c') ? 2 : 0;
-      if (variant === 0) {
-        const coverBackgroundPrompt = `Create only the abstract background art for a premium, high-converting Etsy digital sticker bundle thumbnail. Outstanding maximalist retail energy, sophisticated layered gradients, luminous paper-cut curves, subtle starbursts, sparkle highlights, depth, contrast and a polished editorial finish. Reserve a calmer high-contrast headline zone across the top 30 percent and a bright energetic product-collage stage through the center and lower area. Background only: no stickers, decals, clipart, products, animals, people, characters, objects, devices, paper sheets, text, letters, numbers, badges, logos, watermarks, UI or frames. Square-ish commercial cover background, crisp and premium, never muddy or dark.`;
-        try {
-          const artDirectedBackground = await generateSeedreamImage(coverBackgroundPrompt, '1K');
-          return createCoverComposite(uniqueUrls, niche, totalStickerCount, variant, artDirectedBackground);
-        } catch (error) {
-          console.warn('Seedream cover art direction failed; using the deterministic retail background.', error);
-        }
+      const artDirections = [
+        'Cinematic premium retail mood with a warm central spotlight, deep edge vignette, layered natural texture and restrained metallic highlights.',
+        'Boutique editorial mood with tactile paper, linen and subtle collage depth, balanced symmetry and a rich sophisticated color story.',
+        'High-end catalog mood with elegant tonal depth, a clean focal glow and restrained abstract pattern work that feels modern and expensive.'
+      ];
+      const coverBackgroundPrompt = `Create BACKGROUND ART ONLY for the first Etsy thumbnail of a digital sticker bundle themed "${niche}". Translate the theme into a cohesive premium palette, lighting, atmospheric texture and subtle abstract pattern language; do not create literal isolated theme objects. ${artDirections[variant]} The result must feel bespoke to the niche, immediately attractive at small marketplace thumbnail size, and commercially polished rather than like a generic neon template. Keep the top 27 percent calmer and high-contrast for a large headline. Keep the center and lower product stage readable behind white-bordered PNG artwork. 5:4 landscape composition. Background only: absolutely no stickers, decals, clipart, product illustrations, isolated objects, animals, people, characters, text, letters, numbers, badges, logos, watermarks, UI, borders or frames.`;
+      try {
+        const artDirectedBackground = await generateSeedreamImage(coverBackgroundPrompt, '1K');
+        return createCoverComposite(uniqueUrls, niche, totalStickerCount, variant, artDirectedBackground);
+      } catch (error) {
+        console.warn('Seedream cover art direction failed; using the deterministic niche-matched background.', error);
       }
       return createCoverComposite(uniqueUrls, niche, totalStickerCount, variant);
     }

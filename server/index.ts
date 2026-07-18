@@ -3,7 +3,14 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { readFile, stat } from 'node:fs/promises';
 import { extname, resolve, sep } from 'node:path';
 import type { BrainRequest, ImageRequest } from './contracts.js';
-import { generateBrainResponse, getOpenAIModel, isOpenAIConfigured } from './providers/openaiBrain.js';
+import {
+  generateBrainResponse,
+  getOpenAIKeyHint,
+  getOpenAIKeySource,
+  getOpenAILastSuccessfulRequestAt,
+  getOpenAIModel,
+  isOpenAIConfigured
+} from './providers/openaiBrain.js';
 import {
   generateSeedreamImage,
   getSeedreamKeyHint,
@@ -13,8 +20,16 @@ import {
   isSeedreamConfigured
 } from './providers/seedream.js';
 
-dotenv.config({ path: '.env.local', quiet: true });
-dotenv.config({ quiet: true });
+const openAIKeyWasInProcessEnvironment = Boolean(process.env.OPENAI_API_KEY?.trim());
+const localEnvResult = dotenv.config({ path: '.env.local', quiet: true });
+const rootEnvResult = dotenv.config({ quiet: true });
+const openAIKeyLocation = openAIKeyWasInProcessEnvironment
+  ? 'process environment'
+  : localEnvResult.parsed?.OPENAI_API_KEY?.trim()
+    ? '.env.local'
+    : rootEnvResult.parsed?.OPENAI_API_KEY?.trim()
+      ? '.env'
+      : null;
 
 const port = Number(process.env.PORT || 8787);
 const bodyLimitBytes = 50 * 1024 * 1024;
@@ -95,7 +110,14 @@ const server = createServer(async (request, response) => {
       sendJson(response, 200, {
         status: 'ok',
         providers: {
-          openai: { configured: isOpenAIConfigured(), model: getOpenAIModel() },
+          openai: {
+            configured: isOpenAIConfigured(),
+            model: getOpenAIModel(),
+            keyHint: getOpenAIKeyHint(),
+            keySource: getOpenAIKeySource(),
+            keyLocation: openAIKeyLocation,
+            lastSuccessfulRequestAt: getOpenAILastSuccessfulRequestAt()
+          },
           seedream: {
             configured: isSeedreamConfigured(),
             model: getSeedreamModel(),
@@ -143,5 +165,6 @@ const server = createServer(async (request, response) => {
 
 server.listen(port, '0.0.0.0', () => {
   console.log(`StickerOS API listening on http://localhost:${port}`);
+  console.log(`OpenAI key loaded from ${openAIKeyLocation || 'no environment file'} as ${getOpenAIKeySource() || 'no environment variable'} (${getOpenAIKeyHint() || 'not configured'}).`);
   console.log(`Seedream key loaded from ${getSeedreamKeySource() || 'no environment variable'} (${getSeedreamKeyHint() || 'not configured'}).`);
 });

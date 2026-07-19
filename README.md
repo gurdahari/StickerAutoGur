@@ -20,7 +20,7 @@ Node API server
 
 ## Run locally
 
-Prerequisites: Node.js 20 or newer, an OpenAI API key, and a BytePlus ModelArk API key with Seedream 5.0 Pro enabled.
+Prerequisites: Node.js 20 or newer and a BytePlus ModelArk API key with Seedream 5.0 Pro enabled. An OpenAI API key improves research and copywriting, but production can finish without it.
 
 1. Install dependencies:
 
@@ -54,7 +54,7 @@ The production server serves both the compiled React app and `/api/*` on `PORT` 
 
 ## Asset integrity
 
-- Production Mode targets exactly 100 unique PNGs packaged as five valid ZIPs of 20 PNGs. Test Mode produces a smaller 10-sticker validation run.
+- Production Mode targets exactly 100 unique PNGs packaged as five valid ZIPs of 20 PNGs. Test Mode produces a smaller 10-sticker validation run. If a provider fails, the run enters fail-open recovery: every completed PNG is packaged with its real count, a recovery notice is added, and completed work is never discarded.
 - Fast seller QC is the default: every sticker receives free local PNG/alpha/crop/dimension checks and conservative near-exact duplicate detection. Only severe objective failures trigger a paid Seedream replacement. OpenAI visual judgment is not part of the automatic rejection gate, so usable art is not regenerated because of subjective scoring.
 - Active runs are checkpointed in browser IndexedDB. Refreshes, browser crashes and restarts can resume missing/rejected stickers without regenerating approved inventory. A saved run must be resumed or explicitly discarded before starting another run.
 - A current-market niche preflight scores demand, catalog variety, saturation and potential brand/franchise risk. High-risk niches are blocked unless the seller explicitly confirms a manual rights review; this is decision support, not legal clearance.
@@ -67,7 +67,7 @@ The production server serves both the compiled React app and `/api/*` on `PORT` 
 - OpenAI selects 14 representative real designs for three high-impact cover variants; selection is read-only and can never replace a sticker or trigger a Seedream request. Seedream uses those references to create the finished covers, while the listing set also includes a deterministic “What You Receive” infographic and enlarged transparency/edge-quality proof.
 - Preview-grid count adapts to the number of completed stickers, and the customer-facing four-step Etsy download/unzip/import guide is composed locally without another image-model request.
 - Niche analysis expands narrow phrases into a broader theme universe and 10–12 subject families. Direct motifs are capped while the selected visual style remains locked across the pack.
-- Cover badges and listing copy use the actual number of completed stickers, including partial test runs.
+- Cover badges and listing copy use the actual number of completed stickers, including partial and recovered runs. OpenAI quota, authentication or response errors fall back to deterministic local preflight, art direction, concepts and complete listing copy; they never block ZIP creation.
 - Listing copy follows a structured buyer-first format with an accurate file inventory, use cases, download steps, important digital-product details, and 13 validated Etsy tags.
 - Where supported by the browser, the app creates a short listing-preview video from the actual completed listing images. The master kit also contains a production QA report and a blank performance-tracking CSV for feeding real listing results back into future product decisions.
 
@@ -77,7 +77,7 @@ The production server serves both the compiled React app and `/api/*` on `PORT` 
 2. The market/rights preflight runs before any paid Seedream request.
 3. Seedream generates with adaptive concurrency. Rate-limit pressure automatically lowers the worker count and successful requests gradually restore it.
 4. Free local inspection approves normal sellable variation and rejects only severe technical defects or near-exact duplicates. Only those failed slots receive replacement concepts.
-5. Only QA-approved or explicitly manually accepted files reach ZIP packaging, covers, mockups, listing copy and the final download.
+5. QA-approved files are preferred. If replacement or provider budgets are exhausted, all successfully generated PNGs are kept, clearly reported and automatically sent to recovery packaging instead of stopping the run.
 6. **PAUSE SAFELY** finishes active requests and saves the run. **RESUME SAVED RUN** continues only unfinished work.
 7. If the replacement budget ends but all target PNGs exist, **FINISH WITH 100 GENERATED** explicitly accepts the remaining rejected images for manual seller review and continues directly to ZIPs, mockups and listing copy without another replacement loop.
 
@@ -85,8 +85,9 @@ The production server serves both the compiled React app and `/api/*` on `PORT` 
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `OPENAI_API_KEY` | required | OpenAI server API key |
+| `OPENAI_API_KEY` | optional | OpenAI server API key; without available quota the production flow uses built-in offline fallbacks |
 | `OPENAI_MODEL` | `gpt-5.6` | Brain model used by the Responses API |
+| `OPENAI_LIGHT_MODEL` | `gpt-5-mini` | Lower-cost model for mechanical, schema-validated cover selection, cover briefing and simple scoring |
 | `OPENAI_REASONING_EFFORT` | `low` | Cost/quality control for brain calls |
 | `SEEDREAM_API_KEY` | required | BytePlus ModelArk API key; `ARK_API_KEY` also works |
 | `SEEDREAM_MODEL` | `dola-seedream-5-0-pro-260628` | Seedream model endpoint ID |

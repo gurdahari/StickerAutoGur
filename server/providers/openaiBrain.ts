@@ -7,8 +7,8 @@ const DEFAULT_SYSTEM = `You are the reasoning engine for StickerOS, an Etsy digi
 Be commercially useful, specific, honest about uncertainty, and follow the requested output format exactly.`;
 
 const getApiKey = () => process.env.OPENAI_API_KEY?.trim();
-export const getOpenAIModel = () => process.env.OPENAI_MODEL?.trim() || 'gpt-5.6';
-export const getOpenAILightModel = () => process.env.OPENAI_LIGHT_MODEL?.trim() || 'gpt-5-mini';
+export const getOpenAIModel = () => process.env.OPENAI_MODEL?.trim() || 'gpt-5.6-terra';
+export const getOpenAILightModel = () => process.env.OPENAI_LIGHT_MODEL?.trim() || 'gpt-5.6-luna';
 export const isOpenAIConfigured = () => Boolean(getApiKey());
 export const getOpenAIKeyHint = () => {
   const apiKey = getApiKey();

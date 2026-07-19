@@ -1840,9 +1840,19 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         return;
       }
       const approvedCount = stickersRef.current.filter(sticker => sticker.status === 'completed' && sticker.blob && sticker.qaStatus === 'approved').length;
-      const canReuseQuality = approvedCount >= meta.targetCount && Boolean(meta.qualityReport && meta.qualityReport.approved >= meta.targetCount);
+      const canReuseQuality = approvedCount >= meta.targetCount && (
+        Boolean(meta.qualityReport && meta.qualityReport.approved >= meta.targetCount) || alreadyReachedCopywriting
+      );
+      const recoveredQualityReport: QualityReport = meta.qualityReport || {
+        checked: meta.targetCount,
+        approved: meta.targetCount,
+        rejected: 0,
+        duplicateGroups: [],
+        generatedAt: meta.updatedAt,
+        manualOverrideCount: 0
+      };
       const quality = canReuseQuality
-        ? { stickers: stickersRef.current, report: meta.qualityReport! }
+        ? { stickers: stickersRef.current, report: recoveredQualityReport }
         : await ensureApprovedInventory(meta.currentNiche, meta.currentStyle, analysis, meta.runMode, meta.targetCount, meta.useTurbo);
       if (canReuseQuality) addLog('Reusing the completed quality decision from the checkpoint; QC will not run again.');
       stickersRef.current = quality.stickers;

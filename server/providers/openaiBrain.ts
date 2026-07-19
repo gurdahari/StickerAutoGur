@@ -1,5 +1,5 @@
 import OpenAI from 'openai';
-import type { BrainRequest, BrainResult, SourceLink } from '../contracts.js';
+import type { ApiTokenUsage, BrainRequest, BrainResult, SourceLink } from '../contracts.js';
 
 type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
 
@@ -50,6 +50,31 @@ const extractSources = (response: unknown): SourceLink[] => {
   return [...links.values()];
 };
 
+const normalizeUsage = (value: unknown): ApiTokenUsage | undefined => {
+  const usage = value as {
+    input_tokens?: number;
+    output_tokens?: number;
+    total_tokens?: number;
+  } | undefined;
+  if (!usage) return undefined;
+  const inputTokens = Number(usage.input_tokens || 0);
+  const outputTokens = Number(usage.output_tokens || 0);
+  const totalTokens = Number(usage.total_tokens || inputTokens + outputTokens);
+  return { inputTokens, outputTokens, totalTokens };
+};
+
+const createTrackedClient = (apiKey: string) => {
+  let attempts = 0;
+  const trackedFetch: typeof fetch = async (input, init) => {
+    attempts += 1;
+    return fetch(input, init);
+  };
+  return {
+    client: new OpenAI({ apiKey, fetch: trackedFetch }),
+    getAttempts: () => attempts
+  };
+};
+
 export const generateBrainResponse = async (request: BrainRequest): Promise<BrainResult> => {
   const apiKey = getApiKey();
   if (!apiKey) {
@@ -60,7 +85,7 @@ export const generateBrainResponse = async (request: BrainRequest): Promise<Brai
     throw new Error('A prompt or at least one chat message is required.');
   }
 
-  const client = new OpenAI({ apiKey });
+  const tracked = createTrackedClient(apiKey);
   const imageInputs = (request.images || []).slice(0, 20);
   const input = imageInputs.length
     ? [
@@ -82,26 +107,35 @@ export const generateBrainResponse = async (request: BrainRequest): Promise<Brai
       : request.prompt!;
 
   const useLightTier = request.tier === 'light';
-  const response = await client.responses.create({
-    model: useLightTier ? getOpenAILightModel() : getOpenAIModel(),
-    reasoning: { effort: useLightTier ? 'minimal' : getReasoningEffort() },
-    instructions: request.system || DEFAULT_SYSTEM,
-    input,
-    tools: request.webSearch ? [{ type: 'web_search' }] : undefined,
-    text: request.schema ? {
-      format: {
-        type: 'json_schema',
-        name: request.schemaName || 'sticker_os_response',
-        schema: request.schema,
-        strict: true
-      }
-    } : undefined
-  });
+  let response;
+  try {
+    response = await tracked.client.responses.create({
+      model: useLightTier ? getOpenAILightModel() : getOpenAIModel(),
+      reasoning: { effort: useLightTier ? 'minimal' : getReasoningEffort() },
+      instructions: request.system || DEFAULT_SYSTEM,
+      input,
+      tools: request.webSearch ? [{ type: 'web_search' }] : undefined,
+      text: request.schema ? {
+        format: {
+          type: 'json_schema',
+          name: request.schemaName || 'sticker_os_response',
+          schema: request.schema,
+          strict: true
+        }
+      } : undefined
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${message} [provider_attempts=${Math.max(1, tracked.getAttempts())}]`);
+  }
 
   lastSuccessfulRequestAt = new Date().toISOString();
 
   return {
     text: response.output_text || '',
-    sources: extractSources(response)
+    sources: extractSources(response),
+    usage: normalizeUsage(response.usage),
+    model: response.model,
+    attempts: Math.max(1, tracked.getAttempts())
   };
 };

@@ -19,6 +19,7 @@ export interface BrainRequest {
   prompt?: string;
   messages?: BrainMessage[];
   system?: string;
+  tier?: 'standard' | 'light';
   schema?: JsonSchema;
   schemaName?: string;
   webSearch?: boolean;

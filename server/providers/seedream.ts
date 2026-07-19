@@ -51,37 +51,41 @@ const retryAfterMilliseconds = (response: Response) => {
   return Number.isNaN(date) ? null : Math.max(0, date - Date.now());
 };
 
-const fetchWithRetry = async (url: string, init: RequestInit, attempts = 4): Promise<Response> => {
+const fetchWithRetry = async (url: string, init: RequestInit, attempts = 4): Promise<{ response: Response; attempts: number }> => {
   let lastError: unknown;
 
   for (let attempt = 0; attempt < attempts; attempt++) {
+    let response: Response;
     try {
-      const response = await fetch(url, init);
-      if (response.ok) return response;
-
-      const body = await response.text();
-      const retryable = response.status === 429 || response.status >= 500;
-      if (!retryable || attempt === attempts - 1) {
-        throw new Error(`Seedream API ${response.status}: ${body.slice(0, 500)}`);
-      }
-      lastError = new Error(`Seedream API ${response.status}`);
-      const serverDelay = retryAfterMilliseconds(response);
-      const exponentialDelay = Math.min(6_000, 750 * (2 ** attempt));
-      await sleep((serverDelay ?? exponentialDelay) + Math.floor(Math.random() * 280));
-      continue;
+      response = await fetch(url, init);
     } catch (error) {
       lastError = error;
-      if (attempt === attempts - 1) throw error;
+      if (attempt === attempts - 1) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`${message} [provider_attempts=${attempt + 1}]`);
+      }
+      await sleep(Math.min(6_000, 750 * (2 ** attempt)) + Math.floor(Math.random() * 280));
+      continue;
     }
 
-    await sleep(Math.min(6_000, 750 * (2 ** attempt)) + Math.floor(Math.random() * 280));
+    if (response.ok) return { response, attempts: attempt + 1 };
+
+    const body = await response.text();
+    const retryable = response.status === 429 || response.status >= 500;
+    if (!retryable || attempt === attempts - 1) {
+      throw new Error(`Seedream API ${response.status}: ${body.slice(0, 500)} [provider_attempts=${attempt + 1}]`);
+    }
+    lastError = new Error(`Seedream API ${response.status}`);
+    const serverDelay = retryAfterMilliseconds(response);
+    const exponentialDelay = Math.min(6_000, 750 * (2 ** attempt));
+    await sleep((serverDelay ?? exponentialDelay) + Math.floor(Math.random() * 280));
   }
 
   throw lastError instanceof Error ? lastError : new Error('Seedream request failed.');
 };
 
 const remoteImageToDataUrl = async (url: string): Promise<string> => {
-  const response = await fetchWithRetry(url, {}, 3);
+  const { response } = await fetchWithRetry(url, {}, 3);
   const mimeType = response.headers.get('content-type') || 'image/png';
   const bytes = Buffer.from(await response.arrayBuffer());
   return `data:${mimeType};base64,${bytes.toString('base64')}`;
@@ -111,7 +115,7 @@ export const generateSeedreamImage = async (request: ImageRequest): Promise<Imag
   if (inputImages.length === 1) body.image = inputImages[0];
   if (inputImages.length > 1) body.image = inputImages;
 
-  const response = await fetchWithRetry(`${baseUrl}/images/generations`, {
+  const generation = await fetchWithRetry(`${baseUrl}/images/generations`, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${apiKey}`,
@@ -119,6 +123,7 @@ export const generateSeedreamImage = async (request: ImageRequest): Promise<Imag
     },
     body: JSON.stringify(body)
   });
+  const { response, attempts } = generation;
 
   const payload = await response.json() as SeedreamResponse;
   const image = payload.data?.[0];
@@ -126,13 +131,13 @@ export const generateSeedreamImage = async (request: ImageRequest): Promise<Imag
 
   if (base64) {
     lastSuccessfulRequestAt = new Date().toISOString();
-    return { dataUrl: `data:image/png;base64,${base64}` };
+    return { dataUrl: `data:image/png;base64,${base64}`, attempts, model: getSeedreamModel(), provider: 'seedream' };
   }
   if (image?.url) {
     const dataUrl = await remoteImageToDataUrl(image.url);
     lastSuccessfulRequestAt = new Date().toISOString();
-    return { dataUrl };
+    return { dataUrl, attempts, model: getSeedreamModel(), provider: 'seedream' };
   }
 
-  throw new Error(payload.error?.message || 'Seedream returned no image data.');
+  throw new Error(`${payload.error?.message || 'Seedream returned no image data.'} [provider_attempts=${attempts}]`);
 };

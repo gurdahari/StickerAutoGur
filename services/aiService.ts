@@ -10,7 +10,7 @@ interface BrainResult {
 export interface ProviderHealth {
   status: string;
   providers: {
-    openai: { configured: boolean; model: string };
+    openai: { configured: boolean; model: string; lightModel?: string };
     seedream: { configured: boolean; model: string; maxConcurrency: number };
   };
 }
@@ -39,6 +39,7 @@ const isProviderAuthenticationError = (error: unknown): boolean => {
 const generateBrainText = async (options: {
   prompt?: string;
   messages?: { role: 'user' | 'assistant'; content: string }[];
+  tier?: 'standard' | 'light';
   schema?: JsonSchema;
   schemaName?: string;
   webSearch?: boolean;
@@ -79,20 +80,44 @@ const generateSeedreamImage = async (
 };
 
 export const ensureProvidersConfigured = async (): Promise<ProviderHealth> => {
-  const health = await apiRequest<ProviderHealth>('/api/health');
-  const missing = [
-    !health.providers.openai.configured && 'OPENAI_API_KEY',
-    !health.providers.seedream.configured && 'SEEDREAM_API_KEY'
-  ].filter(Boolean);
-
-  if (missing.length) {
-    throw new Error(`Missing server configuration: ${missing.join(', ')}.`);
+  try {
+    return await apiRequest<ProviderHealth>('/api/health');
+  } catch (error) {
+    console.warn('Provider health endpoint unavailable; continuing in recovery mode.', error);
+    return {
+      status: 'unavailable',
+      providers: {
+        openai: { configured: false, model: 'offline fallback' },
+        seedream: { configured: false, model: 'unavailable', maxConcurrency: 1 }
+      }
+    };
   }
-  return health;
+};
+
+const createLocalNichePreflight = (niche: string): NichePreflight => {
+  const highRiskTerms = /\b(disney|marvel|pokemon|barbie|harry potter|star wars|nike|adidas|minecraft|fortnite|celebrity|netflix)\b/i;
+  const possibleBrandReference = highRiskTerms.test(niche);
+  return {
+    demandScore: 50,
+    variationScore: 82,
+    saturation: 'medium',
+    ipRisk: 'medium',
+    recommendation: possibleBrandReference ? 'review' : 'proceed',
+    summary: 'OpenAI market research was unavailable, so this is a conservative local preflight. It is not legal or sales advice.',
+    reasons: [
+      'The production pipeline can continue without live market research.',
+      'The theme can be expanded across objects, actions, places, symbols, tools and decorative elements.',
+      possibleBrandReference
+        ? 'The name may reference protected intellectual property and needs manual rights review.'
+        : 'No obvious protected brand was detected by the small offline keyword check.'
+    ],
+    sources: []
+  };
 };
 
 export const assessNicheForProduction = async (niche: string): Promise<NichePreflight> => {
-  const response = await generateBrainText({
+  try {
+    const response = await generateBrainText({
     webSearch: true,
     prompt: `Perform a cautious pre-production assessment for an Etsy digital sticker bundle niche: "${niche}".
 
@@ -128,8 +153,12 @@ Do not promise sales, trademark clearance, or legal safety. Give concise evidenc
     }
   });
 
-  const assessment = JSON.parse(response.text) as Omit<NichePreflight, 'sources'>;
-  return { ...assessment, sources: response.sources };
+    const assessment = JSON.parse(response.text) as Omit<NichePreflight, 'sources'>;
+    return { ...assessment, sources: response.sources };
+  } catch (error) {
+    console.warn('OpenAI preflight unavailable; using the local conservative preflight.', error);
+    return createLocalNichePreflight(niche);
+  }
 };
 
 export const generateStickerQualityReport = async (
@@ -236,7 +265,8 @@ export const generateReplacementStickerPrompts = async (
     .map(prompt => prompt.replace(/\s+/g, ' ').trim().slice(0, 220))
     .slice(-120)
     .join('\n');
-  const response = await generateBrainText({
+  try {
+    const response = await generateBrainText({
     prompt: `Create exactly ${count} replacement sticker concepts for "${niche}" in the locked style "${style.name}" (${style.prompt}).
 Theme universe: ${analysis?.themeUniverse || niche}
 Subject families: ${analysis?.subthemes || analysis?.safeGenerics || 'core objects, tools, accessories, places and symbols'}
@@ -263,7 +293,19 @@ Return prompts in exactly this format:
       required: ['prompts']
     }
   });
-  return (JSON.parse(response.text) as { prompts: string[] }).prompts.slice(0, count);
+    return (JSON.parse(response.text) as { prompts: string[] }).prompts.slice(0, count);
+  } catch (error) {
+    console.warn('OpenAI replacement concepts unavailable; using deterministic local concepts.', error);
+    const families = (analysis?.subthemes || analysis?.safeGenerics || 'objects, tools, symbols, places, accessories, actions')
+      .split(',')
+      .map(value => value.trim())
+      .filter(Boolean);
+    return Array.from({ length: count }, (_, index) => {
+      const family = families[index % families.length] || 'thematic object';
+      const variation = existingPrompts.length + index + 1;
+      return `TYPE: Object-Only | SUBJECT: A new ${family} subject from ${analysis?.themeUniverse || niche}, offline replacement ${variation} | COMPOSITION: Centered isolated hero with a clearly different silhouette | TEXT: 'NONE'`;
+    });
+  }
 };
 
 export const selectCoverStickerIds = async (
@@ -279,6 +321,7 @@ export const selectCoverStickerIds = async (
     .map(candidate => `${candidate.id}: ${candidate.prompt.replace(/\s+/g, ' ').trim()}`)
     .join('\n');
   const response = await generateBrainText({
+    tier: 'light',
     prompt: `Act as an Etsy creative director choosing the real sticker designs for the first listing thumbnail.
 Select exactly ${count} IDs from the candidates below and order them by visual importance.
 
@@ -590,6 +633,7 @@ const getCoverCreativeBrief = async (niche: string, stickerUrls: string[]): Prom
     try {
       const images = await Promise.all(stickerUrls.slice(0, 6).map(url => imageUrlToDataUrl(url, 512)));
       const response = await generateBrainText({
+        tier: 'light',
         images: images.map(dataUrl => ({ dataUrl, detail: 'low' as const })),
         prompt: `You are the creative director for a top-performing Etsy digital sticker shop. Study the supplied real stickers and create a bold first-thumbnail brief for this product theme: "${niche}".
 
@@ -1373,6 +1417,7 @@ const createGridComposite = async (stickerUrls: string[]): Promise<string> => {
 export const analyzeNichePotential = async (nicheName: string): Promise<number> => {
   try {
       const response = await generateBrainText({
+        tier: 'light',
         prompt: `Analyze the Etsy sales potential for digital stickers in the niche: "${nicheName}".
         Return a single integer score from 0 to 100 based on Demand, Competition, and Trendiness.
         0 = Terrible, 100 = Guaranteed Bestseller.
@@ -1441,16 +1486,17 @@ export const analyzeNicheVisuals = async (nicheName: string): Promise<NicheVisua
       });
       return JSON.parse(response.text.trim());
   } catch (e) {
-      if (isProviderAuthenticationError(e)) throw e;
-      console.error("Failed to parse visual analysis", e);
+      console.warn("OpenAI visual analysis unavailable; using a broad local art-direction fallback.", e);
       return { 
           archetype: 'OBJECT', 
-          keywords: 'aesthetic, sticker', 
-          negativeKeywords: 'ugly', 
-          safeGenerics: 'star, heart',
-          visualStyle: 'Standard Vector',
+          keywords: 'cohesive, commercial, polished, readable silhouette',
+          negativeKeywords: 'sticker sheet, repeated subject, watermark, logo, accidental text',
+          safeGenerics: 'core objects, tools, accessories, places, symbols, actions, decorative elements',
+          visualStyle: 'Cohesive commercial sticker illustration',
           themeUniverse: nicheName,
-          subthemes: 'core objects, tools, accessories, symbols, environments, functional elements'
+          subthemes: 'core objects, tools, accessories, symbols, environments, functional elements, actions, places, emotional motifs, decorative accents',
+          intentAndUse: 'Digital planning, journaling, note-taking, decorating and creative projects.',
+          customerSearchBehavior: `Buyers searching for ${nicheName} themed digital stickers and transparent PNG bundles.`
       };
   }
 };
@@ -1554,8 +1600,7 @@ export const generateStickerPrompts = async (niche: string, style: StylePreset, 
       }
       return uniquePrompts.slice(0, COUNT);
   } catch (e) {
-      if (isProviderAuthenticationError(e)) throw e;
-      console.error(`Failed to parse prompts`, e);
+      console.warn(`OpenAI concept generation unavailable; using deterministic local concepts.`, e);
       return Array.from({ length: COUNT }, (_, index) => {
         const family = fallbackFamilies[index % fallbackFamilies.length] || 'thematic object';
         return `TYPE: Object-Only | SUBJECT: A distinct ${family} concept from ${themeUniverse}, variation ${index + 1} | COMPOSITION: Centered isolated design | TEXT: NONE`;
@@ -1651,6 +1696,78 @@ export const generateMockupBackground = async (type: string, niche: string): Pro
     return ""; // Deprecated
 };
 
+const createLocalAutopilotListing = (
+  niche: string,
+  styleName: string,
+  useTurbo: boolean,
+  stickerCount: number
+): string => {
+  const compactTheme = niche.replace(/\s*\([^)]*\)\s*/g, ' ').replace(/\s+/g, ' ').trim();
+  const titleTheme = compactTheme.slice(0, 70) || 'Themed';
+  const title = `${titleTheme} Digital Sticker Bundle | ${stickerCount} Transparent PNGs`.slice(0, 140);
+  const tags = [
+    'digital stickers', 'png sticker bundle', 'transparent png', 'planner stickers',
+    'journal stickers', 'goodnotes stickers', 'instant download', 'digital planner',
+    'scrapbook png', 'note taking png', 'creative clipart', 'individual pngs',
+    'themed sticker pack'
+  ];
+  const zipCount = Math.ceil(stickerCount / 20);
+  const resolution = useTurbo ? '1K source artwork' : '2K source artwork';
+  const description = `Bring the ${titleTheme} theme into your digital projects with ${stickerCount} separate transparent PNG stickers in a consistent ${styleName} style. Each design is supplied as its own file, so you can choose, move, resize and arrange only the elements you need.
+
+WHAT YOU RECEIVE
+- ${stickerCount} individual transparent PNG sticker files.
+- ${zipCount} ZIP download${zipCount === 1 ? '' : 's'}, containing up to 20 PNG files in each archive.
+- High-resolution artwork prepared from ${resolution}.
+- A varied themed collection rather than repeated copies of one design.
+
+WHY YOU'LL LOVE IT
+The collection is designed to make decorating and organizing feel quick and flexible. The transparent background lets each sticker sit naturally over planner pages, notes, presentations, mood boards and other creative layouts. Because every sticker is separate, you can mix different subjects from the collection, create your own arrangement and reuse favorite designs in your personal projects.
+
+GREAT FOR
+- Digital planners and calendars
+- Journals, notebooks and note-taking pages
+- Goodnotes-style documents and compatible image-based apps
+- Presentations, mood boards and personal creative projects
+- Scrapbook-style layouts, study pages and themed collections
+
+HOW TO DOWNLOAD
+After purchase, sign in to Etsy.com in a web browser and open Account > Purchases and Reviews > Download Files. Download every ZIP archive to your device. The Etsy mobile app may not download digital purchases, so use a mobile browser or computer if the download button is not visible.
+
+HOW TO USE
+1. Save all ZIP files to your device.
+2. Extract or unzip each archive.
+3. Open an app that supports PNG images.
+4. Import the individual PNG you want.
+5. Drag, resize, rotate and arrange it in your project.
+
+IMPORTANT DETAILS
+This is an instant digital download; no physical item will be shipped. Preview arrangements, devices, backgrounds and desk props shown in listing images are presentation examples and are not included as separate files. Colors may look slightly different on different screens. App compatibility and printing results depend on your software, device and settings.
+
+You may use the stickers in your own personal creative projects. You may not resell, redistribute, share, upload, sublicense or claim the original PNG files as your own. No editable vector files, physical materials or extra software are included.`;
+  return `<<<TITLE>>>${title}<<<END_TITLE>>>\n<<<TAGS>>>${tags.join(', ')}<<<END_TAGS>>>\n<<<DESCRIPTION>>>${description}<<<END_DESCRIPTION>>>`;
+};
+
+const ETSY_TAG_FALLBACKS = [
+  'digital stickers', 'png sticker bundle', 'transparent png', 'planner stickers',
+  'journal stickers', 'goodnotes stickers', 'instant download', 'digital planner',
+  'scrapbook png', 'note taking png', 'creative clipart', 'individual pngs',
+  'themed sticker pack'
+];
+
+const normalizeEtsyTag = (value: string): string => {
+  const cleaned = value.replace(/[#|,]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (cleaned.length <= 20) return cleaned;
+  const words = cleaned.split(' ');
+  let result = '';
+  for (const word of words) {
+    const candidate = result ? `${result} ${word}` : word;
+    if (candidate.length > 20) break;
+    result = candidate;
+  }
+  return (result || cleaned.slice(0, 20)).trim();
+};
+
 export const generateAutopilotListing = async (niche: string, styleName: string, useTurbo: boolean, stickerCount = 100): Promise<string> => {
   const sourceResolution = useTurbo
     ? 'high-resolution transparent PNG files created from 1K source artwork'
@@ -1698,7 +1815,8 @@ export const generateAutopilotListing = async (niche: string, styleName: string,
     - Do not invent app guarantees, printable dimensions, DPI metadata, physical materials, bonuses, editable vectors, refunds, medical benefits or commercial-license rights.
   `;
 
-  const response = await generateBrainText({
+  try {
+    const response = await generateBrainText({
     prompt: userPrompt,
     schemaName: 'etsy_autopilot_listing',
     schema: {
@@ -1717,31 +1835,30 @@ export const generateAutopilotListing = async (niche: string, styleName: string,
       required: ['title', 'tags', 'description']
     }
   });
-  const listing = JSON.parse(response.text) as { title: string; tags: string[]; description: string };
-  const title = listing.title.replace(/\s+/g, ' ').trim();
-  const tags: string[] = [];
-  const seenTags = new Set<string>();
-  listing.tags.forEach(rawTag => {
-    const tag = rawTag.trim();
-    const normalizedTag = tag.toLocaleLowerCase('en-US');
-    if (tag && !seenTags.has(normalizedTag) && tags.length < 13) {
-      seenTags.add(normalizedTag);
-      tags.push(tag);
+    const listing = JSON.parse(response.text) as { title: string; tags: string[]; description: string };
+    const rawTitle = listing.title.replace(/\s+/g, ' ').trim();
+    const title = (rawTitle || `${niche} Digital Sticker Bundle`).slice(0, 140).trim();
+    const tags: string[] = [];
+    const seenTags = new Set<string>();
+    [...listing.tags, ...ETSY_TAG_FALLBACKS].forEach(rawTag => {
+      const tag = normalizeEtsyTag(rawTag);
+      const normalizedTag = tag.toLocaleLowerCase('en-US');
+      if (tag && !seenTags.has(normalizedTag) && tags.length < 13) {
+        seenTags.add(normalizedTag);
+        tags.push(tag);
+      }
+    });
+    const description = listing.description.trim();
+    const descriptionWordCount = description.split(/\s+/).filter(Boolean).length;
+    if (tags.length !== 13 || descriptionWordCount < 300) {
+      console.warn('OpenAI listing was incomplete after local repair; using the complete built-in listing template.');
+      return createLocalAutopilotListing(niche, styleName, useTurbo, stickerCount);
     }
-  });
-  const description = listing.description.trim();
-  const descriptionWordCount = description.split(/\s+/).filter(Boolean).length;
-  if (!title || title.length > 140) {
-    throw new Error('OpenAI returned an invalid Etsy title. Please regenerate the listing copy.');
+    return `<<<TITLE>>>${title}<<<END_TITLE>>>\n<<<TAGS>>>${tags.join(', ')}<<<END_TAGS>>>\n<<<DESCRIPTION>>>${description}<<<END_DESCRIPTION>>>`;
+  } catch (error) {
+    console.warn('OpenAI listing copy unavailable; using the built-in complete Etsy listing template.', error);
+    return createLocalAutopilotListing(niche, styleName, useTurbo, stickerCount);
   }
-  if (tags.length !== 13 || tags.some(tag => tag.length > 20)) {
-    throw new Error('OpenAI returned invalid Etsy tags. Please regenerate the listing copy.');
-  }
-  if (descriptionWordCount < 300) {
-    throw new Error('OpenAI returned a description that is too short. Please regenerate the listing copy.');
-  }
-
-  return `<<<TITLE>>>${title}<<<END_TITLE>>>\n<<<TAGS>>>${tags.join(', ')}<<<END_TAGS>>>\n<<<DESCRIPTION>>>${description}<<<END_DESCRIPTION>>>`;
 };
 
 const drawTransparencyGrid = (

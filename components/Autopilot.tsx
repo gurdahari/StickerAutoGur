@@ -1,8 +1,8 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { AutopilotState, NicheIdea, StylePreset, Sticker, MarketingAsset, TrendResult, DiscoveredTrend, NicheVisualAnalysis, ProductionRunMode, QualityReport } from '../types';
+import { AutopilotState, NicheIdea, StylePreset, Sticker, MarketingAsset, TrendResult, DiscoveredTrend, NicheVisualAnalysis, ProductionRunMode, QualityReport, ProductionMetrics, AiUsageStageMetrics } from '../types';
 import { NICHE_IDEAS, STYLE_PRESETS } from '../data/presets';
-import { ensureProvidersConfigured, generateStickerPrompts, generateAutopilotSticker, generateAutopilotListing, generateSeedreamMockup, findViralNiche, getTrendAnalysis, discoverTopTrends, analyzeNicheVisuals, selectCoverStickerIds, assessNicheForProduction, generateReplacementStickerPrompts, createListingPreviewVideo } from '../services/aiService';
+import { ensureProvidersConfigured, generateStickerPrompts, generateAutopilotSticker, generateAutopilotListing, generateSeedreamMockup, findViralNiche, getTrendAnalysis, discoverTopTrends, analyzeNicheVisuals, selectCoverStickerIds, assessNicheForProduction, generateReplacementStickerPrompts, createListingPreviewVideo, setAiUsageStage, subscribeAiUsage } from '../services/aiService';
 import { processStickerImage } from '../services/stickerProcessing';
 import { findVisualDuplicateGroups, inspectStickerLocally } from '../services/qualityControl';
 import { clearRunCheckpoint, loadRunCheckpoint, saveMarketingAssetCheckpoint, saveRunCheckpointMeta, saveStickerCheckpoint, saveStickerCheckpoints, type RunCheckpointMeta } from '../services/runPersistence';
@@ -37,6 +37,85 @@ const PRODUCTION_STICKER_COUNT = 100;
 const TEST_STICKER_COUNT = 10;
 const PRODUCTION_REPLACEMENT_BUDGET = 25;
 const TEST_REPLACEMENT_BUDGET = 5;
+
+const emptyUsageStage = (): AiUsageStageMetrics => ({
+  openaiTextRequests: 0,
+  openaiImageRequests: 0,
+  openaiInputTokens: 0,
+  openaiOutputTokens: 0,
+  openaiTotalTokens: 0,
+  seedreamImageRequests: 0,
+  retryAttempts: 0,
+  failedRequests: 0
+});
+
+const createProductionMetrics = (startedAt: string | null = null): ProductionMetrics => ({
+  seedreamRequests: 0,
+  seedreamMockupRequests: 0,
+  replacementImages: 0,
+  rejectedImages: 0,
+  qaRuns: 0,
+  rateLimitEvents: 0,
+  openaiTextRequests: 0,
+  openaiImageRequests: 0,
+  openaiInputTokens: 0,
+  openaiOutputTokens: 0,
+  openaiTotalTokens: 0,
+  seedreamApiAttempts: 0,
+  retryAttempts: 0,
+  failedApiRequests: 0,
+  usageByStage: {},
+  startedAt,
+  finishedAt: null
+});
+
+const normalizeProductionMetrics = (metrics?: Partial<ProductionMetrics>): ProductionMetrics => ({
+  ...createProductionMetrics(metrics?.startedAt || null),
+  ...metrics,
+  usageByStage: Object.fromEntries(
+    Object.entries(metrics?.usageByStage || {}).map(([stage, usage]) => [stage, { ...emptyUsageStage(), ...usage }])
+  )
+});
+
+const usageStageLabels: Record<string, string> = {
+  market_preflight: 'Market preflight',
+  niche_analysis: 'Niche analysis',
+  concept_design: 'Concept design',
+  sticker_generation: 'Sticker generation',
+  quality_control: 'Quality control',
+  packaging: 'ZIP packaging',
+  marketing: 'Listing assets',
+  listing_copy: 'Listing copy',
+  manual_action: 'Manual regeneration',
+  unassigned: 'Other'
+};
+
+const createUsageCsv = (metrics: ProductionMetrics) => {
+  const header = 'stage,openai_text_attempts,openai_image_attempts,openai_input_tokens,openai_output_tokens,openai_total_tokens,seedream_attempts,retries,failed_attempts';
+  const rows = Object.entries(metrics.usageByStage).map(([stage, usage]) => [
+    `"${(usageStageLabels[stage] || stage).replace(/"/g, '""')}"`,
+    usage.openaiTextRequests,
+    usage.openaiImageRequests,
+    usage.openaiInputTokens,
+    usage.openaiOutputTokens,
+    usage.openaiTotalTokens,
+    usage.seedreamImageRequests,
+    usage.retryAttempts,
+    usage.failedRequests
+  ].join(','));
+  rows.push([
+    '"TOTAL"',
+    metrics.openaiTextRequests,
+    metrics.openaiImageRequests,
+    metrics.openaiInputTokens,
+    metrics.openaiOutputTokens,
+    metrics.openaiTotalTokens,
+    metrics.seedreamApiAttempts,
+    metrics.retryAttempts,
+    metrics.failedApiRequests
+  ].join(','));
+  return [header, ...rows].join('\n');
+};
 
 const getNicheGenerationBrief = (niche: NicheIdea) => niche.generationBrief?.trim() || niche.name;
 
@@ -263,16 +342,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
     listing: null,
     logs: [],
     qualityReport: null,
-    metrics: {
-      seedreamRequests: 0,
-      seedreamMockupRequests: 0,
-      replacementImages: 0,
-      rejectedImages: 0,
-      qaRuns: 0,
-      rateLimitEvents: 0,
-      startedAt: null,
-      finishedAt: null
-    },
+    metrics: createProductionMetrics(),
     preflight: null,
     checkpointUpdatedAt: null
   });
@@ -554,6 +624,55 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
   const updateMetrics = (changes: Partial<typeof metricsRef.current>) => {
     metricsRef.current = { ...metricsRef.current, ...changes };
     setState(prev => ({ ...prev, metrics: metricsRef.current }));
+  };
+
+  useEffect(() => subscribeAiUsage(event => {
+    if (!runIdRef.current) return;
+    const attempts = Math.max(1, event.attempts || 1);
+    const retries = Math.max(0, attempts - 1);
+    const usage = event.usage;
+    const previous = metricsRef.current;
+    const previousStage = previous.usageByStage[event.stage] || emptyUsageStage();
+    const openaiTextAttempts = event.provider === 'openai-text' ? attempts : 0;
+    const openaiImageAttempts = event.provider === 'openai-image' ? attempts : 0;
+    const seedreamAttempts = event.provider === 'seedream' ? attempts : 0;
+    const failedAttempts = event.failed ? attempts : 0;
+    metricsRef.current = {
+      ...previous,
+      openaiTextRequests: previous.openaiTextRequests + openaiTextAttempts,
+      openaiImageRequests: previous.openaiImageRequests + openaiImageAttempts,
+      openaiInputTokens: previous.openaiInputTokens + (usage?.inputTokens || 0),
+      openaiOutputTokens: previous.openaiOutputTokens + (usage?.outputTokens || 0),
+      openaiTotalTokens: previous.openaiTotalTokens + (usage?.totalTokens || 0),
+      seedreamApiAttempts: previous.seedreamApiAttempts + seedreamAttempts,
+      retryAttempts: previous.retryAttempts + retries,
+      failedApiRequests: previous.failedApiRequests + failedAttempts,
+      usageByStage: {
+        ...previous.usageByStage,
+        [event.stage]: {
+          ...previousStage,
+          openaiTextRequests: previousStage.openaiTextRequests + openaiTextAttempts,
+          openaiImageRequests: previousStage.openaiImageRequests + openaiImageAttempts,
+          openaiInputTokens: previousStage.openaiInputTokens + (usage?.inputTokens || 0),
+          openaiOutputTokens: previousStage.openaiOutputTokens + (usage?.outputTokens || 0),
+          openaiTotalTokens: previousStage.openaiTotalTokens + (usage?.totalTokens || 0),
+          seedreamImageRequests: previousStage.seedreamImageRequests + seedreamAttempts,
+          retryAttempts: previousStage.retryAttempts + retries,
+          failedRequests: previousStage.failedRequests + failedAttempts
+        }
+      }
+    };
+    setState(previousState => ({ ...previousState, metrics: metricsRef.current }));
+  }), []);
+
+  const logUsageCheckpoint = (stage: string, label = usageStageLabels[stage] || stage) => {
+    const usage = metricsRef.current.usageByStage[stage] || emptyUsageStage();
+    addLog(`Usage — ${label}: OpenAI ${usage.openaiTotalTokens.toLocaleString()} tokens (${usage.openaiInputTokens.toLocaleString()} input + ${usage.openaiOutputTokens.toLocaleString()} output; ${usage.openaiTextRequests} text + ${usage.openaiImageRequests} image attempts) • Seedream ${usage.seedreamImageRequests} attempts • retries ${usage.retryAttempts} • failed ${usage.failedRequests}.`);
+  };
+
+  const logUsageTotal = () => {
+    const usage = metricsRef.current;
+    addLog(`TOTAL API USAGE: OpenAI ${usage.openaiTotalTokens.toLocaleString()} tokens (${usage.openaiInputTokens.toLocaleString()} input + ${usage.openaiOutputTokens.toLocaleString()} output; ${usage.openaiTextRequests} text + ${usage.openaiImageRequests} image attempts) • Seedream ${usage.seedreamApiAttempts} attempts • retries ${usage.retryAttempts} • failed ${usage.failedApiRequests}.`);
   };
 
   const persistCheckpointMeta = async (
@@ -1363,8 +1482,9 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       if (assetIndex === -1 || !state.currentNiche) return;
 
       const asset = state.marketingAssets[assetIndex];
+      setAiUsageStage('manual_action');
       addLog(asset.type === 'cover'
-        ? `Creating a fresh creative direction and full Seedream hero: ${asset.title}...`
+        ? `Creating a fresh OpenAI GPT Image 2 hero at 2K: ${asset.title}...`
         : `Refining Mockup: ${asset.title}...`);
       
       setState(prev => {
@@ -1394,7 +1514,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
            else if (asset.type === 'howto') stickersForMockup = getUniqueBatchForMockup(validStickers, 4);
            else stickersForMockup = getUniqueBatchForMockup(validStickers, 8); 
 
-          if (['cover', 'goodnotes', 'laptop', 'journal', 'lifestyle'].includes(asset.type)) {
+          if (['goodnotes', 'laptop', 'journal', 'lifestyle'].includes(asset.type)) {
             updateMetrics({ seedreamMockupRequests: metricsRef.current.seedreamMockupRequests + 1 });
           }
           const url = await generateSeedreamMockup(
@@ -1510,6 +1630,33 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
           }, null, 2));
         }
         masterZip.file('5_PERFORMANCE_TRACKER.csv', 'date,listing_url,cover_variant,impressions,clicks,favorites,orders,revenue,notes\n');
+        const usageMetrics = metricsRef.current;
+        masterZip.file('6_API_USAGE_REPORT.json', JSON.stringify({
+          generatedAt: new Date().toISOString(),
+          runId: runIdRef.current,
+          niche: state.currentNiche.name,
+          runMode: state.runMode,
+          requestedStickerCount: state.targetCount,
+          completedStickerCount: generatedCount,
+          accounting: {
+            note: 'OpenAI token totals come from provider-reported API usage. Request attempts include automatic retries and failed attempts. Seedream reports generation attempts, not tokens.',
+            openaiTextAttempts: usageMetrics.openaiTextRequests,
+            openaiImageAttempts: usageMetrics.openaiImageRequests,
+            openaiInputTokens: usageMetrics.openaiInputTokens,
+            openaiOutputTokens: usageMetrics.openaiOutputTokens,
+            openaiTotalTokens: usageMetrics.openaiTotalTokens,
+            seedreamGenerationAttempts: usageMetrics.seedreamApiAttempts,
+            retryAttempts: usageMetrics.retryAttempts,
+            failedAttempts: usageMetrics.failedApiRequests
+          },
+          byStage: usageMetrics.usageByStage,
+          legacyProductionCounters: {
+            stickerJobs: usageMetrics.seedreamRequests,
+            seedreamMockupJobs: usageMetrics.seedreamMockupRequests,
+            replacementImages: usageMetrics.replacementImages
+          }
+        }, null, 2));
+        masterZip.file('7_API_USAGE_BY_STAGE.csv', createUsageCsv(usageMetrics));
 
         const content = await masterZip.generateAsync({ type: 'blob' });
         const url = URL.createObjectURL(content);
@@ -1521,7 +1668,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         
         setState(prev => ({ ...prev, zips: freshZips }));
         setNeedsZipUpdate(false);
-        addLog("Master Kit Downloaded.");
+        addLog(`Master Kit Downloaded. Usage report included: OpenAI ${usageMetrics.openaiTotalTokens.toLocaleString()} tokens • Seedream ${usageMetrics.seedreamApiAttempts} actual attempts • ${usageMetrics.retryAttempts} retries.`);
     } catch (e) {
         console.error("Download failed", e);
         addLog("Download failed. Please try again.");
@@ -1555,10 +1702,13 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
     skipMissingMarketing = false,
     recoveredListing?: string
   ) => {
+    setAiUsageStage('packaging');
     setState(prev => ({ ...prev, status: 'zipping', progress: 75 }));
     addLog('Packaging recovered run after the final inventory decision...');
     const zips = await packageStickers(stickersRef.current, niche.name, mode, targetCount);
+    logUsageCheckpoint('packaging');
     setState(prev => ({ ...prev, zips, status: 'marketing', progress: 85 }));
+    setAiUsageStage('marketing');
 
     const previewCount = Math.min(6, Math.ceil(targetCount / 17));
     const previewAssets: MarketingAsset[] = Array.from({ length: previewCount }, (_, index) => ({
@@ -1569,9 +1719,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       status: 'pending'
     }));
     const baseAssets: MarketingAsset[] = [
-      { id: 'cover_a', type: 'cover', title: 'Main Cover A (Full Seedream Hero)', url: null, status: 'pending' },
-      { id: 'cover_b', type: 'cover', title: 'Main Cover B (Full Seedream Editorial)', url: null, status: 'pending' },
-      { id: 'cover_c', type: 'cover', title: 'Main Cover C (Full Seedream Catalog)', url: null, status: 'pending' },
+      { id: 'cover_a', type: 'cover', title: 'Main Cover (OpenAI GPT Image 2 • 2K)', url: null, status: 'pending' },
       { id: 'included', type: 'included', title: 'What You Receive', url: null, status: 'pending' },
       { id: 'quality_proof', type: 'closeup', title: 'Transparent Edge Quality Proof', url: null, status: 'pending' },
       ...previewAssets,
@@ -1630,7 +1778,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       else if (asset.type === 'howto') urls = getUniqueBatchForMockup(valid, 4);
       else urls = getUniqueBatchForMockup(valid, 8);
       try {
-        if (['cover', 'goodnotes', 'laptop', 'journal', 'lifestyle'].includes(asset.type)) {
+        if (['goodnotes', 'laptop', 'journal', 'lifestyle'].includes(asset.type)) {
           updateMetrics({ seedreamMockupRequests: metricsRef.current.seedreamMockupRequests + 1 });
         }
         const url = await generateSeedreamMockup(asset.id!, asset.type, urls, niche.name, targetCount);
@@ -1680,12 +1828,16 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       }
     }
 
+    logUsageCheckpoint('marketing');
     setState(prev => ({ ...prev, status: 'copywriting', progress: 95 }));
+    setAiUsageStage('listing_copy');
     addLog('Generating SEO Listing Copy...');
     const completedStickerCount = stickersRef.current.filter(sticker => sticker.status === 'completed' && sticker.blob).slice(0, targetCount).length;
     await persistCheckpointMeta(niche, style, mode, targetCount, analysis, preflight, qualityReport, recoveredListing || '');
     const rawListing = recoveredListing || await generateAutopilotListing(niche.name, style.name, turboMode, completedStickerCount);
+    logUsageCheckpoint('listing_copy');
     metricsRef.current = { ...metricsRef.current, finishedAt: new Date().toISOString() };
+    logUsageTotal();
     await persistCheckpointMeta(niche, style, mode, targetCount, analysis, preflight, qualityReport, rawListing);
     setState(prev => ({
       ...prev,
@@ -1789,7 +1941,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       const alreadyReachedCopywriting = recoveredLogs.some(entry => /Generating SEO Listing Copy|RESUME ERROR:.*(?:listing|tags|OpenAI)/i.test(entry));
       runIdRef.current = meta.id;
       logsRef.current = recoveredLogs;
-      metricsRef.current = { rejectedImages: 0, seedreamMockupRequests: 0, ...meta.metrics };
+      metricsRef.current = normalizeProductionMetrics(meta.metrics);
       preflightRef.current = meta.preflight;
       setRunMode(meta.runMode);
       setUseTurbo(meta.useTurbo);
@@ -1827,11 +1979,14 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       }
       if (audioRef.current) audioRef.current.play().catch(error => console.warn('Audio play blocked', error));
       await requestWakeLock();
+      setAiUsageStage('niche_analysis');
       const analysis = meta.analysis || await analyzeNicheVisuals(getNicheGenerationBrief(meta.currentNiche));
       visualAnalysisRef.current = analysis;
       const missing = stickersRef.current.filter(sticker => sticker.status !== 'completed' || !sticker.blob);
       if (missing.length) {
+        setAiUsageStage('sticker_generation');
         await generateStickerQueue(missing, meta.currentNiche, meta.currentStyle, analysis, meta.runMode, meta.targetCount, meta.useTurbo);
+        logUsageCheckpoint('sticker_generation', 'Sticker generation (including resume)');
       }
       if (stopSignal.current) throw new Error('Stopped by user');
       if (skipToNextStageSignal.current) {
@@ -1853,7 +2008,12 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       };
       const quality = canReuseQuality
         ? { stickers: stickersRef.current, report: recoveredQualityReport }
-        : await ensureApprovedInventory(meta.currentNiche, meta.currentStyle, analysis, meta.runMode, meta.targetCount, meta.useTurbo);
+        : await (async () => {
+            setAiUsageStage('quality_control');
+            const result = await ensureApprovedInventory(meta.currentNiche, meta.currentStyle, analysis, meta.runMode, meta.targetCount, meta.useTurbo);
+            logUsageCheckpoint('quality_control', 'Quality control (including resume)');
+            return result;
+          })();
       if (canReuseQuality) addLog('Reusing the completed quality decision from the checkpoint; QC will not run again.');
       stickersRef.current = quality.stickers;
       await finishRecoveredProduction(
@@ -1899,16 +2059,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       });
       runIdRef.current = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
       logsRef.current = [];
-      metricsRef.current = {
-        seedreamRequests: 0,
-        seedreamMockupRequests: 0,
-        replacementImages: 0,
-        rejectedImages: 0,
-        qaRuns: 0,
-        rateLimitEvents: 0,
-        startedAt: new Date().toISOString(),
-        finishedAt: null
-      };
+      metricsRef.current = createProductionMetrics(new Date().toISOString());
       stopSignal.current = false;
       skipToNextStageSignal.current = false;
       setNeedsZipUpdate(false);
@@ -1966,6 +2117,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
 
       setState(prev => ({ ...prev, currentNiche: niche!, currentStyle: style }));
 
+      setAiUsageStage('market_preflight');
       addLog(`Market and rights preflight for "${niche.name}"...`);
       const preflight = await assessNicheForProduction(generationBrief);
       preflightRef.current = preflight;
@@ -1974,12 +2126,14 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         addLog('OpenAI market research is unavailable. Continuing with the conservative offline preflight.');
       }
       addLog(`Preflight: demand ${preflight.demandScore}/100 • variety ${preflight.variationScore}/100 • IP risk ${preflight.ipRisk}.`);
+      logUsageCheckpoint('market_preflight');
       if ((preflight.recommendation === 'block' || preflight.ipRisk === 'high') && !allowRiskyNiche) {
         throw new Error(`Niche preflight blocked this paid run: ${preflight.summary} Enable the manual rights-review override only if you have verified permission.`);
       }
 
       // --- STEP 0: ANALYZE NICHE VISUALS ---
       setState(prev => ({ ...prev, status: 'researching' }));
+      setAiUsageStage('niche_analysis');
       addLog(`🧠 Analyzing buyer intent for "${niche.name}"...`);
       const analysis = await analyzeNicheVisuals(generationBrief);
       visualAnalysisRef.current = analysis;
@@ -1987,10 +2141,13 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         addLog('OpenAI art-direction analysis is unavailable. Continuing with the built-in broad-theme art direction.');
       }
       addLog(`Visual Archetype Detected: ${analysis.archetype}`);
+      logUsageCheckpoint('niche_analysis');
 
+      setAiUsageStage('concept_design');
       addLog(`Brainstorming sticker concepts (${activeTarget})...`);
       // Pass the analysis to prompt generation so it knows to make Frames if needed
       const prompts = await generateStickerPrompts(generationBrief, style, activeTarget, analysis);
+      logUsageCheckpoint('concept_design');
       
       const stickerObjects: Sticker[] = prompts.map((p, i) => ({
         id: i + 1, prompt: p, url: null, status: 'pending', regenCount: 0, qaStatus: 'pending', qaIssues: [], replacementCount: 0
@@ -2001,7 +2158,9 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       await saveStickerCheckpoints(runIdRef.current, stickerObjects);
       await persistCheckpointMeta(niche, style, activeMode, activeTarget, analysis, preflight, null);
 
+      setAiUsageStage('sticker_generation');
       await generateStickerQueue(stickerObjects, niche, style, analysis, activeMode, activeTarget, useTurbo);
+      logUsageCheckpoint('sticker_generation');
 
       if (stopSignal.current) throw new Error("Stopped by user");
       if (skipToNextStageSignal.current) {
@@ -2012,16 +2171,21 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         return;
       }
 
+      setAiUsageStage('quality_control');
       const qualityResult = await ensureApprovedInventory(niche, style, analysis, activeMode, activeTarget, useTurbo);
+      logUsageCheckpoint('quality_control');
       stickersRef.current = qualityResult.stickers;
       skipToNextStageSignal.current = false; 
       setState(prev => ({ ...prev, status: 'zipping', progress: 75 }));
+      setAiUsageStage('packaging');
       addLog(`Packaging ZIP files...`);
       const zips = await packageStickers(stickersRef.current, niche!.name, activeMode, activeTarget);
+      logUsageCheckpoint('packaging');
       setState(prev => ({ ...prev, zips }));
 
       if (stopSignal.current) throw new Error("Stopped by user");
       setState(prev => ({ ...prev, status: 'marketing', progress: 85 }));
+      setAiUsageStage('marketing');
       addLog("Creating Mockups...");
 
       const availableStickerCount = Math.min(
@@ -2037,9 +2201,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         status: 'pending'
       }));
       const baseAssets: MarketingAsset[] = [
-        { id: 'cover_a', type: 'cover', title: 'Main Cover A (Full Seedream Hero)', url: null, status: 'pending' },
-        { id: 'cover_b', type: 'cover', title: 'Main Cover B (Full Seedream Editorial)', url: null, status: 'pending' },
-        { id: 'cover_c', type: 'cover', title: 'Main Cover C (Full Seedream Catalog)', url: null, status: 'pending' },
+        { id: 'cover_a', type: 'cover', title: 'Main Cover (OpenAI GPT Image 2 • 2K)', url: null, status: 'pending' },
         { id: 'included', type: 'included', title: 'What You Receive', url: null, status: 'pending' },
         { id: 'quality_proof', type: 'closeup', title: 'Transparent Edge Quality Proof', url: null, status: 'pending' },
         ...previewAssets,
@@ -2064,7 +2226,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         if (stopSignal.current) return;
         const assetStartedAt = Date.now();
         addLog(`Generating asset: ${asset.title}`);
-        if (asset.id === 'cover_a') addLog('Creative director: studying the real sticker set before Seedream composes the three hero directions...');
+        if (asset.id === 'cover_a') addLog('Creative director: studying the real sticker set before OpenAI GPT Image 2 composes the 2K hero cover...');
         setState(prev => {
           const nextAssets = [...prev.marketingAssets];
           nextAssets[i] = { ...asset, status: 'generating' };
@@ -2094,7 +2256,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
           }
 
           const completedStickerCount = validStickers.filter(sticker => sticker.status === 'completed' && sticker.url).length;
-          if (['cover', 'goodnotes', 'laptop', 'journal', 'lifestyle'].includes(asset.type)) {
+          if (['goodnotes', 'laptop', 'journal', 'lifestyle'].includes(asset.type)) {
             updateMetrics({ seedreamMockupRequests: metricsRef.current.seedreamMockupRequests + 1 });
           }
           const url = await generateSeedreamMockup(asset.id!, asset.type, stickersForMockup, niche!.name, completedStickerCount);
@@ -2157,9 +2319,11 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       } catch (videoError) {
         addLog(`Listing video skipped: ${videoError instanceof Error ? videoError.message : String(videoError)}`);
       }
+      logUsageCheckpoint('marketing');
 
       if (stopSignal.current) throw new Error("Stopped by user");
       setState(prev => ({ ...prev, status: 'copywriting', progress: 95 }));
+      setAiUsageStage('listing_copy');
       addLog("Generating SEO Listing Copy...");
       await persistCheckpointMeta(niche, style, activeMode, activeTarget, analysis, preflight, qualityResult.report, '');
       // PASS useTurbo to generate correct description
@@ -2168,7 +2332,9 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         stickersRef.current.filter(sticker => sticker.status === 'completed' && sticker.qaStatus === 'approved').length
       );
       const rawListing = await generateAutopilotListing(niche!.name, style.name, useTurbo, completedStickerCount);
+      logUsageCheckpoint('listing_copy');
       metricsRef.current = { ...metricsRef.current, finishedAt: new Date().toISOString() };
+      logUsageTotal();
       await persistCheckpointMeta(niche, style, activeMode, activeTarget, analysis, preflight, qualityResult.report, rawListing);
       setState(prev => ({ ...prev, rawListing, status: 'completed', progress: 100, metrics: metricsRef.current }));
       addLog(`${activeMode === 'production' ? 'PRODUCTION' : 'TEST'} COMPLETE: ${completedStickerCount} visually approved stickers.`);
@@ -2477,13 +2643,22 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
                     </div>
                     <div className="grid grid-cols-2 gap-3 text-xs">
                       <div className="bg-slate-900 rounded p-3 border border-slate-700">
-                        <div className="text-slate-500 uppercase">Seedream calls</div>
-                        <div className="text-white font-bold text-lg">{state.metrics.seedreamRequests + state.metrics.seedreamMockupRequests}</div>
-                        <div className="text-[9px] text-slate-500">{state.metrics.seedreamRequests} stickers + {state.metrics.seedreamMockupRequests} mockups</div>
+                        <div className="text-slate-500 uppercase">Seedream attempts</div>
+                        <div className="text-white font-bold text-lg">{state.metrics.seedreamApiAttempts}</div>
+                        <div className="text-[9px] text-slate-500">Includes provider retries</div>
                       </div>
                       <div className="bg-slate-900 rounded p-3 border border-slate-700">
                         <div className="text-slate-500 uppercase">Severe rejects</div>
                         <div className="text-amber-400 font-bold text-lg">{state.metrics.rejectedImages}</div>
+                      </div>
+                      <div className="bg-slate-900 rounded p-3 border border-slate-700">
+                        <div className="text-slate-500 uppercase">OpenAI tokens</div>
+                        <div className="text-cyan-300 font-bold text-lg">{state.metrics.openaiTotalTokens.toLocaleString()}</div>
+                        <div className="text-[9px] text-slate-500">{state.metrics.openaiTextRequests} text + {state.metrics.openaiImageRequests} image attempts</div>
+                      </div>
+                      <div className="bg-slate-900 rounded p-3 border border-slate-700">
+                        <div className="text-slate-500 uppercase">API retries / fails</div>
+                        <div className="text-white font-bold text-lg">{state.metrics.retryAttempts} / {state.metrics.failedApiRequests}</div>
                       </div>
                     </div>
                     {state.preflight && (

@@ -5,7 +5,7 @@ import { NICHE_IDEAS, STYLE_PRESETS } from '../data/presets';
 import { ensureProvidersConfigured, generateStickerPrompts, generateAutopilotSticker, generateAutopilotListing, generateSeedreamMockup, findViralNiche, getTrendAnalysis, discoverTopTrends, analyzeNicheVisuals, selectCoverStickerIds, assessNicheForProduction, generateReplacementStickerPrompts, createListingPreviewVideo } from '../services/aiService';
 import { processStickerImage } from '../services/stickerProcessing';
 import { findVisualDuplicateGroups, inspectStickerLocally } from '../services/qualityControl';
-import { clearRunCheckpoint, loadRunCheckpoint, saveRunCheckpointMeta, saveStickerCheckpoint, saveStickerCheckpoints, type RunCheckpointMeta } from '../services/runPersistence';
+import { clearRunCheckpoint, loadRunCheckpoint, saveMarketingAssetCheckpoint, saveRunCheckpointMeta, saveStickerCheckpoint, saveStickerCheckpoints, type RunCheckpointMeta } from '../services/runPersistence';
 import { Play, Pause, RefreshCw, CheckCircle, Download, FileText, Image as ImageIcon, Box, Archive, Zap, Gauge, Copy, FastForward, RotateCcw, Beaker, DollarSign, AlertCircle, Scissors, Eye, Globe, Search, ExternalLink, X, ArrowRight, BarChart3, Plus, Palette, ShoppingBag, Loader2, Wand2, Laptop, Tablet, Grid, BookOpen, Layers, ShieldCheck, Save, Video } from 'lucide-react';
 import JSZip from 'jszip';
 
@@ -586,6 +586,16 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
     await saveRunCheckpointMeta(meta);
     setSavedCheckpoint(meta);
     setState(prev => ({ ...prev, checkpointUpdatedAt: meta.updatedAt }));
+  };
+
+  const persistMarketingAsset = async (asset: MarketingAsset) => {
+    if (!runIdRef.current || asset.status !== 'completed' || !asset.url) return;
+    try {
+      await saveMarketingAssetCheckpoint(runIdRef.current, asset);
+    } catch (error) {
+      console.warn(`Could not checkpoint marketing asset ${asset.id || asset.title}:`, error);
+      addLog(`Checkpoint warning: ${asset.title} is still available in this tab, but could not be saved for a browser restart.`);
+    }
   };
 
   const checkApiKey = async () => {
@@ -1394,11 +1404,13 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
              state.currentNiche.name,
              validStickers.filter(sticker => sticker.status === 'completed' && sticker.url).length
           );
+          const completedAsset: MarketingAsset = { ...asset, url, status: 'completed' };
           setState(prev => {
               const nextAssets = [...prev.marketingAssets];
-              nextAssets[assetIndex] = { ...asset, url: url, status: 'completed' };
+              nextAssets[assetIndex] = completedAsset;
               return { ...prev, marketingAssets: nextAssets };
           });
+          await persistMarketingAsset(completedAsset);
           addLog(`${asset.title} Updated.`);
 
       } catch (e: any) {
@@ -1538,7 +1550,10 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
     targetCount: number,
     turboMode: boolean,
     qualityReport: QualityReport,
-    preflight: RunCheckpointMeta['preflight']
+    preflight: RunCheckpointMeta['preflight'],
+    recoveredAssets: MarketingAsset[] = [],
+    skipMissingMarketing = false,
+    recoveredListing?: string
   ) => {
     setState(prev => ({ ...prev, status: 'zipping', progress: 75 }));
     addLog('Packaging recovered run after the final inventory decision...');
@@ -1566,13 +1581,44 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       { id: 'mockup_journal', type: 'journal', title: 'Journal/Planner', url: null, status: 'pending' },
       { id: 'howto', type: 'howto', title: 'How To Use', url: null, status: 'pending' }
     ];
-    const assets = baseAssets.map((asset, index) => ({ ...asset, title: `${index + 1}. ${asset.title}` }));
-    setState(prev => ({ ...prev, marketingAssets: assets }));
+    const recoveredById = new Map(
+      recoveredAssets
+        .filter(asset => asset.id && asset.status === 'completed' && asset.url)
+        .map(asset => [asset.id!, asset])
+    );
+    const assets = baseAssets.map((asset, index) => {
+      const numberedAsset = { ...asset, title: `${index + 1}. ${asset.title}` };
+      const recovered = asset.id ? recoveredById.get(asset.id) : undefined;
+      return recovered ? { ...numberedAsset, ...recovered, status: 'completed' as const } : numberedAsset;
+    });
+    const recoveredVideo = recoveredById.get('listing_video');
+    if (recoveredVideo) assets.push(recoveredVideo);
+    if (recoveredById.size) {
+      await Promise.allSettled([...recoveredById.values()].map(asset => persistMarketingAsset(asset)));
+    }
+    setState(prev => ({ ...prev, marketingAssets: [...assets] }));
+    if (recoveredById.size) {
+      addLog(`Reusing ${recoveredById.size} completed marketing asset${recoveredById.size === 1 ? '' : 's'} from the saved run; no Seedream charge for those files.`);
+    }
     const approved = stickersRef.current.filter(sticker => sticker.qaStatus === 'approved' && sticker.url).slice(0, targetCount);
-    const coverUrls = await getModelSelectedCoverBatch(approved, 14);
-    let finished = 0;
+    const imageAssetCount = baseAssets.length;
+    const missingTasks = assets
+      .map((asset, index) => ({ asset, index }))
+      .filter(({ asset }) => asset.id !== 'listing_video' && (asset.status !== 'completed' || !asset.url));
 
-    await processWithQueue(assets, 6, async (asset, index) => {
+    if (skipMissingMarketing && missingTasks.length) {
+      missingTasks.forEach(({ asset, index }) => {
+        assets[index] = { ...asset, status: 'error' };
+      });
+      addLog(`Resume protection: skipped ${missingTasks.length} missing mockup${missingTasks.length === 1 ? '' : 's'} because this run had already reached copywriting. Regenerate only a specific asset manually if you want it.`);
+    }
+
+    const tasksToGenerate = skipMissingMarketing ? [] : missingTasks;
+    const needsCoverSelection = tasksToGenerate.some(({ asset }) => asset.type === 'cover');
+    const coverUrls = needsCoverSelection ? await getModelSelectedCoverBatch(approved, 14) : [];
+    let finished = assets.filter(asset => asset.id !== 'listing_video' && asset.status === 'completed').length;
+
+    await processWithQueue(tasksToGenerate, 6, async ({ asset, index }) => {
       const valid = approved;
       let urls: string[] = [];
       if (asset.id?.startsWith('preview_')) {
@@ -1588,7 +1634,9 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
           updateMetrics({ seedreamMockupRequests: metricsRef.current.seedreamMockupRequests + 1 });
         }
         const url = await generateSeedreamMockup(asset.id!, asset.type, urls, niche.name, targetCount);
-        assets[index] = { ...asset, url, status: 'completed' };
+        const completedAsset: MarketingAsset = { ...asset, url, status: 'completed' };
+        assets[index] = completedAsset;
+        await persistMarketingAsset(completedAsset);
       } catch (error) {
         assets[index] = { ...asset, status: 'error' };
         addLog(`Recovered-run asset failed: ${asset.title}. ${error instanceof Error ? error.message : String(error)}`);
@@ -1597,37 +1645,46 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       setState(prev => ({
         ...prev,
         marketingAssets: [...assets],
-        progress: 85 + Math.round((finished / assets.length) * 9)
+        progress: 85 + Math.round((finished / imageAssetCount) * 9)
       }));
     });
+
+    if (skipMissingMarketing) {
+      setState(prev => ({ ...prev, marketingAssets: [...assets], progress: 94 }));
+    }
 
     const criticalIds = new Set(['cover_a', 'included', 'quality_proof', 'howto', 'preview_1']);
     const failedCritical = assets.filter(asset => criticalIds.has(asset.id || '') && asset.status !== 'completed');
     if (failedCritical.length) {
       addLog(`Recovery warning: these listing assets could not be created and were skipped: ${failedCritical.map(asset => asset.title).join(', ')}.`);
     }
-    try {
-      const video = await createListingPreviewVideo(
-        assets.filter(asset => asset.url && ['cover', 'closeup', 'included', 'howto'].includes(asset.type)).map(asset => asset.url!)
-      );
-      const videoAsset: MarketingAsset = {
-        id: 'listing_video',
-        type: 'social',
-        title: 'Listing Preview Video',
-        url: video.url,
-        status: 'completed',
-        format: 'video',
-        mimeType: video.mimeType
-      };
-      assets.push(videoAsset);
-      setState(prev => ({ ...prev, marketingAssets: [...assets] }));
-    } catch (error) {
-      addLog(`Listing video skipped: ${error instanceof Error ? error.message : String(error)}`);
+    if (!recoveredVideo && !skipMissingMarketing) {
+      try {
+        const video = await createListingPreviewVideo(
+          assets.filter(asset => asset.url && ['cover', 'closeup', 'included', 'howto'].includes(asset.type)).map(asset => asset.url!)
+        );
+        const videoAsset: MarketingAsset = {
+          id: 'listing_video',
+          type: 'social',
+          title: 'Listing Preview Video',
+          url: video.url,
+          status: 'completed',
+          format: 'video',
+          mimeType: video.mimeType
+        };
+        assets.push(videoAsset);
+        await persistMarketingAsset(videoAsset);
+        setState(prev => ({ ...prev, marketingAssets: [...assets] }));
+      } catch (error) {
+        addLog(`Listing video skipped: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
 
     setState(prev => ({ ...prev, status: 'copywriting', progress: 95 }));
+    addLog('Generating SEO Listing Copy...');
     const completedStickerCount = stickersRef.current.filter(sticker => sticker.status === 'completed' && sticker.blob).slice(0, targetCount).length;
-    const rawListing = await generateAutopilotListing(niche.name, style.name, turboMode, completedStickerCount);
+    await persistCheckpointMeta(niche, style, mode, targetCount, analysis, preflight, qualityReport, recoveredListing || '');
+    const rawListing = recoveredListing || await generateAutopilotListing(niche.name, style.name, turboMode, completedStickerCount);
     metricsRef.current = { ...metricsRef.current, finishedAt: new Date().toISOString() };
     await persistCheckpointMeta(niche, style, mode, targetCount, analysis, preflight, qualityReport, rawListing);
     setState(prev => ({
@@ -1683,6 +1740,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
     if (runIdRef.current) await saveStickerCheckpoints(runIdRef.current, overridden);
 
     try {
+      const alreadyReachedCopywriting = logsRef.current.some(entry => /Generating SEO Listing Copy|RESUME ERROR:.*(?:listing|tags|OpenAI)/i.test(entry));
       await finishRecoveredProduction(
         state.currentNiche,
         state.currentStyle,
@@ -1691,7 +1749,10 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         state.targetCount,
         useTurbo,
         overrideReport,
-        state.preflight
+        state.preflight,
+        state.marketingAssets,
+        alreadyReachedCopywriting,
+        state.rawListing
       );
       setNeedsZipUpdate(false);
     } catch (error) {
@@ -1708,9 +1769,26 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       await checkApiKey();
       const checkpoint = await loadRunCheckpoint();
       if (!checkpoint) throw new Error('No saved production checkpoint was found.');
-      const { meta, stickers } = checkpoint;
+      const { meta, stickers, marketingAssets: persistedAssets } = checkpoint;
+      const sameVisibleRun = runIdRef.current === meta.id;
+      const visibleAssets = sameVisibleRun
+        ? state.marketingAssets.filter(asset => asset.status === 'completed' && asset.url)
+        : [];
+      const recoveredAssetMap = new Map<string, MarketingAsset>();
+      persistedAssets.forEach(asset => {
+        if (asset.id && asset.status === 'completed' && asset.url) recoveredAssetMap.set(asset.id, asset);
+      });
+      visibleAssets.forEach(asset => {
+        if (asset.id && !recoveredAssetMap.has(asset.id)) recoveredAssetMap.set(asset.id, asset);
+      });
+      const recoveredAssets = [...recoveredAssetMap.values()];
+      const recoveredLogs = sameVisibleRun
+        ? [...new Set([...(meta.logs || []), ...state.logs])]
+        : (meta.logs || []);
+      const recoveredListing = meta.rawListing || (sameVisibleRun ? state.rawListing : undefined);
+      const alreadyReachedCopywriting = recoveredLogs.some(entry => /Generating SEO Listing Copy|RESUME ERROR:.*(?:listing|tags|OpenAI)/i.test(entry));
       runIdRef.current = meta.id;
-      logsRef.current = meta.logs || [];
+      logsRef.current = recoveredLogs;
       metricsRef.current = { rejectedImages: 0, seedreamMockupRequests: 0, ...meta.metrics };
       preflightRef.current = meta.preflight;
       setRunMode(meta.runMode);
@@ -1731,9 +1809,9 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         targetCount: meta.targetCount,
         stickers,
         zips: [],
-        marketingAssets: [],
-        rawListing: undefined,
-        logs: meta.logs || [],
+        marketingAssets: recoveredAssets,
+        rawListing: recoveredListing,
+        logs: recoveredLogs,
         qualityReport: meta.qualityReport,
         metrics: metricsRef.current,
         preflight: meta.preflight,
@@ -1741,6 +1819,12 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         progress: Math.min(62, 10 + Math.round((stickers.filter(sticker => sticker.status === 'completed').length / meta.targetCount) * 52))
       }));
       addLog(`Resuming saved ${meta.runMode} run from ${new Date(meta.updatedAt).toLocaleString()}...`);
+      if (recoveredAssets.length) {
+        addLog(`Recovered ${recoveredAssets.length} completed marketing asset${recoveredAssets.length === 1 ? '' : 's'}; they will not be regenerated.`);
+        await Promise.allSettled(recoveredAssets.map(asset => saveMarketingAssetCheckpoint(meta.id, asset)));
+      } else if (alreadyReachedCopywriting) {
+        addLog('This older checkpoint reached copywriting before mockup files were checkpointed. Automatic mockup regeneration is disabled to prevent another Seedream charge; ZIPs and listing copy will still finish.');
+      }
       if (audioRef.current) audioRef.current.play().catch(error => console.warn('Audio play blocked', error));
       await requestWakeLock();
       const analysis = meta.analysis || await analyzeNicheVisuals(getNicheGenerationBrief(meta.currentNiche));
@@ -1755,7 +1839,12 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         addLog('Recovered run paused safely.');
         return;
       }
-      const quality = await ensureApprovedInventory(meta.currentNiche, meta.currentStyle, analysis, meta.runMode, meta.targetCount, meta.useTurbo);
+      const approvedCount = stickersRef.current.filter(sticker => sticker.status === 'completed' && sticker.blob && sticker.qaStatus === 'approved').length;
+      const canReuseQuality = approvedCount >= meta.targetCount && Boolean(meta.qualityReport && meta.qualityReport.approved >= meta.targetCount);
+      const quality = canReuseQuality
+        ? { stickers: stickersRef.current, report: meta.qualityReport! }
+        : await ensureApprovedInventory(meta.currentNiche, meta.currentStyle, analysis, meta.runMode, meta.targetCount, meta.useTurbo);
+      if (canReuseQuality) addLog('Reusing the completed quality decision from the checkpoint; QC will not run again.');
       stickersRef.current = quality.stickers;
       await finishRecoveredProduction(
         meta.currentNiche,
@@ -1765,7 +1854,10 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         meta.targetCount,
         meta.useTurbo,
         quality.report,
-        meta.preflight
+        meta.preflight,
+        recoveredAssets,
+        alreadyReachedCopywriting,
+        recoveredListing
       );
     } catch (error) {
       addLog(`RESUME ERROR: ${error instanceof Error ? error.message : String(error)}`);
@@ -1997,16 +2089,18 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
           }
           const url = await generateSeedreamMockup(asset.id!, asset.type, stickersForMockup, niche!.name, completedStickerCount);
           finishedAssets++;
-          assetsToGen[i] = { ...asset, url, status: 'completed' };
+          const completedAsset: MarketingAsset = { ...asset, url, status: 'completed' };
+          assetsToGen[i] = completedAsset;
           setState(prev => {
             const nextAssets = [...prev.marketingAssets];
-            nextAssets[i] = { ...asset, url, status: 'completed' };
+            nextAssets[i] = completedAsset;
             return {
               ...prev,
               marketingAssets: nextAssets,
               progress: 85 + Math.round((finishedAssets / assetsToGen.length) * 9)
             };
           });
+          await persistMarketingAsset(completedAsset);
           const elapsedSeconds = Math.max(1, Math.round((Date.now() - assetStartedAt) / 1000));
           const elapsedLabel = elapsedSeconds >= 60
             ? `${Math.floor(elapsedSeconds / 60)}m ${elapsedSeconds % 60}s`
@@ -2047,6 +2141,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
           format: 'video',
           mimeType: video.mimeType
         };
+        await persistMarketingAsset(videoAsset);
         setState(prev => ({ ...prev, marketingAssets: [...prev.marketingAssets, videoAsset] }));
         addLog(`Listing preview video created (${video.mimeType || 'browser video'}).`);
       } catch (videoError) {
@@ -2056,6 +2151,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       if (stopSignal.current) throw new Error("Stopped by user");
       setState(prev => ({ ...prev, status: 'copywriting', progress: 95 }));
       addLog("Generating SEO Listing Copy...");
+      await persistCheckpointMeta(niche, style, activeMode, activeTarget, analysis, preflight, qualityResult.report, '');
       // PASS useTurbo to generate correct description
       const completedStickerCount = Math.min(
         activeTarget,

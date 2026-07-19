@@ -26,9 +26,22 @@ export interface BrainRequest {
   images?: BrainImageInput[];
 }
 
+export interface ApiTokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  inputTextTokens?: number;
+  inputImageTokens?: number;
+  outputTextTokens?: number;
+  outputImageTokens?: number;
+}
+
 export interface BrainResult {
   text: string;
   sources: SourceLink[];
+  usage?: ApiTokenUsage;
+  model?: string;
+  attempts?: number;
 }
 
 export type ImageSize = '1K' | '1K_LANDSCAPE' | '2K' | '2K_LANDSCAPE' | '4K';
@@ -41,4 +54,8 @@ export interface ImageRequest {
 
 export interface ImageResult {
   dataUrl: string;
+  usage?: ApiTokenUsage;
+  model?: string;
+  attempts?: number;
+  provider?: 'openai' | 'seedream';
 }

@@ -86,8 +86,8 @@ The production server serves both the compiled React app and `/api/*` on `PORT` 
 | Variable | Default | Purpose |
 |---|---|---|
 | `OPENAI_API_KEY` | optional | OpenAI server API key; without available quota the production flow uses built-in offline fallbacks |
-| `OPENAI_MODEL` | `gpt-5.6` | Brain model used by the Responses API |
-| `OPENAI_LIGHT_MODEL` | `gpt-5-mini` | Lower-cost model for mechanical, schema-validated cover selection, cover briefing and simple scoring |
+| `OPENAI_MODEL` | `gpt-5.6-terra` | Balanced high-quality model for research, art direction, 100-concept generation, trends and Etsy listing copy |
+| `OPENAI_LIGHT_MODEL` | `gpt-5.6-luna` | Same-family lower-cost model for mechanical, schema-validated cover selection, cover briefing and simple scoring |
 | `OPENAI_REASONING_EFFORT` | `low` | Cost/quality control for brain calls |
 | `SEEDREAM_API_KEY` | required | BytePlus ModelArk API key; `ARK_API_KEY` also works |
 | `SEEDREAM_MODEL` | `dola-seedream-5-0-pro-260628` | Seedream model endpoint ID |

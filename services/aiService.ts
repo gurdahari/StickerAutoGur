@@ -5,12 +5,50 @@ type JsonSchema = Record<string, unknown>;
 interface BrainResult {
   text: string;
   sources: { title: string; uri: string }[];
+  usage?: ApiTokenUsage;
+  model?: string;
+  attempts?: number;
 }
+
+export interface ApiTokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  inputTextTokens?: number;
+  inputImageTokens?: number;
+  outputTextTokens?: number;
+  outputImageTokens?: number;
+}
+
+export interface AiUsageEvent {
+  provider: 'openai-text' | 'openai-image' | 'seedream';
+  stage: string;
+  attempts: number;
+  failed: boolean;
+  usage?: ApiTokenUsage;
+  model?: string;
+}
+
+let activeUsageStage = 'unassigned';
+const usageListeners = new Set<(event: AiUsageEvent) => void>();
+export const setAiUsageStage = (stage: string) => { activeUsageStage = stage; };
+export const subscribeAiUsage = (listener: (event: AiUsageEvent) => void) => {
+  usageListeners.add(listener);
+  return () => { usageListeners.delete(listener); };
+};
+const emitAiUsage = (event: Omit<AiUsageEvent, 'stage'>) => {
+  usageListeners.forEach(listener => listener({ ...event, stage: activeUsageStage }));
+};
+const providerAttemptsFromError = (error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error);
+  const match = message.match(/\[provider_attempts=(\d+)\]/);
+  return match ? Math.max(1, Number(match[1])) : 1;
+};
 
 export interface ProviderHealth {
   status: string;
   providers: {
-    openai: { configured: boolean; model: string; lightModel?: string };
+    openai: { configured: boolean; model: string; lightModel?: string; imageModel?: string };
     seedream: { configured: boolean; model: string; maxConcurrency: number };
   };
 }
@@ -45,10 +83,25 @@ const generateBrainText = async (options: {
   webSearch?: boolean;
   chat?: boolean;
   images?: { dataUrl: string; detail?: 'low' | 'high' | 'original' | 'auto' }[];
-}): Promise<BrainResult> => apiRequest<BrainResult>(options.chat ? '/api/brain/chat' : '/api/brain/generate', {
-  method: 'POST',
-  body: JSON.stringify(options)
-});
+}): Promise<BrainResult> => {
+  try {
+    const response = await apiRequest<BrainResult>(options.chat ? '/api/brain/chat' : '/api/brain/generate', {
+      method: 'POST',
+      body: JSON.stringify(options)
+    });
+    emitAiUsage({
+      provider: 'openai-text',
+      attempts: Math.max(1, response.attempts || 1),
+      failed: false,
+      usage: response.usage,
+      model: response.model
+    });
+    return response;
+  } catch (error) {
+    emitAiUsage({ provider: 'openai-text', attempts: providerAttemptsFromError(error), failed: true });
+    throw error;
+  }
+};
 
 export interface StickerVisionQaResult {
   id: number;
@@ -72,11 +125,42 @@ const generateSeedreamImage = async (
   size: ImageSize = '2K',
   images: string[] = []
 ): Promise<string> => {
-  const response = await apiRequest<{ dataUrl: string }>('/api/images/generate', {
-    method: 'POST',
-    body: JSON.stringify({ prompt, size, images })
-  });
-  return response.dataUrl;
+  try {
+    const response = await apiRequest<{ dataUrl: string; attempts?: number; model?: string }>('/api/images/generate', {
+      method: 'POST',
+      body: JSON.stringify({ prompt, size, images })
+    });
+    emitAiUsage({ provider: 'seedream', attempts: Math.max(1, response.attempts || 1), failed: false, model: response.model });
+    return response.dataUrl;
+  } catch (error) {
+    emitAiUsage({ provider: 'seedream', attempts: providerAttemptsFromError(error), failed: true });
+    throw error;
+  }
+};
+
+const generateOpenAICoverImage = async (prompt: string, images: string[]): Promise<string> => {
+  try {
+    const response = await apiRequest<{
+      dataUrl: string;
+      usage?: ApiTokenUsage;
+      attempts?: number;
+      model?: string;
+    }>('/api/images/openai-cover', {
+      method: 'POST',
+      body: JSON.stringify({ prompt, size: '2K_LANDSCAPE', images })
+    });
+    emitAiUsage({
+      provider: 'openai-image',
+      attempts: Math.max(1, response.attempts || 1),
+      failed: false,
+      usage: response.usage,
+      model: response.model
+    });
+    return response.dataUrl;
+  } catch (error) {
+    emitAiUsage({ provider: 'openai-image', attempts: providerAttemptsFromError(error), failed: true });
+    throw error;
+  }
 };
 
 export const ensureProvidersConfigured = async (): Promise<ProviderHealth> => {
@@ -405,7 +489,7 @@ const finalizeGeneratedCover = async (
   variant: number
 ): Promise<string> => {
   const image = await loadCanvasImage(source);
-  if (!image) throw new Error('Failed to load the full Seedream cover.');
+  if (!image) throw new Error('Failed to load the full OpenAI cover.');
   const canvas = document.createElement('canvas');
   canvas.width = 3000;
   canvas.height = 2400;
@@ -440,7 +524,7 @@ const finalizeGeneratedCover = async (
     canvas.height
   );
 
-  // Seedream owns the visual hero; exact typography is composed locally so a
+  // OpenAI owns the visual hero; exact typography is composed locally so a
   // sellable cover can never contain misspellings, duplicated lines or fake copy.
   const topShade = context.createLinearGradient(0, 0, 0, 840);
   topShade.addColorStop(0, 'rgba(3, 7, 18, 0.94)');
@@ -2020,40 +2104,30 @@ export const generateSeedreamMockup = async (
     if (!uniqueUrls.length) throw new Error('No unique stickers are available for this marketing asset.');
     if (type === 'preview' || id.includes('preview')) return createGridComposite(uniqueUrls);
     if (type === 'cover') {
-      const variant = id.endsWith('_b') ? 1 : id.endsWith('_c') ? 2 : 0;
+      const variant = 0;
       const stickerCount = Math.max(uniqueUrls.length, totalStickerCount);
       const coverReferenceCount = Math.min(10, uniqueUrls.length);
       const creative = await getCoverCreativeBrief(niche, uniqueUrls);
-      const artDirections = [
-        'Cinematic editorial poster: oversized hero, radiant focal light, dramatic depth and bold layered motion.',
-        'Joyful scrapbook explosion: energetic diagonals, tactile cut-paper depth, playful scale and irresistible color.',
-        'Luxury magazine campaign: sophisticated atmosphere, surprising asymmetry, rich contrast and polished visual drama.'
-      ];
+      const artDirection = 'Premium cinematic editorial campaign: oversized hero, radiant focal light, dramatic depth, bold layered motion, rich tactile atmosphere and instant small-thumbnail impact.';
       const fullCoverPrompt = `Create the visual hero artwork for a scroll-stopping Etsy sticker-bundle cover.
 
 Creative concept: ${creative.visualConcept}
 Palette: ${creative.palette}
-Composition: ${creative.composition} ${artDirections[variant]}
+Composition: ${creative.composition} ${artDirection}
 
 Use the ${coverReferenceCount} supplied stickers as the real products, each once. Preserve their artwork and white cut edges. Image 1 is the oversized hero; images 2-4 are strong anchors; the rest create a lively layered collage. No invented or duplicate stickers.
 
-Full-bleed 4:3 advertising art. Keep the upper 28% atmospheric, darker and visually calm for later typography; place the strongest sticker action in the middle and lower area. Large emotional focal point, dramatic depth and bold niche-specific atmosphere.
+Full-bleed 2048x1152 landscape advertising art. The final Etsy crop is centered 4:3, so keep every essential sticker inside the central 72% of the width. Keep the upper 28% atmospheric, darker and visually calm for exact typography added later; place the strongest sticker action in the middle and lower area. Large emotional focal point, dramatic depth and bold niche-specific atmosphere.
 
 ABSOLUTELY ZERO TEXT: no letters, numbers, words, captions, badges, logos, labels, watermark or fake writing. No catalog grid, footer, feature table, beige corporate brochure or empty dead space.`;
       try {
         const referenceImages = await Promise.all(
           uniqueUrls.slice(0, coverReferenceCount).map(url => imageUrlToDataUrl(url, 768))
         );
-        let generatedCover: string;
-        try {
-          generatedCover = await generateSeedreamImage(fullCoverPrompt, '2K_LANDSCAPE', referenceImages);
-        } catch (highResolutionError) {
-          console.warn('2K landscape cover request was unavailable; retrying the same Seedream direction at standard landscape resolution.', highResolutionError);
-          generatedCover = await generateSeedreamImage(fullCoverPrompt, '1K_LANDSCAPE', referenceImages);
-        }
+        const generatedCover = await generateOpenAICoverImage(fullCoverPrompt, referenceImages);
         return finalizeGeneratedCover(generatedCover, creative, stickerCount, variant);
       } catch (error) {
-        console.warn('Full Seedream cover generation failed; using the deterministic exact-pixel fallback.', error);
+        console.warn('OpenAI GPT Image 2 cover generation failed; using the free deterministic exact-pixel fallback.', error);
       }
       return createCoverComposite(uniqueUrls, niche, totalStickerCount, variant);
     }

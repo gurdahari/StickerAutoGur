@@ -77,6 +77,17 @@ export interface QualityReport {
   manualOverrideCount?: number;
 }
 
+export interface AiUsageStageMetrics {
+  openaiTextRequests: number;
+  openaiImageRequests: number;
+  openaiInputTokens: number;
+  openaiOutputTokens: number;
+  openaiTotalTokens: number;
+  seedreamImageRequests: number;
+  retryAttempts: number;
+  failedRequests: number;
+}
+
 export interface ProductionMetrics {
   seedreamRequests: number;
   seedreamMockupRequests: number;
@@ -84,6 +95,15 @@ export interface ProductionMetrics {
   rejectedImages: number;
   qaRuns: number;
   rateLimitEvents: number;
+  openaiTextRequests: number;
+  openaiImageRequests: number;
+  openaiInputTokens: number;
+  openaiOutputTokens: number;
+  openaiTotalTokens: number;
+  seedreamApiAttempts: number;
+  retryAttempts: number;
+  failedApiRequests: number;
+  usageByStage: Record<string, AiUsageStageMetrics>;
   startedAt: string | null;
   finishedAt: string | null;
 }

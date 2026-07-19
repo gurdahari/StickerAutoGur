@@ -8,6 +8,7 @@ Be commercially useful, specific, honest about uncertainty, and follow the reque
 
 const getApiKey = () => process.env.OPENAI_API_KEY?.trim();
 export const getOpenAIModel = () => process.env.OPENAI_MODEL?.trim() || 'gpt-5.6';
+export const getOpenAILightModel = () => process.env.OPENAI_LIGHT_MODEL?.trim() || 'gpt-5-mini';
 export const isOpenAIConfigured = () => Boolean(getApiKey());
 export const getOpenAIKeyHint = () => {
   const apiKey = getApiKey();
@@ -80,9 +81,10 @@ export const generateBrainResponse = async (request: BrainRequest): Promise<Brai
       ? request.messages.map(message => ({ role: message.role, content: message.content }))
       : request.prompt!;
 
+  const useLightTier = request.tier === 'light';
   const response = await client.responses.create({
-    model: getOpenAIModel(),
-    reasoning: { effort: getReasoningEffort() },
+    model: useLightTier ? getOpenAILightModel() : getOpenAIModel(),
+    reasoning: { effort: useLightTier ? 'minimal' : getReasoningEffort() },
     instructions: request.system || DEFAULT_SYSTEM,
     input,
     tools: request.webSearch ? [{ type: 'web_search' }] : undefined,

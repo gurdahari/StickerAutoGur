@@ -2,7 +2,7 @@
 
 StickerOS is an autonomous digital-sticker production app for Etsy. This version replaces the original Google AI Studio integration with:
 
-- **OpenAI Responses API** for niche analysis, prompt creation, multimodal visual QA, structured listing copy, chat, and live trend research.
+- **OpenAI Responses API** for niche analysis, prompt creation, structured listing copy, chat, and live trend research, plus **GPT Image 2** for one 2K Main Cover.
 - **BytePlus ModelArk / Seedream 5.0 Pro** for sticker images and marketing mockups.
 - A small server layer that keeps both API keys out of the browser bundle.
 
@@ -15,6 +15,7 @@ React/Vite browser
       v
 Node API server
   |-- OpenAI Responses API (brain + web search)
+  |-- OpenAI GPT Image 2 (single 2K Main Cover)
   `-- BytePlus ModelArk (Seedream images)
 ```
 
@@ -61,14 +62,15 @@ The production server serves both the compiled React app and `/api/*` on `PORT` 
 - Trend Intelligence searches two separate lanes: five broad buyer markets with room for a varied 100-design catalog and five emerging micro-trends. Each micro-trend is mapped to a broader production niche before import, while the UI shows demand evidence, competition, target buyer, selling logic and variety scores. These are research signals, not guaranteed sales or revenue.
 - Sticker PNGs are generated against a flat matte, cleaned with edge-connected background removal plus conservative enclosed-hole detection for rings, frames, tubes and similar shapes, decontaminated at the cut line, and tightly cropped to the artwork's real aspect ratio with only a minimal transparent safety margin. The cleanup also recognizes enclosed pure-black matte when the model mistakenly renders a white outer background. A free local repair action can force this conservative hole pass on an existing PNG without another image-model request.
 - Downloadable sticker files never contain a baked-in drop shadow. Shadows are added only while composing marketing images.
-- Before cover generation, one cached OpenAI visual creative-director call studies six real stickers and proposes a meaningful 2–4 word headline plus a niche-specific palette, emotional concept and composition. Seedream 5.0 Pro then receives 10 selected real PNG references and renders the full-bleed visual hero with zero typography. The browser composes the exact headline, subtitle, quantity badge and download line afterward, eliminating misspellings, duplicated copy and clipped text without redrawing the Seedream artwork. If OpenAI selection is unavailable, a free deterministic semantic-diversity selector is used and the exact provider error is written to the system log. The three variants use different editorial, scrapbook and luxury-campaign directions.
+- Before cover generation, one cached OpenAI visual creative-director call studies six real stickers and proposes a meaningful 2–4 word headline plus a niche-specific palette, emotional concept and composition. OpenAI GPT Image 2 then receives 10 selected real PNG references and renders one high-quality 2048×1152 visual hero with zero typography. The browser composes the exact headline, subtitle, quantity badge and download line afterward, eliminating misspellings and clipped text. If GPT Image 2 is unavailable, a free deterministic exact-pixel cover is used; the app never spends a Seedream cover call.
 - Lifestyle mockups send up to five completed sticker PNGs to Seedream as reference images for natural placement on tablets, laptops, and journals. They render at 1K and are finalized locally at 2K; four lifestyle requests can run in parallel. If reference generation fails, the app falls back to generic scenery with clipped exact-pixel placement.
 - A 100-sticker product is delivered as five ZIPs of 20 PNGs. Original dimensions are preserved when possible; oversized batches are resized together with lossless PNG encoding to stay below 19 MB and target roughly 18–19 MB without adding filler data. Every volume includes a CSV manifest with dimensions, byte size and SHA-256 checksums; Volume 1 also includes a buyer-facing `START_HERE.txt` guide.
-- OpenAI selects 14 representative real designs for three high-impact cover variants; selection is read-only and can never replace a sticker or trigger a Seedream request. Seedream uses those references to create the finished covers, while the listing set also includes a deterministic “What You Receive” infographic and enlarged transparency/edge-quality proof.
+- OpenAI selects representative real designs for one high-impact Main Cover; selection is read-only and can never replace a sticker. GPT Image 2 creates only that single 2K cover, while Seedream remains the provider for stickers and lifestyle mockups.
 - Preview-grid count adapts to the number of completed stickers, and the customer-facing four-step Etsy download/unzip/import guide is composed locally without another image-model request.
 - Niche analysis expands narrow phrases into a broader theme universe and 10–12 subject families. Direct motifs are capped while the selected visual style remains locked across the pack.
 - Cover badges and listing copy use the actual number of completed stickers, including partial and recovered runs. OpenAI quota, authentication or response errors fall back to deterministic local preflight, art direction, concepts and complete listing copy; they never block ZIP creation.
 - Listing copy follows a structured buyer-first format with an accurate file inventory, use cases, download steps, important digital-product details, and 13 validated Etsy tags.
+- Every provider response is metered by production stage. The log reports provider-reported OpenAI input/output/total tokens, actual OpenAI and Seedream request attempts, automatic retries and failed attempts. The Master Kit includes both `6_API_USAGE_REPORT.json` and `7_API_USAGE_BY_STAGE.csv`, including resumed work and manual regenerations.
 - Where supported by the browser, the app creates a short listing-preview video from the actual completed listing images. The master kit also contains a production QA report and a blank performance-tracking CSV for feeding real listing results back into future product decisions.
 
 ## Production workflow
@@ -88,6 +90,7 @@ The production server serves both the compiled React app and `/api/*` on `PORT` 
 | `OPENAI_API_KEY` | optional | OpenAI server API key; without available quota the production flow uses built-in offline fallbacks |
 | `OPENAI_MODEL` | `gpt-5.6-terra` | Balanced high-quality model for research, art direction, 100-concept generation, trends and Etsy listing copy |
 | `OPENAI_LIGHT_MODEL` | `gpt-5.6-luna` | Same-family lower-cost model for mechanical, schema-validated cover selection, cover briefing and simple scoring |
+| `OPENAI_IMAGE_MODEL` | `gpt-image-2` | Image model used only for the single high-quality 2048×1152 Main Cover |
 | `OPENAI_REASONING_EFFORT` | `low` | Cost/quality control for brain calls |
 | `SEEDREAM_API_KEY` | required | BytePlus ModelArk API key; `ARK_API_KEY` also works |
 | `SEEDREAM_MODEL` | `dola-seedream-5-0-pro-260628` | Seedream model endpoint ID |

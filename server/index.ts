@@ -11,6 +11,7 @@ import {
   getOpenAIModel,
   isOpenAIConfigured
 } from './providers/openaiBrain.js';
+import { generateOpenAICover, getOpenAIImageModel } from './providers/openaiImage.js';
 import {
   generateSeedreamImage,
   getSeedreamKeyHint,
@@ -144,7 +145,8 @@ const server = createServer(async (request, response) => {
           openai: {
             configured: isOpenAIConfigured(),
             model: getOpenAIModel(),
-            lightModel: getOpenAILightModel()
+            lightModel: getOpenAILightModel(),
+            imageModel: getOpenAIImageModel()
           },
           seedream: {
             configured: isSeedreamConfigured(),
@@ -172,6 +174,11 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === 'POST' && pathname === '/api/images/openai-cover') {
+      sendJson(response, 200, await generateOpenAICover(await readJsonBody<ImageRequest>(request)));
+      return;
+    }
+
     if (pathname.startsWith('/api/')) {
       sendJson(response, 404, { error: 'API route not found.' });
       return;
@@ -192,6 +199,6 @@ const server = createServer(async (request, response) => {
 server.listen(port, loopbackHost, () => {
   console.log(`StickerOS API listening on http://localhost:${port}`);
   console.log(`OpenAI key loaded from ${openAIKeyLocation || 'no environment file'} as ${getOpenAIKeySource() || 'no environment variable'} (${getOpenAIKeyHint() || 'not configured'}).`);
-  console.log(`OpenAI routing: standard=${getOpenAIModel()} • light=${getOpenAILightModel()}.`);
+  console.log(`OpenAI routing: standard=${getOpenAIModel()} • light=${getOpenAILightModel()} • image=${getOpenAIImageModel()}.`);
   console.log(`Seedream key loaded from ${getSeedreamKeySource() || 'no environment variable'} (${getSeedreamKeyHint() || 'not configured'}).`);
 });

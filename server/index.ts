@@ -7,6 +7,7 @@ import {
   generateBrainResponse,
   getOpenAIKeyHint,
   getOpenAIKeySource,
+  getOpenAILightModel,
   getOpenAIModel,
   isOpenAIConfigured
 } from './providers/openaiBrain.js';
@@ -142,7 +143,8 @@ const server = createServer(async (request, response) => {
         providers: {
           openai: {
             configured: isOpenAIConfigured(),
-            model: getOpenAIModel()
+            model: getOpenAIModel(),
+            lightModel: getOpenAILightModel()
           },
           seedream: {
             configured: isSeedreamConfigured(),
@@ -190,5 +192,6 @@ const server = createServer(async (request, response) => {
 server.listen(port, loopbackHost, () => {
   console.log(`StickerOS API listening on http://localhost:${port}`);
   console.log(`OpenAI key loaded from ${openAIKeyLocation || 'no environment file'} as ${getOpenAIKeySource() || 'no environment variable'} (${getOpenAIKeyHint() || 'not configured'}).`);
+  console.log(`OpenAI routing: standard=${getOpenAIModel()} • light=${getOpenAILightModel()}.`);
   console.log(`Seedream key loaded from ${getSeedreamKeySource() || 'no environment variable'} (${getSeedreamKeyHint() || 'not configured'}).`);
 });

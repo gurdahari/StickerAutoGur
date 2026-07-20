@@ -4,6 +4,13 @@ import { appendStickerQualityGuidelines, STICKER_GENERATION_QUALITY_COMPACT } fr
 
 export * from './aiServiceLegacy';
 
+// Listing video is intentionally disabled. The legacy Autopilot catches this
+// immediately and continues to listing copy, so browser video rendering can
+// never stall either a new run or a resumed run.
+export const createListingPreviewVideo: typeof legacy.createListingPreviewVideo = async () => {
+  throw new Error('Listing preview video generation is disabled.');
+};
+
 const imageRequest=async(path:'/api/images/generate'|'/api/images/openai-cover',prompt:string,size:ImageSize,images:string[]=[]):Promise<string>=>{
   const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt,size,images})});
   const payload=await response.json().catch(()=>({})) as {dataUrl?:string;error?:string};

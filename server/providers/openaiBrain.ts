@@ -111,7 +111,9 @@ export const generateBrainResponse = async (request: BrainRequest): Promise<Brai
   try {
     response = await tracked.client.responses.create({
       model: useLightTier ? getOpenAILightModel() : getOpenAIModel(),
-      reasoning: { effort: useLightTier ? 'minimal' : getReasoningEffort() },
+      // gpt-5.6-luna rejects the legacy "minimal" value. "low" keeps the
+      // inexpensive selector/brief tasks fast while remaining model-compatible.
+      reasoning: { effort: useLightTier ? 'low' : getReasoningEffort() },
       instructions: request.system || DEFAULT_SYSTEM,
       input,
       tools: request.webSearch ? [{ type: 'web_search' }] : undefined,

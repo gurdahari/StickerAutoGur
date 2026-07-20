@@ -68,15 +68,21 @@ plain sticker mockup, stickers merely lying on cloth, empty cinematic scene, tex
   return imageRequest('/api/images/openai-cover',prompt,'2K_LANDSCAPE',references);
 };
 
-const basePrompt=(type:'laptop'|'journal')=>type==='laptop'
-?`Create a premium square commercial product photograph of a generic unbranded modern silver laptop in a believable warm contemporary interior. Show the outside lid facing the camera and occupying most of the frame as a large clean uninterrupted sticker surface. The entire lid boundary must be clearly visible, with realistic perspective, soft natural daylight and tasteful shallow background depth. The lid must be completely blank: no logo, sticker, decal, writing or illustration.`
-:`Create a premium square top-down commercial product photograph of an open unbranded cream-paper journal on a warm natural wooden desk. Both pages and the center binding must be fully visible, large and unobstructed, with realistic paper texture, soft natural daylight and restrained props only near the outer frame. The pages must be completely blank: no sticker, handwriting, printed line, logo, label or illustration.`;
+const STATIC_MOCKUP_BASE: Record<'laptop'|'journal',string> = {
+  laptop: '/mockups/laptop-base.jpg',
+  journal: '/mockups/journal-base.jpg'
+};
+
 const editPrompt=(type:'laptop'|'journal',count:number)=>type==='laptop'
 ?`Preserve reference image 1 as the exact base photograph. Attach the ${count} supplied finished sticker references naturally across the visible outer laptop lid only. Preserve every sticker's exact art, colors, proportions and white die-cut outline. Use each sticker once, with varied but believable scale and rotation, accurate lid perspective, subtle contact shadows and balanced empty areas. Every sticker must remain fully inside the physical lid with comfortable margin. No floating, cropped, duplicated, merged, invented or redrawn sticker. Do not add branding, logo, writing or extra objects. The result must look like authentic premium Etsy product photography.`
 :`Preserve reference image 1 as the exact base photograph. Attach the ${count} supplied finished sticker references naturally across both journal pages. Preserve every sticker's exact art, colors, proportions and white die-cut outline. Use each sticker once, with believable scale, page perspective and subtle contact shadows. Distribute them attractively across both pages while keeping the center binding natural and avoiding overlaps across the fold. Every sticker must remain fully inside a page. No floating, cropped, duplicated, merged, invented or redrawn sticker. Do not add handwriting, fake text, branding or extra illustrations. The result must look like authentic premium Etsy product photography.`;
+
 const lifestyle=async(type:'laptop'|'journal',urls:string[])=>{
-  const base=await imageRequest('/api/images/generate',basePrompt(type),'2K');const selected=urls.slice(0,7);
-  const references=[await toDataUrl(base,1600),...await Promise.all(selected.map(url=>toDataUrl(url,900)))];
+  const selected=urls.slice(0,7);
+  const references=[
+    await toDataUrl(STATIC_MOCKUP_BASE[type],1600),
+    ...await Promise.all(selected.map(url=>toDataUrl(url,900)))
+  ];
   return imageRequest('/api/images/generate',editPrompt(type,selected.length),'2K',references);
 };
 

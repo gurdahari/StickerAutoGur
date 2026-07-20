@@ -28,15 +28,36 @@ export const generateAutopilotSticker=(itemPrompt:string,stylePrompt:string,useT
 
 const openAICover=async(stickerUrls:string[],niche:string,totalStickerCount:number)=>{
   const references=await Promise.all(stickerUrls.slice(0,10).map(url=>toDataUrl(url,1000)));
-  const prompt=`Create a premium, scroll-stopping Etsy main-cover image for a ${totalStickerCount}-piece "${niche}" digital sticker bundle.
+  const compactNiche=niche.replace(/\s*\([^)]*\)\s*/g,' ').replace(/\s+/g,' ').trim();
+  const prompt=`Create a premium, scroll-stopping Etsy MAIN LISTING THUMBNAIL for this exact product:
 
-Use only the supplied finished sticker references as the products. Preserve their exact subjects, colors, proportions, linework and white die-cut outlines. Use each visible design once only. Do not invent, duplicate, merge, redraw or replace any sticker.
+PRODUCT: ${totalStickerCount} digital stickers in the niche "${compactNiche}".
 
-Choose a niche-specific visual concept rather than a reusable template. Build a sophisticated full-bleed advertising composition with one unmistakable hero sticker, supporting stickers of different silhouettes, convincing depth, tactile atmosphere, expressive lighting, strong visual rhythm and excellent small-thumbnail impact. The background, palette, lighting, environment and composition must feel specifically designed for "${niche}". It may be cinematic editorial, dimensional scrapbook, premium still life, collector display, atmospheric environment, playful radial composition, asymmetric magazine art, paper craft or another art-directed concept that best fits the supplied designs.
+Use only the supplied finished sticker references as the real products. Preserve their subjects, colors, proportions, linework and white die-cut outlines. Use every visible design once only. Do not invent, duplicate, merge, redraw or replace stickers.
 
-Keep every essential sticker safely inside the final crop. Avoid a plain grid, fixed dark header, generic badge, repetitive brochure template, beige empty background or dead space.
+This must look like a high-converting Etsy product-cover graphic, not a plain lifestyle photograph and not merely stickers scattered on fabric.
 
-ZERO TEXT: no words, letters, numbers, badges, logos, labels, watermarks, signatures or fake writing. The result is the visual hero artwork itself, not a deterministic template.`;
+MANDATORY TEXT — render it accurately, clearly and with correct spelling:
+1. Large primary headline: "${compactNiche.toUpperCase()} STICKERS"
+2. Prominent quantity badge: "${totalStickerCount} STICKERS"
+3. Short product descriptor: "DIGITAL STICKER BUNDLE"
+4. Compact benefit labels: "TRANSPARENT PNG", "INSTANT DOWNLOAD", and "DIGITAL PRODUCT"
+
+LAYOUT AND HIERARCHY:
+- Use a bold editorial marketplace layout inspired by successful digital-product thumbnails.
+- Make the primary headline immediately readable at small Etsy thumbnail size.
+- Place the quantity badge near the top corner or another high-visibility location.
+- Feature 5–8 supplied stickers prominently, including one or two strong hero stickers and supporting designs with varied silhouettes.
+- Add a clean compact bottom information strip for the three benefit labels.
+- Use a niche-specific premium background, lighting and atmosphere that supports "${compactNiche}" without overpowering the product.
+- Keep strong contrast, clear separation, balanced visual weight and comfortable spacing.
+- Keep all essential text and stickers safely inside the final crop.
+
+VISUAL TARGET:
+The cover should instantly answer: what is this product, how many items are included, what file/product type is it, and why should the shopper click. It should feel polished, trustworthy, valuable and exciting.
+
+AVOID:
+plain sticker mockup, stickers merely lying on cloth, empty cinematic scene, text-free hero art, generic brochure, weak tiny typography, excessive clutter, unreadable text, fake logos, watermarks, invented stickers, duplicated stickers, unrelated objects, misspellings or extra unsupported claims.`;
   return imageRequest('/api/images/openai-cover',prompt,'2K_LANDSCAPE',references);
 };
 

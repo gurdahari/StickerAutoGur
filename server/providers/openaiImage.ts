@@ -46,6 +46,8 @@ const dataUrlToUpload = async (dataUrl: string, index: number) => {
   return toFile(Buffer.from(match[2], 'base64'), `sticker-${index + 1}.${extension}`, { type: mimeType });
 };
 
+const supportsInputFidelity = (model: string) => model === 'gpt-image-1';
+
 export const generateOpenAICover = async (request: ImageRequest): Promise<ImageResult> => {
   const apiKey = getApiKey();
   if (!apiKey) throw new Error('OPENAI_API_KEY is not configured on the server.');
@@ -60,7 +62,7 @@ export const generateOpenAICover = async (request: ImageRequest): Promise<ImageR
           model,
           image: await Promise.all(references.map(dataUrlToUpload)),
           prompt: request.prompt,
-          input_fidelity: 'high',
+          ...(supportsInputFidelity(model) ? { input_fidelity: 'high' } : {}),
           size: '2048x1152',
           quality: 'high',
           output_format: 'jpeg',

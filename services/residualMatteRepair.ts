@@ -66,13 +66,13 @@ export const repairResidualEnclosedMatte = async (
     const maximum = Math.max(red, green, blue);
     const minimum = Math.min(red, green, blue);
     const luma = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
-    return luma <= 62 && maximum - minimum <= 28;
+    return luma <= 66 && maximum - minimum <= 30;
   };
 
   const minimumArea = Math.max(36, Math.round(pixelCount * 0.00012));
   const genericMaximumArea = Math.round(pixelCount * 0.06);
-  const promptMaximumArea = Math.round(pixelCount * 0.22);
-  const forcedMaximumArea = Math.round(pixelCount * 0.36);
+  const promptMaximumArea = Math.round(pixelCount * 0.24);
+  const forcedMaximumArea = Math.round(pixelCount * 0.38);
   let changed = false;
 
   for (let seed = 0; seed < pixelCount; seed++) {
@@ -119,7 +119,7 @@ export const repairResidualEnclosedMatte = async (
     let lightBoundaryEdges = 0;
     let interiorCorePixels = 0;
     const inspectNeighbour = (position: number) => {
-      if (position < 0 || position >= pixelCount || member[position]) return false;
+      if (position < 0 || position >= pixelCount || member[position]) return;
       perimeterEdges++;
       const index = position * 4;
       if (data[index + 3] <= 20) {
@@ -130,9 +130,8 @@ export const repairResidualEnclosedMatte = async (
         const blue = data[index + 2];
         const maximum = Math.max(red, green, blue);
         const minimum = Math.min(red, green, blue);
-        if (minimum >= 178 && maximum - minimum <= 58) lightBoundaryEdges++;
+        if (minimum >= 168 && maximum - minimum <= 64) lightBoundaryEdges++;
       }
-      return false;
     };
 
     for (let index = 0; index < end; index++) {
@@ -159,14 +158,14 @@ export const repairResidualEnclosedMatte = async (
     const lumaVariance = Math.max(0, lumaSquaredSum / Math.max(1, area) - averageLuma * averageLuma);
     const lumaDeviation = Math.sqrt(lumaVariance);
     const maximumArea = force ? forcedMaximumArea : promptAware ? promptMaximumArea : genericMaximumArea;
-    const fullyEnclosed = transparentBoundaryRatio <= (force ? 0.08 : promptAware ? 0.035 : 0.008);
-    const thickFilledRegion = interiorCoreRatio >= (promptAware ? 0.045 : 0.13)
-      && compactness >= (promptAware ? 0.018 : 0.05)
-      && density >= (promptAware ? 0.15 : 0.28);
-    const uniformMatte = averageLuma <= (promptAware ? 54 : 42)
-      && lumaDeviation <= (promptAware ? 17 : 9.5);
+    const fullyEnclosed = transparentBoundaryRatio <= (force ? 0.10 : promptAware ? 0.055 : 0.008);
+    const thickFilledRegion = interiorCoreRatio >= (promptAware ? 0.035 : 0.13)
+      && compactness >= (promptAware ? 0.014 : 0.05)
+      && density >= (promptAware ? 0.12 : 0.28);
+    const uniformMatte = averageLuma <= (promptAware ? 58 : 42)
+      && lumaDeviation <= (promptAware ? 19 : 9.5);
     const boundaryEvidence = promptAware
-      ? lightBoundaryRatio >= 0.015 || interiorCoreRatio >= 0.12
+      ? lightBoundaryRatio >= 0.008 || interiorCoreRatio >= 0.10
       : lightBoundaryRatio >= 0.10;
     const eligible = !protectBlack
       && area >= minimumArea
@@ -190,9 +189,6 @@ export const repairResidualEnclosedMatte = async (
     if (removal[position]) data[position * 4 + 3] = 0;
   }
 
-  // Remove only the antialiased dark fringe immediately attached to a newly
-  // cleared pocket. Deliberate black outlines remain because they are opaque,
-  // thicker and usually brighter/more varied than the matte fringe.
   for (let pass = 0; pass < 2; pass++) {
     const fringe = new Uint8Array(pixelCount);
     for (let position = 0; position < pixelCount; position++) {
@@ -210,7 +206,7 @@ export const repairResidualEnclosedMatte = async (
       const blue = data[index + 2];
       const luma = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
       const spread = Math.max(red, green, blue) - Math.min(red, green, blue);
-      if (data[index + 3] < 225 && luma <= 72 && spread <= 34) fringe[position] = 1;
+      if (data[index + 3] < 225 && luma <= 74 && spread <= 36) fringe[position] = 1;
     }
     for (let position = 0; position < pixelCount; position++) {
       if (!fringe[position]) continue;

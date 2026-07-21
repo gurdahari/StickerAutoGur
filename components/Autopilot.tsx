@@ -3,6 +3,7 @@ import LegacyAutopilot from './AutopilotLegacy';
 import { downloadMasterKit, reconcileMasterKit, type MasterKitReconciliation } from '../services/masterKit';
 import { checkpointChangedEventName } from '../services/runPersistence';
 import { syncGridPreviewsForChangedStickers } from '../services/gridSync';
+import { loadStickerRevisionSnapshot, stickerRevisionKey } from '../services/stickerRevisionWatch';
 
 interface AutopilotProps {
   initialNiche?: string | null;
@@ -70,24 +71,47 @@ const Autopilot: FC<AutopilotProps> = props => {
 
   useEffect(() => {
     const pendingStickerIds = new Set<number>();
+    const revisionBaseline = new Map<number, string>();
+    let revisionRunId: string | null = null;
+    let revisionsInitialized = false;
     let debounceTimer: number | null = null;
     let syncing = false;
+    let polling = false;
+
+    const findGridCard = (volume: number) => {
+      const expectedTitle = `Grid Preview (Vol ${volume})`;
+      const titled = Array.from(document.querySelectorAll<HTMLElement>('[title]'))
+        .find(element => element.title.includes(expectedTitle));
+      if (titled) return titled.closest('.group') as HTMLElement | null;
+      return Array.from(document.querySelectorAll<HTMLElement>('.group'))
+        .find(element => element.textContent?.includes(expectedTitle)) || null;
+    };
 
     const applyLatestGridsToLegacyView = () => {
       latestGridUrls.current.forEach((url, assetId) => {
         const match = assetId.match(/^preview_(\d+)$/);
         if (!match) return;
-        const volume = Number(match[1]);
-        const label = Array.from(document.querySelectorAll<HTMLElement>('[title]'))
-          .find(element => element.title.includes(`Grid Preview (Vol ${volume})`));
-        const card = label?.closest('.group') as HTMLElement | null;
+        const card = findGridCard(Number(match[1]));
         if (!card) return;
         const image = card.querySelector('img');
-        if (image && image.getAttribute('src') !== url) image.setAttribute('src', url);
+        if (image && image.getAttribute('src') !== url) {
+          image.removeAttribute('srcset');
+          image.setAttribute('src', url);
+          image.dataset.stickerosUpdatedGrid = assetId;
+        }
         const downloadButton = Array.from(card.querySelectorAll('button'))
           .find(button => button.textContent?.includes('Download JPG'));
         if (downloadButton) downloadButton.dataset.stickerosGridId = assetId;
       });
+    };
+
+    const replaceRevisionBaseline = async () => {
+      const snapshot = await loadStickerRevisionSnapshot();
+      if (!snapshot) return;
+      revisionRunId = snapshot.runId;
+      revisionBaseline.clear();
+      snapshot.revisions.forEach(revision => revisionBaseline.set(revision.id, stickerRevisionKey(revision)));
+      revisionsInitialized = true;
     };
 
     const runSync = async () => {
@@ -96,34 +120,60 @@ const Autopilot: FC<AutopilotProps> = props => {
       const ids = [...pendingStickerIds];
       pendingStickerIds.clear();
       try {
-        const syncResult = await syncGridPreviewsForChangedStickers(ids);
+        const syncResult = await syncGridPreviewsForChangedStickers(ids, { force: true });
         syncResult.refreshed.forEach(asset => {
           if (asset.id && asset.url) latestGridUrls.current.set(asset.id, asset.url);
         });
         if (syncResult.refreshed.length && mounted.current) {
           const names = syncResult.refreshed.map(asset => asset.id?.replace('preview_', 'Grid ')).join(', ');
-          setGridNote(`${names} updated locally; cover and paid mockups were not regenerated.`);
+          setGridNote(`${names} updated with the regenerated sticker; cover and paid mockups were not regenerated.`);
           applyLatestGridsToLegacyView();
         }
+        await replaceRevisionBaseline();
         if (syncResult.refreshed.length || syncResult.affectedVolumes.length) {
           await reconcile();
           window.setTimeout(() => void reconcile(), 1200);
         }
       } catch (error) {
         console.warn('Targeted grid refresh failed.', error);
-        if (mounted.current) setGridNote('A grid refresh needs retry; no paid image asset was regenerated.');
+        if (mounted.current) setGridNote('The sticker changed, but its grid refresh needs retry; no paid image asset was regenerated.');
       } finally {
         syncing = false;
-        if (pendingStickerIds.size) {
-          debounceTimer = window.setTimeout(() => void runSync(), 450);
-        }
+        if (pendingStickerIds.size) debounceTimer = window.setTimeout(() => void runSync(), 250);
       }
     };
 
     const scheduleSync = (ids: number[]) => {
       ids.forEach(id => pendingStickerIds.add(id));
       if (debounceTimer !== null) window.clearTimeout(debounceTimer);
-      debounceTimer = window.setTimeout(() => void runSync(), 450);
+      debounceTimer = window.setTimeout(() => void runSync(), 250);
+    };
+
+    const pollStickerRevisions = async () => {
+      if (polling || document.visibilityState !== 'visible') return;
+      polling = true;
+      try {
+        const snapshot = await loadStickerRevisionSnapshot();
+        if (!snapshot) return;
+        const next = new Map(snapshot.revisions.map(revision => [revision.id, stickerRevisionKey(revision)]));
+        if (!revisionsInitialized || revisionRunId !== snapshot.runId) {
+          revisionRunId = snapshot.runId;
+          revisionBaseline.clear();
+          next.forEach((revision, id) => revisionBaseline.set(id, revision));
+          revisionsInitialized = true;
+          return;
+        }
+        const changedIds = snapshot.revisions
+          .filter(revision => revisionBaseline.get(revision.id) !== stickerRevisionKey(revision))
+          .map(revision => revision.id);
+        revisionBaseline.clear();
+        next.forEach((revision, id) => revisionBaseline.set(id, revision));
+        if (changedIds.length) scheduleSync(changedIds);
+      } catch (error) {
+        console.warn('Sticker revision watcher failed.', error);
+      } finally {
+        polling = false;
+      }
     };
 
     const checkpointChanged = (event: Event) => {
@@ -149,11 +199,18 @@ const Autopilot: FC<AutopilotProps> = props => {
 
     window.addEventListener(checkpointChangedEventName, checkpointChanged);
     document.addEventListener('click', captureGridDownload, true);
-    const domRefresh = window.setInterval(applyLatestGridsToLegacyView, 1200);
+    const observer = new MutationObserver(applyLatestGridsToLegacyView);
+    observer.observe(document.body, { subtree: true, childList: true });
+    const domRefresh = window.setInterval(applyLatestGridsToLegacyView, 700);
+    const revisionPoll = window.setInterval(() => void pollStickerRevisions(), 900);
+    void pollStickerRevisions();
+
     return () => {
       window.removeEventListener(checkpointChangedEventName, checkpointChanged);
       document.removeEventListener('click', captureGridDownload, true);
+      observer.disconnect();
       window.clearInterval(domRefresh);
+      window.clearInterval(revisionPoll);
       if (debounceTimer !== null) window.clearTimeout(debounceTimer);
     };
   }, [reconcile]);

@@ -13,6 +13,10 @@ export interface GridSyncResult {
   affectedVolumes: number[];
 }
 
+export interface GridSyncOptions {
+  force?: boolean;
+}
+
 const FINALIZATION_DB = 'stickeros-finalization';
 const FINALIZATION_VERSION = 1;
 const GRID_SIZE = 17;
@@ -49,7 +53,9 @@ const invalidateLocalPackages = async (runId: string, stickerIds: number[]) => {
       return;
     }
     const readTransaction = database.transaction('kits', 'readonly');
-    const rows = await requestResult<Array<{ id: string; runId: string; kind: 'volume' | 'master' }>>(readTransaction.objectStore('kits').index('runId').getAll(runId));
+    const rows = await requestResult<Array<{ id: string; runId: string; kind: 'volume' | 'master' }>>(
+      readTransaction.objectStore('kits').index('runId').getAll(runId)
+    );
     await transactionDone(readTransaction);
     const affectedVolumes = new Set(stickerIds.map(id => Math.floor(Math.max(0, id - 1) / 20) + 1));
     const idsToDelete = rows
@@ -84,11 +90,14 @@ const releaseCheckpointUrls = (stickers: Sticker[], assets: MarketingAsset[]) =>
 };
 
 /**
- * Rebuilds only preview_N images whose sticker range intersects the changed
- * sticker IDs. Grid rendering and package invalidation are browser-local and
- * never call OpenAI or Seedream.
+ * Rebuilds only preview_N images containing the changed sticker IDs. Persisted
+ * sourceStickerIds are preferred over array positions, so a rejected, bonus or
+ * reordered sticker cannot shift the refresh onto the wrong grid.
  */
-export const syncGridPreviewsForChangedStickers = async (stickerIds: number[]): Promise<GridSyncResult> => {
+export const syncGridPreviewsForChangedStickers = async (
+  stickerIds: number[],
+  options: GridSyncOptions = {}
+): Promise<GridSyncResult> => {
   const uniqueIds = [...new Set(stickerIds.filter(id => Number.isFinite(id) && id > 0))].sort((a, b) => a - b);
   if (!uniqueIds.length) return { runId: null, refreshed: [], affectedVolumes: [] };
   const checkpoint = await loadRunCheckpoint();
@@ -107,27 +116,45 @@ export const syncGridPreviewsForChangedStickers = async (stickerIds: number[]): 
   const affectedVolumes = [...new Set(uniqueIds.map(id => Math.floor((id - 1) / 20) + 1))];
   await invalidateLocalPackages(checkpoint.meta.id, uniqueIds);
 
-  const allSlots = [...checkpoint.stickers]
+  const catalog = [...checkpoint.stickers]
     .sort((left, right) => left.id - right.id)
+    .filter(sticker => sticker.status === 'completed' && sticker.blob?.size && sticker.url && sticker.qaStatus !== 'rejected')
     .slice(0, checkpoint.meta.targetCount);
+  const catalogById = new Map(catalog.map(sticker => [sticker.id, sticker]));
   const affectedPages = new Set<number>();
+
   uniqueIds.forEach(id => {
-    const index = allSlots.findIndex(sticker => sticker.id === id);
-    if (index >= 0) affectedPages.add(Math.floor(index / GRID_SIZE));
+    let matchedPersistedGrid = false;
+    previewByPage.forEach((asset, page) => {
+      if (asset.sourceStickerIds?.includes(id)) {
+        affectedPages.add(page);
+        matchedPersistedGrid = true;
+      }
+    });
+    if (matchedPersistedGrid) return;
+    const catalogIndex = catalog.findIndex(sticker => sticker.id === id);
+    if (catalogIndex >= 0) affectedPages.add(Math.floor(catalogIndex / GRID_SIZE));
   });
 
   const refreshed: GridAssetRevision[] = [];
   try {
-    for (const page of [...affectedPages].sort((a, b) => a - b)) {
+    for (const page of [...affectedPages].sort((left, right) => left - right)) {
       const existing = previewByPage.get(page);
       if (!existing?.id) continue;
-      const pageStickers = allSlots
-        .slice(page * GRID_SIZE, Math.min(allSlots.length, page * GRID_SIZE + GRID_SIZE))
-        .filter(sticker => sticker.status === 'completed' && sticker.blob?.size && sticker.url && sticker.qaStatus !== 'rejected');
+
+      const fallbackIds = catalog
+        .slice(page * GRID_SIZE, Math.min(catalog.length, page * GRID_SIZE + GRID_SIZE))
+        .map(sticker => sticker.id);
+      const exactIds = existing.sourceStickerIds?.length ? existing.sourceStickerIds : fallbackIds;
+      const pageStickers = exactIds
+        .map(id => catalogById.get(id))
+        .filter((sticker): sticker is Sticker => Boolean(sticker));
       if (!pageStickers.length) continue;
+
       const sourceStickerIds = pageStickers.map(sticker => sticker.id);
       const sourceSignature = pageStickers.map(sticker => stickerPixelSignature(sticker)).join('|');
-      if (existing.sourceSignature === sourceSignature) continue;
+      if (!options.force && existing.sourceSignature === sourceSignature) continue;
+
       const url = await createTargetedGridPreview(pageStickers);
       const completed: GridAssetRevision = {
         ...existing,

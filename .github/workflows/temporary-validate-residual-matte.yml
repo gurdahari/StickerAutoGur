@@ -1,0 +1,20 @@
+name: Temporary Validate Residual Matte Repair
+
+on:
+  push:
+    branches:
+      - fix/enclosed-matte-and-targeted-grid-refresh
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build

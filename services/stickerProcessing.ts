@@ -45,16 +45,16 @@ const estimateBackground = (data: Uint8ClampedArray, width: number, height: numb
   return { r: median(reds), g: median(greens), b: median(blues) };
 };
 
-// Only concepts with a real physical opening are eligible for enclosed-matte
-// removal. A large black patch on an animal or another solid subject is model
-// corruption and must be rejected/replaced, never carved into a new hole.
 export const expectsTransparentOpening = (itemPrompt = '') => /\b(frame|window|tube|tubing|pipe|hose|ring|hoop|loop|coil|chain|link|scissors|glasses|eyeglasses|stethoscope|wheel|tire|bracelet|necklace|keyring|carabiner|handle|mug|cup|teapot|bottle|flask|vial|beaker|cauldron|kettle|apparatus|alembic|retort|alchemy|laboratory|basket|bag|bucket|padlock|lock|keyhole|door|doorway|arch|archway|tunnel|portal|tent|teepee|tipi|canopy|hood|helmet|mask|visor|cave|wreath|donut|doughnut|opening|cutout|negative space)\b/i.test(itemPrompt);
 
+const protectsBlackArtwork = (itemPrompt = '') => /\b(silhouette|solid black|black fur|black cat|black dog|black bear|black wolf|black raven|black crow|black bat|raven|crow|bat|shadow|ink drawing|charcoal|obsidian|vinyl record|tire|coal|void)\b/i.test(itemPrompt);
+
 /**
- * Turns Seedream's flat matte background into a clean transparent PNG.
- * Exterior background is removed first. A second conservative pass removes
- * only solid, background-colored enclosed regions that are large/dense enough
- * to be genuine openings rather than dark illustration details.
+ * Converts Seedream's flat matte into a transparent, tightly cropped PNG.
+ * Besides the exterior flood fill, a conservative component pass removes
+ * enclosed matte pockets. Very strong small-pocket evidence is accepted even
+ * when the prompt did not explicitly describe a hole, which fixes the common
+ * black remnants trapped between closed pieces of the white cutline.
  */
 export const processStickerImage = async (
   source: string,
@@ -85,12 +85,19 @@ export const processStickerImage = async (
     const blue = data[pixelIndex + 2] - background.b;
     return Math.sqrt(red * red + green * green + blue * blue);
   };
+  const maximumChannel = (pixelIndex: number) => Math.max(
+    data[pixelIndex],
+    data[pixelIndex + 1],
+    data[pixelIndex + 2]
+  );
+  const lumaAt = (pixelIndex: number) =>
+    0.2126 * data[pixelIndex] + 0.7152 * data[pixelIndex + 1] + 0.0722 * data[pixelIndex + 2];
 
+  // Remove the exterior matte first.
   const visited = new Uint8Array(pixelCount);
   const queue = new Int32Array(pixelCount);
   let queueStart = 0;
   let queueEnd = 0;
-
   const tryQueue = (x: number, y: number) => {
     const position = y * width + x;
     if (visited[position]) return;
@@ -100,7 +107,6 @@ export const processStickerImage = async (
       queue[queueEnd++] = position;
     }
   };
-
   for (let x = 0; x < width; x++) {
     tryQueue(x, 0);
     tryQueue(x, height - 1);
@@ -109,72 +115,61 @@ export const processStickerImage = async (
     tryQueue(0, y);
     tryQueue(width - 1, y);
   }
-
   while (queueStart < queueEnd) {
     const position = queue[queueStart++];
     const x = position % width;
     const y = Math.floor(position / width);
     data[position * 4 + 3] = 0;
-
     if (x > 0) tryQueue(x - 1, y);
     if (x + 1 < width) tryQueue(x + 1, y);
     if (y > 0) tryQueue(x, y - 1);
     if (y + 1 < height) tryQueue(x, y + 1);
   }
 
-  // Edge flood-fill intentionally cannot reach a hose loop, ring, frame or
-  // similar enclosed opening. Detect those separately using a strict matte-
-  // color component test. The high density/core-ratio requirements protect
-  // black outlines, lettering, eyes and textured dark artwork.
+  // Inspect enclosed matte-colored or pure-black components that the exterior
+  // flood fill cannot reach. The automatic path is deliberately stricter than
+  // the prompt-aware/manual repair path to protect eyes, lettering and shadows.
   const expectsNaturalOpening = forceOpeningRepair || expectsTransparentOpening(itemPrompt);
+  const protectedBlackArtwork = protectsBlackArtwork(itemPrompt) && !forceOpeningRepair;
   const holeSeedTolerance = backgroundLuma < 70 ? 24 : 20;
   const holeGrowTolerance = backgroundLuma < 70 ? 80 : 58;
   const blackHoleSeedLimit = 16;
   const blackHoleGrowLimit = 34;
   const holeVisited = new Uint8Array(pixelCount);
-  const minimumHoleArea = Math.max(
-    expectsNaturalOpening ? 220 : 1200,
-    Math.round(pixelCount * (expectsNaturalOpening ? 0.0012 : 0.006))
-  );
-  const minimumHoleSpan = Math.max(
-    expectsNaturalOpening ? 8 : 18,
-    Math.round(Math.min(width, height) * (expectsNaturalOpening ? 0.01 : 0.025))
-  );
-
+  const currentComponent = new Uint8Array(pixelCount);
+  const expectedMinimumArea = Math.max(220, Math.round(pixelCount * 0.0012));
+  const expectedMinimumSpan = Math.max(8, Math.round(Math.min(width, height) * 0.01));
+  const automaticMinimumArea = Math.max(120, Math.round(pixelCount * 0.00045));
+  const automaticMaximumArea = Math.round(pixelCount * 0.028);
+  const automaticMinimumSpan = Math.max(6, Math.round(Math.min(width, height) * 0.006));
   const maximumFallbackBlackHoleArea = Math.round(pixelCount * 0.10);
-  const maximumChannel = (pixelIndex: number) => Math.max(
-    data[pixelIndex],
-    data[pixelIndex + 1],
-    data[pixelIndex + 2]
-  );
+
   const isHoleSeed = (pixelIndex: number) =>
     distanceFromBackground(pixelIndex) <= holeSeedTolerance
-    || (expectsNaturalOpening && maximumChannel(pixelIndex) <= blackHoleSeedLimit);
+    || maximumChannel(pixelIndex) <= blackHoleSeedLimit;
   const isHoleGrowPixel = (pixelIndex: number) =>
     distanceFromBackground(pixelIndex) <= holeGrowTolerance
-    || (expectsNaturalOpening && maximumChannel(pixelIndex) <= blackHoleGrowLimit);
-
+    || maximumChannel(pixelIndex) <= blackHoleGrowLimit;
   const queueHolePixel = (position: number) => {
     if (holeVisited[position]) return;
     const pixelIndex = position * 4;
     if (data[pixelIndex + 3] === 0 || !isHoleGrowPixel(pixelIndex)) return;
     holeVisited[position] = 1;
+    currentComponent[position] = 1;
     queue[queueEnd++] = position;
   };
 
   for (let seed = 0; seed < pixelCount; seed++) {
     const seedIndex = seed * 4;
-    if (
-      holeVisited[seed]
-      || data[seedIndex + 3] === 0
-      || !isHoleSeed(seedIndex)
-    ) continue;
+    if (holeVisited[seed] || data[seedIndex + 3] === 0 || !isHoleSeed(seedIndex)) continue;
 
     queueStart = 0;
     queueEnd = 0;
     queueHolePixel(seed);
     let backgroundCorePixels = 0;
     let blackCorePixels = 0;
+    let lumaSum = 0;
+    let lumaSquaredSum = 0;
     let minHoleX = width;
     let minHoleY = height;
     let maxHoleX = -1;
@@ -186,6 +181,9 @@ export const processStickerImage = async (
       const x = position % width;
       const y = Math.floor(position / width);
       const pixelIndex = position * 4;
+      const luma = lumaAt(pixelIndex);
+      lumaSum += luma;
+      lumaSquaredSum += luma * luma;
       if (distanceFromBackground(pixelIndex) <= holeSeedTolerance) backgroundCorePixels++;
       if (maximumChannel(pixelIndex) <= blackHoleSeedLimit) blackCorePixels++;
       minHoleX = Math.min(minHoleX, x);
@@ -193,7 +191,6 @@ export const processStickerImage = async (
       maxHoleX = Math.max(maxHoleX, x);
       maxHoleY = Math.max(maxHoleY, y);
       if (x === 0 || y === 0 || x === width - 1 || y === height - 1) touchesCanvasEdge = true;
-
       if (x > 0) queueHolePixel(position - 1);
       if (x + 1 < width) queueHolePixel(position + 1);
       if (y > 0) queueHolePixel(position - width);
@@ -206,25 +203,55 @@ export const processStickerImage = async (
     const density = componentArea / Math.max(1, componentWidth * componentHeight);
     const backgroundCoreRatio = backgroundCorePixels / Math.max(1, componentArea);
     const blackCoreRatio = blackCorePixels / Math.max(1, componentArea);
-    // Seedream occasionally obeys the instruction to render enclosed openings
-    // as pure black but ignores the requested black outer matte and renders it
-    // white. In that case, accept only compact, overwhelmingly pure-black
-    // components and cap their size so textured black artwork is preserved.
+    const averageLuma = lumaSum / Math.max(1, componentArea);
+    const lumaVariance = Math.max(0, lumaSquaredSum / Math.max(1, componentArea) - averageLuma * averageLuma);
+    const lumaDeviation = Math.sqrt(lumaVariance);
+
+    let boundaryPixels = 0;
+    let whiteBoundaryPixels = 0;
+    const inspectBoundary = (neighbour: number) => {
+      if (neighbour < 0 || neighbour >= pixelCount || currentComponent[neighbour]) return;
+      const index = neighbour * 4;
+      if (data[index + 3] <= 20) return;
+      boundaryPixels++;
+      const minChannel = Math.min(data[index], data[index + 1], data[index + 2]);
+      const maxChannelValue = Math.max(data[index], data[index + 1], data[index + 2]);
+      if (minChannel >= 205 && maxChannelValue - minChannel <= 38) whiteBoundaryPixels++;
+    };
+    for (let index = 0; index < queueEnd; index++) {
+      const position = queue[index];
+      const x = position % width;
+      const y = Math.floor(position / width);
+      if (x > 0) inspectBoundary(position - 1);
+      if (x + 1 < width) inspectBoundary(position + 1);
+      if (y > 0) inspectBoundary(position - width);
+      if (y + 1 < height) inspectBoundary(position + width);
+    }
+    const whiteBoundaryRatio = whiteBoundaryPixels / Math.max(1, boundaryPixels);
+
     const usesFallbackBlackMatte = backgroundCoreRatio < 0.35 && blackCoreRatio >= 0.82;
     const componentLooksLikeMatte = usesFallbackBlackMatte
       ? componentArea <= maximumFallbackBlackHoleArea && density >= 0.52 && blackCoreRatio >= 0.82
       : density >= 0.45 && backgroundCoreRatio >= 0.72;
-    const isConfidentHole = expectsNaturalOpening
+    const promptAwareHole = expectsNaturalOpening
       && !touchesCanvasEdge
-      && componentArea >= minimumHoleArea
-      && Math.min(componentWidth, componentHeight) >= minimumHoleSpan
+      && componentArea >= expectedMinimumArea
+      && Math.min(componentWidth, componentHeight) >= expectedMinimumSpan
       && componentLooksLikeMatte;
+    const automaticSmallMattePocket = !protectedBlackArtwork
+      && !touchesCanvasEdge
+      && componentArea >= automaticMinimumArea
+      && componentArea <= automaticMaximumArea
+      && Math.min(componentWidth, componentHeight) >= automaticMinimumSpan
+      && density >= 0.50
+      && lumaDeviation <= 12
+      && whiteBoundaryRatio >= 0.38
+      && (backgroundCoreRatio >= 0.90 || blackCoreRatio >= 0.96);
 
-    if (isConfidentHole) {
-      for (let index = 0; index < queueEnd; index++) {
-        data[queue[index] * 4 + 3] = 0;
-      }
+    if (promptAwareHole || automaticSmallMattePocket) {
+      for (let index = 0; index < queueEnd; index++) data[queue[index] * 4 + 3] = 0;
     }
+    for (let index = 0; index < queueEnd; index++) currentComponent[queue[index]] = 0;
   }
 
   const hasTransparentNeighbor = (x: number, y: number) => {
@@ -235,8 +262,6 @@ export const processStickerImage = async (
       || data[(((y + 1) * width + x) * 4) + 3] === 0;
   };
 
-  // Peel away two exterior halo layers. This removes matte contamination and
-  // model-created gray/dotted edge noise without touching protected interior art.
   for (let pass = 0; pass < 2; pass++) {
     const remove = new Uint8Array(pixelCount);
     for (let y = 0; y < height; y++) {
@@ -252,19 +277,19 @@ export const processStickerImage = async (
     }
   }
 
-  // Reconstruct a short anti-aliased white cutline instead of keeping a dirty
-  // gray fringe that was blended against Seedream's black matte.
+  // Reconstruct a short clean white antialiased cutline instead of retaining a
+  // gray fringe that was blended against the source matte.
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const position = y * width + x;
       const pixelIndex = position * 4;
       if (data[pixelIndex + 3] === 0 || !hasTransparentNeighbor(x, y)) continue;
-
       const channelSpread = Math.max(data[pixelIndex], data[pixelIndex + 1], data[pixelIndex + 2])
         - Math.min(data[pixelIndex], data[pixelIndex + 1], data[pixelIndex + 2]);
       const distance = distanceFromBackground(pixelIndex);
       if (channelSpread <= 32 && distance < 405) {
-        const alpha = Math.max(70, Math.min(255, Math.round(((distance - haloTolerance) / (405 - haloTolerance)) * 255)));
+        const denominator = Math.max(1, 405 - haloTolerance);
+        const alpha = Math.max(70, Math.min(255, Math.round(((distance - haloTolerance) / denominator) * 255)));
         data[pixelIndex] = 255;
         data[pixelIndex + 1] = 255;
         data[pixelIndex + 2] = 255;
@@ -273,17 +298,11 @@ export const processStickerImage = async (
     }
   }
 
-  // Remove the barely-visible alpha veil left by matte reconstruction. Those
-  // pixels look like a gray halo on dark surfaces even though they appear
-  // transparent in an editor. Preserve only a short, clean antialiased edge.
   for (let position = 0; position < pixelCount; position++) {
     const alphaIndex = position * 4 + 3;
     const alpha = data[alphaIndex];
-    if (alpha > 0 && alpha < 104) {
-      data[alphaIndex] = 0;
-    } else if (alpha >= 104 && alpha < 240) {
-      data[alphaIndex] = Math.min(255, Math.round((alpha - 104) * 1.88));
-    }
+    if (alpha > 0 && alpha < 104) data[alphaIndex] = 0;
+    else if (alpha >= 104 && alpha < 240) data[alphaIndex] = Math.min(255, Math.round((alpha - 104) * 1.88));
   }
 
   context.putImageData(imageData, 0, 0);
@@ -301,12 +320,8 @@ export const processStickerImage = async (
       maxY = Math.max(maxY, y);
     }
   }
-
   if (maxX < minX || maxY < minY) throw new Error('Sticker cleanup removed the entire image.');
 
-  // Export a tight aspect-ratio crop. A square canvas creates large invisible
-  // bands above/below wide stickers (or beside tall ones), which feels like a
-  // transparent halo in Canva and makes mockup placement inaccurate.
   const cropWidth = maxX - minX + 1;
   const cropHeight = maxY - minY + 1;
   const padding = Math.max(4, Math.round(Math.max(cropWidth, cropHeight) * 0.008));
@@ -315,7 +330,6 @@ export const processStickerImage = async (
   outputCanvas.height = cropHeight + padding * 2;
   const outputContext = outputCanvas.getContext('2d');
   if (!outputContext) throw new Error('Canvas is unavailable for sticker normalization.');
-
   outputContext.clearRect(0, 0, outputCanvas.width, outputCanvas.height);
   outputContext.drawImage(
     workingCanvas,
@@ -328,6 +342,5 @@ export const processStickerImage = async (
     cropWidth,
     cropHeight
   );
-
   return canvasToBlob(outputCanvas);
 };

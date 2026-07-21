@@ -24,24 +24,21 @@ const smoothStep = (minimum: number, maximum: number, value: number) => {
   return normalized * normalized * (3 - 2 * normalized);
 };
 
-const KERNEL = [
-  { x: -1, y: -1, weight: 1 }, { x: 0, y: -1, weight: 2 }, { x: 1, y: -1, weight: 1 },
-  { x: -1, y: 0, weight: 2 }, { x: 0, y: 0, weight: 4 }, { x: 1, y: 0, weight: 2 },
-  { x: -1, y: 1, weight: 1 }, { x: 0, y: 1, weight: 2 }, { x: 1, y: 1, weight: 1 }
-] as const;
-const KERNEL_WEIGHT = 16;
+const GAUSSIAN = [1, 4, 6, 4, 1] as const;
+const GAUSSIAN_SUM = 16;
+const GAUSSIAN_2D_SUM = GAUSSIAN_SUM * GAUSSIAN_SUM;
+const RADIUS = 2;
 
 /**
- * Rebuilds only the one-pixel alpha transition around the final sticker shape.
- * RGB artwork remains untouched. A small Gaussian coverage estimate is remapped
- * around the original 50% contour, which removes stair-step / saw-tooth edges
- * without blurring the illustration or making the white cutline visibly wider.
+ * Smooths only the white die-cut transparency contour. A separable 5x5
+ * Gaussian coverage pass rounds pixel stair-steps over a two-pixel band while
+ * preserving the original 50% contour, RGB artwork and visible cutline width.
  */
 export const smoothStickerAlphaEdge = async (blob: Blob): Promise<Blob> => {
   const image = await loadBlobImage(blob);
   const width = image.width;
   const height = image.height;
-  if (width < 3 || height < 3) return blob;
+  if (width < 5 || height < 5) return blob;
 
   const canvas = document.createElement('canvas');
   canvas.width = width;
@@ -52,77 +49,107 @@ export const smoothStickerAlphaEdge = async (blob: Blob): Promise<Blob> => {
   context.drawImage(image, 0, 0);
 
   const source = context.getImageData(0, 0, width, height);
-  const output = new ImageData(new Uint8ClampedArray(source.data), width, height);
   const sourceData = source.data;
+  const output = new ImageData(new Uint8ClampedArray(sourceData), width, height);
   const outputData = output.data;
   const pixelCount = width * height;
-  let changedPixels = 0;
 
+  const horizontalAlpha = new Float32Array(pixelCount);
+  const horizontalRed = new Float32Array(pixelCount);
+  const horizontalGreen = new Float32Array(pixelCount);
+  const horizontalBlue = new Float32Array(pixelCount);
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const position = y * width + x;
+      let alphaSum = 0;
+      let redSum = 0;
+      let greenSum = 0;
+      let blueSum = 0;
+
+      for (let offset = -RADIUS; offset <= RADIUS; offset++) {
+        const sampleX = x + offset;
+        if (sampleX < 0 || sampleX >= width) continue;
+        const weight = GAUSSIAN[offset + RADIUS];
+        const sampleIndex = (y * width + sampleX) * 4;
+        const alpha = sourceData[sampleIndex + 3];
+        alphaSum += alpha * weight;
+        redSum += sourceData[sampleIndex] * alpha * weight;
+        greenSum += sourceData[sampleIndex + 1] * alpha * weight;
+        blueSum += sourceData[sampleIndex + 2] * alpha * weight;
+      }
+
+      horizontalAlpha[position] = alphaSum;
+      horizontalRed[position] = redSum;
+      horizontalGreen[position] = greenSum;
+      horizontalBlue[position] = blueSum;
+    }
+  }
+
+  let changedPixels = 0;
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const position = y * width + x;
       const pixelIndex = position * 4;
       const originalAlpha = sourceData[pixelIndex + 3];
-      let minimumAlpha = 255;
-      let maximumAlpha = 0;
-      let weightedAlpha = 0;
-      let weightedPremultipliedRed = 0;
-      let weightedPremultipliedGreen = 0;
-      let weightedPremultipliedBlue = 0;
-      let weightedColorAlpha = 0;
+      let blurredAlpha = 0;
+      let blurredPremultipliedRed = 0;
+      let blurredPremultipliedGreen = 0;
+      let blurredPremultipliedBlue = 0;
 
-      for (const sample of KERNEL) {
-        const sampleX = x + sample.x;
-        const sampleY = y + sample.y;
-        if (sampleX < 0 || sampleY < 0 || sampleX >= width || sampleY >= height) {
-          minimumAlpha = 0;
-          continue;
-        }
-        const sampleIndex = (sampleY * width + sampleX) * 4;
-        const alpha = sourceData[sampleIndex + 3];
-        minimumAlpha = Math.min(minimumAlpha, alpha);
-        maximumAlpha = Math.max(maximumAlpha, alpha);
-        weightedAlpha += alpha * sample.weight;
-        if (alpha > 0) {
-          const premultipliedWeight = alpha * sample.weight;
-          weightedPremultipliedRed += sourceData[sampleIndex] * premultipliedWeight;
-          weightedPremultipliedGreen += sourceData[sampleIndex + 1] * premultipliedWeight;
-          weightedPremultipliedBlue += sourceData[sampleIndex + 2] * premultipliedWeight;
-          weightedColorAlpha += premultipliedWeight;
-        }
+      for (let offset = -RADIUS; offset <= RADIUS; offset++) {
+        const sampleY = y + offset;
+        if (sampleY < 0 || sampleY >= height) continue;
+        const weight = GAUSSIAN[offset + RADIUS];
+        const samplePosition = sampleY * width + x;
+        blurredAlpha += horizontalAlpha[samplePosition] * weight;
+        blurredPremultipliedRed += horizontalRed[samplePosition] * weight;
+        blurredPremultipliedGreen += horizontalGreen[samplePosition] * weight;
+        blurredPremultipliedBlue += horizontalBlue[samplePosition] * weight;
       }
 
-      // Fully opaque or fully transparent neighborhoods are not edges.
-      if (maximumAlpha - minimumAlpha < 72 && (originalAlpha === 0 || originalAlpha === 255)) continue;
+      const coverage = blurredAlpha / (255 * GAUSSIAN_2D_SUM);
+      if (coverage <= 0.012 || coverage >= 0.988) continue;
 
-      const coverage = weightedAlpha / (KERNEL_WEIGHT * 255);
-      let nextAlpha = Math.round(smoothStep(0.12, 0.88, coverage) * 255);
-      if (nextAlpha < 6) nextAlpha = 0;
-      else if (nextAlpha > 249) nextAlpha = 255;
+      const colorDenominator = Math.max(1, blurredAlpha);
+      const nearbyRed = blurredPremultipliedRed / colorDenominator;
+      const nearbyGreen = blurredPremultipliedGreen / colorDenominator;
+      const nearbyBlue = blurredPremultipliedBlue / colorDenominator;
+      const nearbyMinimum = Math.min(nearbyRed, nearbyGreen, nearbyBlue);
+      const nearbyMaximum = Math.max(nearbyRed, nearbyGreen, nearbyBlue);
 
-      // Keep the antialias band narrow. Transparent pixels may receive only a
-      // light fringe, while opaque edge pixels retain almost all of their body.
-      if (originalAlpha === 0) nextAlpha = Math.min(nextAlpha, 86);
-      else if (originalAlpha === 255) nextAlpha = Math.max(nextAlpha, 176);
-      else nextAlpha = Math.round(originalAlpha * 0.35 + nextAlpha * 0.65);
+      // Sticker assets should have a white cutline. Restricting smoothing to a
+      // bright neutral boundary prevents any softening of the illustration.
+      const isWhiteCutlineBoundary = nearbyMinimum >= 172 && nearbyMaximum - nearbyMinimum <= 72;
+      if (!isWhiteCutlineBoundary) continue;
+
+      const reconstructedCoverage = smoothStep(0.18, 0.82, coverage);
+      const reconstructedAlpha = Math.round(reconstructedCoverage * 255);
+      let nextAlpha = Math.round(originalAlpha * 0.14 + reconstructedAlpha * 0.86);
+      if (nextAlpha < 4) nextAlpha = 0;
+      else if (nextAlpha > 251) nextAlpha = 255;
+
+      // Keep the 50% contour in place: the smoother can create a soft outside
+      // pixel or soften an inside pixel, but it cannot shift the shape by more
+      // than one source pixel.
+      if (originalAlpha <= 8) nextAlpha = Math.min(nextAlpha, 148);
+      else if (originalAlpha >= 247) nextAlpha = Math.max(nextAlpha, 108);
 
       if (Math.abs(nextAlpha - originalAlpha) < 3) continue;
       outputData[pixelIndex + 3] = nextAlpha;
       changedPixels++;
 
-      // Newly antialiased pixels inherit premultiplied neighboring color instead
-      // of exposing stale black/chroma RGB hidden under transparent pixels.
-      if (originalAlpha <= 8 && nextAlpha > 0 && weightedColorAlpha > 0) {
-        outputData[pixelIndex] = Math.round(weightedPremultipliedRed / weightedColorAlpha);
-        outputData[pixelIndex + 1] = Math.round(weightedPremultipliedGreen / weightedColorAlpha);
-        outputData[pixelIndex + 2] = Math.round(weightedPremultipliedBlue / weightedColorAlpha);
+      if (originalAlpha <= 16 && nextAlpha > 0) {
+        outputData[pixelIndex] = Math.round(nearbyRed);
+        outputData[pixelIndex + 1] = Math.round(nearbyGreen);
+        outputData[pixelIndex + 2] = Math.round(nearbyBlue);
       }
     }
   }
 
-  // Fail closed if an unexpected image would require changing a large fraction
-  // of its pixels. Normal sticker contours affect only a thin perimeter band.
-  if (!changedPixels || changedPixels > pixelCount * 0.12) return blob;
+  // Normal cutline smoothing affects only a narrow perimeter. Preserve the
+  // original cleaned PNG if an unexpected file would require a broad rewrite.
+  if (!changedPixels || changedPixels > pixelCount * 0.16) return blob;
   context.putImageData(output, 0, 0);
   return canvasToBlob(canvas);
 };

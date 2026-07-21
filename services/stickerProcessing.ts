@@ -10,6 +10,7 @@ import {
   detectVividCornerMatte,
   removeResidualChromaMatte
 } from './chromaMatte';
+import { smoothStickerAlphaEdge } from './stickerEdgeSmoothing';
 
 const SIMPLE_OBJECT_TYPE = /\bTYPE\s*:\s*(?:OBJECT|PROP|ICON|FUNCTIONAL_LABEL)\b/i;
 const OPEN_GEOMETRY = /\b(frame|window|tube|pipe|hose|ring|hoop|loop|chain|scissors|glasses|stethoscope|wheel|tire|bracelet|necklace|keyring|carabiner|handle|strap|mug|cup|teapot|bottle|flask|vial|beaker|cauldron|kettle|basket|bag|tote|purse|backpack|bucket|padlock|lock|keyhole|door|arch|tunnel|portal|tent|canopy|hood|helmet|mask|visor|wreath|donut|doughnut|chair|stool|bench|lantern|cage|stall|stand|cart|rack|shelf|ladder|opening|cutout|negative space)\b/i;
@@ -27,6 +28,15 @@ export const isSafeAutomaticEnclosedCleanupPrompt = (prompt = '') =>
 
 export const expectsTransparentOpening = (prompt = '') =>
   baseExpectsTransparentOpening(prompt) || expectsResidualTransparentOpening(prompt);
+
+const finishStickerEdge = async (blob: Blob) => {
+  try {
+    return await smoothStickerAlphaEdge(blob);
+  } catch (error) {
+    console.warn('Sticker edge smoothing was skipped; preserving the cleaned PNG.', error);
+    return blob;
+  }
+};
 
 export const processStickerImage = async (
   source: string,
@@ -50,9 +60,13 @@ export const processStickerImage = async (
   // A vivid key color is reserved exclusively for removable background. This
   // pass is safe for scenes and characters because it never targets black,
   // shadows, windows, interiors or generic dark pixels.
-  if (chromaMatte) return removeResidualChromaMatte(base, chromaMatte);
+  if (chromaMatte) {
+    const cleaned = await removeResidualChromaMatte(base, chromaMatte);
+    return finishStickerEdge(cleaned);
+  }
 
   // Legacy black-matte generations keep the conservative/manual behavior.
-  if (!forceOpeningRepair && !allowAutomaticEnclosedCleanup) return base;
-  return repairResidualEnclosedMatte(base, itemPrompt, forceOpeningRepair);
+  if (!forceOpeningRepair && !allowAutomaticEnclosedCleanup) return finishStickerEdge(base);
+  const repaired = await repairResidualEnclosedMatte(base, itemPrompt, forceOpeningRepair);
+  return finishStickerEdge(repaired);
 };

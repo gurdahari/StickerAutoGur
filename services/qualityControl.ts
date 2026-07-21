@@ -9,6 +9,14 @@ export interface LocalStickerQaResult {
   issues: string[];
 }
 
+interface AlphaTopologyMetrics {
+  boundingBoxFillRatio: number;
+  largestInteriorTransparentRatio: number;
+  centerTransparentRatio: number;
+  significantOpaqueComponents: number;
+  largestOpaqueComponentRatio: number;
+}
+
 const loadBlobImage = (blob: Blob): Promise<HTMLImageElement> => new Promise((resolve, reject) => {
   const url = URL.createObjectURL(blob);
   const image = new Image();
@@ -128,6 +136,138 @@ const measureLargestSolidBlackComponent = (
   return largestDenseComponent / Math.max(1, artworkPixels);
 };
 
+const measureAlphaTopology = (
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  artworkPixels: number
+): AlphaTopologyMetrics => {
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+
+  for (let position = 0; position < width * height; position++) {
+    if (data[position * 4 + 3] <= 20) continue;
+    const x = position % width;
+    const y = Math.floor(position / width);
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+  }
+
+  if (maxX < minX || maxY < minY) {
+    return {
+      boundingBoxFillRatio: 0,
+      largestInteriorTransparentRatio: 1,
+      centerTransparentRatio: 1,
+      significantOpaqueComponents: 0,
+      largestOpaqueComponentRatio: 0
+    };
+  }
+
+  const boxWidth = maxX - minX + 1;
+  const boxHeight = maxY - minY + 1;
+  const boxArea = Math.max(1, boxWidth * boxHeight);
+  const pixelCount = width * height;
+  const queue = new Int32Array(pixelCount);
+
+  const transparentVisited = new Uint8Array(pixelCount);
+  let largestInteriorTransparent = 0;
+  const isTransparent = (position: number) => data[position * 4 + 3] <= 8;
+
+  for (let seedY = minY; seedY <= maxY; seedY++) {
+    for (let seedX = minX; seedX <= maxX; seedX++) {
+      const seed = seedY * width + seedX;
+      if (transparentVisited[seed] || !isTransparent(seed)) continue;
+      let start = 0;
+      let end = 0;
+      let touchesBoxEdge = false;
+      transparentVisited[seed] = 1;
+      queue[end++] = seed;
+      const enqueue = (position: number) => {
+        if (transparentVisited[position] || !isTransparent(position)) return;
+        transparentVisited[position] = 1;
+        queue[end++] = position;
+      };
+
+      while (start < end) {
+        const position = queue[start++];
+        const x = position % width;
+        const y = Math.floor(position / width);
+        if (x === minX || x === maxX || y === minY || y === maxY) touchesBoxEdge = true;
+        if (x > minX) enqueue(position - 1);
+        if (x < maxX) enqueue(position + 1);
+        if (y > minY) enqueue(position - width);
+        if (y < maxY) enqueue(position + width);
+      }
+
+      if (!touchesBoxEdge) largestInteriorTransparent = Math.max(largestInteriorTransparent, end);
+    }
+  }
+
+  const opaqueVisited = new Uint8Array(pixelCount);
+  let significantOpaqueComponents = 0;
+  let largestOpaqueComponent = 0;
+  const minimumSignificantArea = Math.max(20, Math.round(boxArea * 0.0015));
+  const isOpaque = (position: number) => data[position * 4 + 3] > 20;
+
+  for (let seedY = minY; seedY <= maxY; seedY++) {
+    for (let seedX = minX; seedX <= maxX; seedX++) {
+      const seed = seedY * width + seedX;
+      if (opaqueVisited[seed] || !isOpaque(seed)) continue;
+      let start = 0;
+      let end = 0;
+      opaqueVisited[seed] = 1;
+      queue[end++] = seed;
+      const enqueue = (position: number) => {
+        if (opaqueVisited[position] || !isOpaque(position)) return;
+        opaqueVisited[position] = 1;
+        queue[end++] = position;
+      };
+
+      while (start < end) {
+        const position = queue[start++];
+        const x = position % width;
+        const y = Math.floor(position / width);
+        if (x > minX) enqueue(position - 1);
+        if (x < maxX) enqueue(position + 1);
+        if (y > minY) enqueue(position - width);
+        if (y < maxY) enqueue(position + width);
+      }
+
+      largestOpaqueComponent = Math.max(largestOpaqueComponent, end);
+      if (end >= minimumSignificantArea) significantOpaqueComponents++;
+    }
+  }
+
+  const centerMinX = minX + Math.floor(boxWidth * 0.2);
+  const centerMaxX = maxX - Math.floor(boxWidth * 0.2);
+  const centerMinY = minY + Math.floor(boxHeight * 0.2);
+  const centerMaxY = maxY - Math.floor(boxHeight * 0.2);
+  let centerPixels = 0;
+  let centerTransparent = 0;
+  for (let y = centerMinY; y <= centerMaxY; y++) {
+    for (let x = centerMinX; x <= centerMaxX; x++) {
+      centerPixels++;
+      if (isTransparent(y * width + x)) centerTransparent++;
+    }
+  }
+
+  return {
+    boundingBoxFillRatio: artworkPixels / boxArea,
+    largestInteriorTransparentRatio: largestInteriorTransparent / boxArea,
+    centerTransparentRatio: centerTransparent / Math.max(1, centerPixels),
+    significantOpaqueComponents,
+    largestOpaqueComponentRatio: largestOpaqueComponent / Math.max(1, artworkPixels)
+  };
+};
+
+const allowsSparseOrOpenGeometry = (prompt: string) =>
+  expectsTransparentOpening(prompt)
+  || /\b(crescent|moon phase|wreath|outline|line art|wireframe|skeleton|rib ?cage|skull|antlers?|branches?|tree|feather|wings?|lace|web|spiderweb|constellation|orbit|frame|arch|portal|ring|chain)\b/i.test(prompt);
+
 export const inspectStickerLocally = async (sticker: Sticker): Promise<LocalStickerQaResult> => {
   if (!sticker.blob || sticker.blob.size === 0) {
     throw new Error(`Sticker #${sticker.id} has no PNG data.`);
@@ -168,6 +308,7 @@ export const inspectStickerLocally = async (sticker: Sticker): Promise<LocalStic
     largestSolidBlackRatio: measureLargestSolidBlackComponent(data, image.width, image.height, artwork),
     touchesCanvasEdge
   };
+  const topology = measureAlphaTopology(data, image.width, image.height, artwork);
   const issues: string[] = [];
   if (Math.min(image.width, image.height) < 256) issues.push('Exported PNG is below the minimum safe pixel dimension.');
   if (sticker.blob.type && sticker.blob.type !== 'image/png') issues.push('Final sticker file is not a PNG.');
@@ -184,6 +325,27 @@ export const inspectStickerLocally = async (sticker: Sticker): Promise<LocalStic
       : 0.12;
   if (metrics.largestSolidBlackRatio > blackRegionLimit) {
     issues.push('Large solid-black interior region may be an unremoved opening or a Seedream artwork hallucination.');
+  }
+
+  const allowsOpenGeometry = allowsSparseOrOpenGeometry(sticker.prompt);
+  if (!allowsOpenGeometry && topology.largestInteriorTransparentRatio > 0.055) {
+    issues.push('Large unintended transparent hole detected inside the sticker silhouette.');
+  }
+  if (
+    !allowsOpenGeometry
+    && topology.centerTransparentRatio > 0.58
+    && topology.boundingBoxFillRatio < 0.42
+  ) {
+    issues.push('The subject center is mostly transparent, suggesting cleanup removed part of the artwork.');
+  }
+  if (!allowsOpenGeometry && topology.boundingBoxFillRatio < 0.16) {
+    issues.push('The sticker silhouette is abnormally hollow for this subject.');
+  }
+  if (
+    topology.significantOpaqueComponents >= 8
+    && topology.largestOpaqueComponentRatio < 0.72
+  ) {
+    issues.push('Artwork is fragmented into too many disconnected pieces.');
   }
   if (touchesCanvasEdge) issues.push('Artwork touches the canvas edge and may be cropped.');
 

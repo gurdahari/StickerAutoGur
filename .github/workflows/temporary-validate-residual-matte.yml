@@ -1,6 +1,9 @@
 name: Temporary Validate Residual Matte Repair
 
 on:
+  pull_request:
+    branches:
+      - main
   push:
     branches:
       - fix/enclosed-matte-and-targeted-grid-refresh

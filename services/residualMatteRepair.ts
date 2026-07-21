@@ -25,12 +25,6 @@ const PROTECTED_BLACK_ART = /\b(silhouette|solid black|black fur|black cat|black
 
 export const expectsResidualTransparentOpening = (prompt = '') => OPEN_GEOMETRY_HINT.test(prompt);
 
-/**
- * Repairs dark matte islands that remain after the normal edge-connected
- * background flood fill. The key signal is topology: a matte island is a
- * thick, low-variance, neutral-dark filled region fully enclosed by opaque
- * artwork. Thin black outlines and exterior black details are preserved.
- */
 export const repairResidualEnclosedMatte = async (
   blob: Blob,
   prompt = '',

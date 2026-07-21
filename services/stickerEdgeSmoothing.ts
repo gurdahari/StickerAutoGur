@@ -30,73 +30,188 @@ const MAX_SUPERSAMPLE_SCALE = 4;
 const MIN_SUPERSAMPLE_SCALE = 2;
 const MAX_SUPERSAMPLED_PIXELS = 18_000_000;
 const EDGE_RADIUS = 3;
+const CONTOUR_PASSES = 2;
+const CONTOUR_KERNEL = [1, 2, 1] as const;
+const CONTOUR_KERNEL_SUM = 16;
 
-interface WhiteBoundarySample {
-  isEdge: boolean;
-  red: number;
-  green: number;
-  blue: number;
+interface WhiteBoundaryCache {
+  mask: Uint8Array;
+  red: Uint8ClampedArray;
+  green: Uint8ClampedArray;
+  blue: Uint8ClampedArray;
 }
 
-const inspectWhiteBoundary = (
+const buildExteriorTransparency = (
+  data: Uint8ClampedArray,
+  width: number,
+  height: number
+) => {
+  const pixelCount = width * height;
+  const exterior = new Uint8Array(pixelCount);
+  const queue = new Int32Array(pixelCount);
+  let queueStart = 0;
+  let queueEnd = 0;
+
+  const enqueue = (x: number, y: number) => {
+    if (x < 0 || y < 0 || x >= width || y >= height) return;
+    const position = y * width + x;
+    if (exterior[position] || data[position * 4 + 3] > 56) return;
+    exterior[position] = 1;
+    queue[queueEnd++] = position;
+  };
+
+  for (let x = 0; x < width; x++) {
+    enqueue(x, 0);
+    enqueue(x, height - 1);
+  }
+  for (let y = 1; y < height - 1; y++) {
+    enqueue(0, y);
+    enqueue(width - 1, y);
+  }
+
+  while (queueStart < queueEnd) {
+    const position = queue[queueStart++];
+    const x = position % width;
+    const y = Math.floor(position / width);
+    enqueue(x - 1, y);
+    enqueue(x + 1, y);
+    enqueue(x, y - 1);
+    enqueue(x, y + 1);
+  }
+
+  return exterior;
+};
+
+const buildWhiteBoundaryCache = (
   data: Uint8ClampedArray,
   width: number,
   height: number,
-  x: number,
-  y: number
-): WhiteBoundarySample => {
-  let minimumAlpha = 255;
-  let maximumAlpha = 0;
-  let weightedRed = 0;
-  let weightedGreen = 0;
-  let weightedBlue = 0;
-  let whiteWeight = 0;
+  exteriorTransparency: Uint8Array
+): WhiteBoundaryCache => {
+  const pixelCount = width * height;
+  const mask = new Uint8Array(pixelCount);
+  const redCache = new Uint8ClampedArray(pixelCount);
+  const greenCache = new Uint8ClampedArray(pixelCount);
+  const blueCache = new Uint8ClampedArray(pixelCount);
 
-  for (let offsetY = -EDGE_RADIUS; offsetY <= EDGE_RADIUS; offsetY++) {
-    const sampleY = y + offsetY;
-    if (sampleY < 0 || sampleY >= height) {
-      minimumAlpha = 0;
-      continue;
-    }
-    for (let offsetX = -EDGE_RADIUS; offsetX <= EDGE_RADIUS; offsetX++) {
-      const sampleX = x + offsetX;
-      if (sampleX < 0 || sampleX >= width) {
-        minimumAlpha = 0;
-        continue;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let maximumAlpha = 0;
+      let touchesExterior = false;
+      let weightedRed = 0;
+      let weightedGreen = 0;
+      let weightedBlue = 0;
+      let whiteWeight = 0;
+
+      for (let offsetY = -EDGE_RADIUS; offsetY <= EDGE_RADIUS; offsetY++) {
+        const sampleY = y + offsetY;
+        if (sampleY < 0 || sampleY >= height) {
+          touchesExterior = true;
+          continue;
+        }
+        for (let offsetX = -EDGE_RADIUS; offsetX <= EDGE_RADIUS; offsetX++) {
+          const sampleX = x + offsetX;
+          if (sampleX < 0 || sampleX >= width) {
+            touchesExterior = true;
+            continue;
+          }
+          const samplePosition = sampleY * width + sampleX;
+          const sampleIndex = samplePosition * 4;
+          const alpha = data[sampleIndex + 3];
+          maximumAlpha = Math.max(maximumAlpha, alpha);
+          if (exteriorTransparency[samplePosition]) touchesExterior = true;
+          if (alpha < 48) continue;
+
+          const red = data[sampleIndex];
+          const green = data[sampleIndex + 1];
+          const blue = data[sampleIndex + 2];
+          const minimumChannel = Math.min(red, green, blue);
+          const maximumChannel = Math.max(red, green, blue);
+          if (minimumChannel < 168 || maximumChannel - minimumChannel > 76) continue;
+
+          const distance = Math.sqrt(offsetX * offsetX + offsetY * offsetY);
+          const weight = alpha * Math.max(0.25, EDGE_RADIUS + 1 - distance);
+          weightedRed += red * weight;
+          weightedGreen += green * weight;
+          weightedBlue += blue * weight;
+          whiteWeight += weight;
+        }
       }
-      const index = (sampleY * width + sampleX) * 4;
-      const alpha = data[index + 3];
-      minimumAlpha = Math.min(minimumAlpha, alpha);
-      maximumAlpha = Math.max(maximumAlpha, alpha);
-      if (alpha < 48) continue;
 
-      const red = data[index];
-      const green = data[index + 1];
-      const blue = data[index + 2];
-      const minimumChannel = Math.min(red, green, blue);
-      const maximumChannel = Math.max(red, green, blue);
-      if (minimumChannel < 168 || maximumChannel - minimumChannel > 76) continue;
-
-      const distance = Math.sqrt(offsetX * offsetX + offsetY * offsetY);
-      const weight = alpha * Math.max(0.25, EDGE_RADIUS + 1 - distance);
-      weightedRed += red * weight;
-      weightedGreen += green * weight;
-      weightedBlue += blue * weight;
-      whiteWeight += weight;
+      if (!touchesExterior || maximumAlpha < 210 || whiteWeight <= 0) continue;
+      const position = y * width + x;
+      mask[position] = 1;
+      redCache[position] = clampByte(weightedRed / whiteWeight);
+      greenCache[position] = clampByte(weightedGreen / whiteWeight);
+      blueCache[position] = clampByte(weightedBlue / whiteWeight);
     }
   }
 
-  const crossesTransparencyBoundary = minimumAlpha <= 40 && maximumAlpha >= 210;
-  if (!crossesTransparencyBoundary || whiteWeight <= 0) {
-    return { isEdge: false, red: 255, green: 255, blue: 255 };
+  return { mask, red: redCache, green: greenCache, blue: blueCache };
+};
+
+const cleanExteriorBinaryContour = (
+  sourceData: Uint8ClampedArray,
+  width: number,
+  height: number,
+  boundaryMask: Uint8Array
+) => {
+  const pixelCount = width * height;
+  const original = new Uint8Array(pixelCount);
+  for (let position = 0; position < pixelCount; position++) {
+    original[position] = sourceData[position * 4 + 3] >= 128 ? 1 : 0;
   }
 
-  return {
-    isEdge: true,
-    red: weightedRed / whiteWeight,
-    green: weightedGreen / whiteWeight,
-    blue: weightedBlue / whiteWeight
-  };
+  let current = new Uint8Array(original);
+  let totalChanged = 0;
+
+  for (let pass = 0; pass < CONTOUR_PASSES; pass++) {
+    const next = new Uint8Array(current);
+    let passChanged = 0;
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const position = y * width + x;
+        if (!boundaryMask[position]) continue;
+
+        let occupiedWeight = 0;
+        for (let offsetY = -1; offsetY <= 1; offsetY++) {
+          const sampleY = y + offsetY;
+          if (sampleY < 0 || sampleY >= height) continue;
+          for (let offsetX = -1; offsetX <= 1; offsetX++) {
+            const sampleX = x + offsetX;
+            if (sampleX < 0 || sampleX >= width) continue;
+            const weight = CONTOUR_KERNEL[offsetX + 1] * CONTOUR_KERNEL[offsetY + 1];
+            occupiedWeight += current[sampleY * width + sampleX] * weight;
+          }
+        }
+
+        const currentValue = current[position];
+        let nextValue = currentValue;
+        // Preserve ties. Only clear a strong one-pixel protrusion or fill a
+        // strong one-pixel notch, which removes raster teeth without rounding
+        // legitimate leaves, corners or narrow artwork features.
+        if (currentValue && occupiedWeight <= 7) nextValue = 0;
+        else if (!currentValue && occupiedWeight >= 9) nextValue = 1;
+
+        if (nextValue === currentValue) continue;
+        next[position] = nextValue;
+        passChanged++;
+      }
+    }
+
+    if (passChanged > pixelCount * 0.009) {
+      return { mask: original, changedPixels: 0 };
+    }
+    current = next;
+    totalChanged += passChanged;
+    if (!passChanged) break;
+  }
+
+  if (totalChanged > pixelCount * 0.014) {
+    return { mask: original, changedPixels: 0 };
+  }
+  return { mask: current, changedPixels: totalChanged };
 };
 
 const chooseSupersampleScale = (width: number, height: number) => {
@@ -105,7 +220,7 @@ const chooseSupersampleScale = (width: number, height: number) => {
 };
 
 const buildSupersampledMask = (
-  sourceData: Uint8ClampedArray,
+  binaryMask: Uint8Array,
   width: number,
   height: number,
   scale: number
@@ -122,7 +237,7 @@ const buildSupersampledMask = (
     mask.data[index] = 255;
     mask.data[index + 1] = 255;
     mask.data[index + 2] = 255;
-    mask.data[index + 3] = sourceData[index + 3];
+    mask.data[index + 3] = binaryMask[position] ? 255 : 0;
   }
   maskContext.putImageData(mask, 0, 0);
 
@@ -133,13 +248,7 @@ const buildSupersampledMask = (
   if (!highResolutionContext) return null;
   highResolutionContext.clearRect(0, 0, highResolutionCanvas.width, highResolutionCanvas.height);
   highResolutionContext.imageSmoothingEnabled = false;
-  highResolutionContext.drawImage(
-    maskCanvas,
-    0,
-    0,
-    highResolutionCanvas.width,
-    highResolutionCanvas.height
-  );
+  highResolutionContext.drawImage(maskCanvas, 0, 0, highResolutionCanvas.width, highResolutionCanvas.height);
 
   const reconstructedCanvas = document.createElement('canvas');
   reconstructedCanvas.width = width;
@@ -149,10 +258,7 @@ const buildSupersampledMask = (
   reconstructedContext.clearRect(0, 0, width, height);
   reconstructedContext.imageSmoothingEnabled = true;
   reconstructedContext.imageSmoothingQuality = 'high';
-  // The small destination-space blur rounds the block geometry created by hard
-  // alpha thresholding. Supersampling then converts it into a clean sub-pixel
-  // coverage mask instead of simply making the old stair-step translucent.
-  reconstructedContext.filter = 'blur(0.62px)';
+  reconstructedContext.filter = 'blur(0.46px)';
   reconstructedContext.drawImage(
     highResolutionCanvas,
     0,
@@ -167,9 +273,6 @@ const buildSupersampledMask = (
   reconstructedContext.filter = 'none';
 
   const result = reconstructedContext.getImageData(0, 0, width, height).data;
-
-  // Release large backing stores immediately. Sticker generation may have many
-  // image workers, while this final local pass is intentionally serialized.
   highResolutionCanvas.width = 1;
   highResolutionCanvas.height = 1;
   maskCanvas.width = 1;
@@ -179,7 +282,7 @@ const buildSupersampledMask = (
   return result;
 };
 
-const runSupersampledSmoothing = async (blob: Blob): Promise<Blob> => {
+const runContourSmoothing = async (blob: Blob): Promise<Blob> => {
   const image = await loadBlobImage(blob);
   const width = image.width;
   const height = image.height;
@@ -196,51 +299,39 @@ const runSupersampledSmoothing = async (blob: Blob): Promise<Blob> => {
   const source = context.getImageData(0, 0, width, height);
   const sourceData = source.data;
   const pixelCount = width * height;
+  const exteriorTransparency = buildExteriorTransparency(sourceData, width, height);
+  const boundary = buildWhiteBoundaryCache(sourceData, width, height, exteriorTransparency);
+  const cleanedContour = cleanExteriorBinaryContour(sourceData, width, height, boundary.mask);
   const scale = chooseSupersampleScale(width, height);
-  const reconstructedMask = buildSupersampledMask(sourceData, width, height, scale);
+  const reconstructedMask = buildSupersampledMask(cleanedContour.mask, width, height, scale);
   if (!reconstructedMask) return blob;
 
   const candidateAlpha = new Uint8ClampedArray(pixelCount);
   const candidateMask = new Uint8Array(pixelCount);
-  const candidateRed = new Uint8ClampedArray(pixelCount);
-  const candidateGreen = new Uint8ClampedArray(pixelCount);
-  const candidateBlue = new Uint8ClampedArray(pixelCount);
-
   let edgePixels = 0;
   let originalEdgeAlpha = 0;
   let reconstructedEdgeAlpha = 0;
 
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const position = y * width + x;
-      const index = position * 4;
-      const originalAlpha = sourceData[index + 3];
-      const boundary = inspectWhiteBoundary(sourceData, width, height, x, y);
-      if (!boundary.isEdge) continue;
+  for (let position = 0; position < pixelCount; position++) {
+    if (!boundary.mask[position]) continue;
+    const index = position * 4;
+    const originalAlpha = sourceData[index + 3];
+    const supersampledCoverage = reconstructedMask[index + 3] / 255;
+    const reconstructedCoverage = smoothStep(0.1, 0.9, supersampledCoverage);
+    let nextAlpha = clampByte(originalAlpha * 0.02 + reconstructedCoverage * 255 * 0.98);
+    if (nextAlpha < 3) nextAlpha = 0;
+    else if (nextAlpha > 252) nextAlpha = 255;
+    if (Math.abs(nextAlpha - originalAlpha) < 2) continue;
 
-      const supersampledCoverage = reconstructedMask[index + 3] / 255;
-      const reconstructedCoverage = smoothStep(0.08, 0.92, supersampledCoverage);
-      let nextAlpha = clampByte(originalAlpha * 0.04 + reconstructedCoverage * 255 * 0.96);
-      if (nextAlpha < 3) nextAlpha = 0;
-      else if (nextAlpha > 252) nextAlpha = 255;
-      if (Math.abs(nextAlpha - originalAlpha) < 2) continue;
-
-      candidateMask[position] = 1;
-      candidateAlpha[position] = nextAlpha;
-      candidateRed[position] = clampByte(boundary.red);
-      candidateGreen[position] = clampByte(boundary.green);
-      candidateBlue[position] = clampByte(boundary.blue);
-      edgePixels++;
-      originalEdgeAlpha += originalAlpha;
-      reconstructedEdgeAlpha += nextAlpha;
-    }
+    candidateMask[position] = 1;
+    candidateAlpha[position] = nextAlpha;
+    edgePixels++;
+    originalEdgeAlpha += originalAlpha;
+    reconstructedEdgeAlpha += nextAlpha;
   }
 
   if (!edgePixels || edgePixels > pixelCount * 0.18) return blob;
 
-  // Preserve the total coverage of the original white cutline. This lets local
-  // corners move by a fraction of a pixel while preventing the border from
-  // becoming visibly thicker or thinner overall.
   const areaBias = (reconstructedEdgeAlpha - originalEdgeAlpha) / edgePixels;
   const output = new ImageData(new Uint8ClampedArray(sourceData), width, height);
   const outputData = output.data;
@@ -260,12 +351,10 @@ const runSupersampledSmoothing = async (blob: Blob): Promise<Blob> => {
     finalAlphaDelta += nextAlpha - originalAlpha;
     changedPixels++;
 
-    // Newly visible sub-pixels must be white cutline pixels. Reusing hidden RGB
-    // from the old transparent matte would create a dark or chroma fringe.
-    if (originalAlpha <= 24 && nextAlpha > originalAlpha) {
-      outputData[index] = candidateRed[position] || 255;
-      outputData[index + 1] = candidateGreen[position] || 255;
-      outputData[index + 2] = candidateBlue[position] || 255;
+    if (originalAlpha <= 32 && nextAlpha > originalAlpha) {
+      outputData[index] = boundary.red[position] || 255;
+      outputData[index + 1] = boundary.green[position] || 255;
+      outputData[index + 2] = boundary.blue[position] || 255;
     }
   }
 
@@ -277,15 +366,15 @@ const runSupersampledSmoothing = async (blob: Blob): Promise<Blob> => {
   return canvasToBlob(canvas);
 };
 
-// Edge reconstruction can temporarily allocate a 4x alpha canvas. Serialize
-// only this local post-processing step so ten Seedream workers cannot create ten
-// large supersampled masks at the same instant.
+// The high-resolution mask can temporarily allocate significant memory. Only
+// this local post-processing stage is serialized; Seedream generation keeps its
+// existing adaptive worker concurrency.
 let smoothingQueue: Promise<void> = Promise.resolve();
 
 export const smoothStickerAlphaEdge = (blob: Blob): Promise<Blob> => {
   const task = smoothingQueue.then(
-    () => runSupersampledSmoothing(blob),
-    () => runSupersampledSmoothing(blob)
+    () => runContourSmoothing(blob),
+    () => runContourSmoothing(blob)
   );
   smoothingQueue = task.then(() => undefined, () => undefined);
   return task;

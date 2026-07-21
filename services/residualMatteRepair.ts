@@ -21,6 +21,8 @@ const canvasToBlob = (canvas: HTMLCanvasElement): Promise<Blob> => new Promise((
 
 const OPEN_GEOMETRY_HINT = /\b(bag|tote|purse|backpack|handle|strap|buckle|chair|seat|stool|bench|deck chair|lounge chair|lantern|lamp|cage|market stall|stall|stand|kiosk|cart|booth|awning|canopy|gazebo|pergola|swing|hammock|ladder|rack|shelf|fence|gate|railing|balcony|table|tripod|easel|hanger|sandal|shoe|glasses|sunglasses|scissors|ring|hoop|loop|chain|link|wheel|tire|basket|bucket|mug|cup|bottle|flask|vial|beaker|cauldron|kettle|door|arch|portal|tent|helmet|mask|visor|wreath|donut|doughnut|opening|cutout|negative space)\b/i;
 
+const COMPLEX_SCENE_HINT = /\b(scene|scenery|landscape|panorama|forest|tree|grove|woodland|jungle|garden|meadow|field|mountain|valley|cottage|house|village|path|road|sky|night sky|starry|stars|galaxy|nebula|moon|sunset|sunrise|cosmic|fantasy landscape|storybook scene|detailed background)\b/i;
+
 const PROTECTED_BLACK_ART = /\b(silhouette|solid black|black fur|black cat|black dog|black bear|black wolf|black raven|black crow|black bat|raven|crow|bat|shadow|ink drawing|charcoal|obsidian|vinyl record|tire|coal|void|black leather|black fabric)\b/i;
 
 export const expectsResidualTransparentOpening = (prompt = '') => OPEN_GEOMETRY_HINT.test(prompt);
@@ -48,7 +50,11 @@ export const repairResidualEnclosedMatte = async (
   const member = new Uint8Array(pixelCount);
   const queue = new Int32Array(pixelCount);
   const removal = new Uint8Array(pixelCount);
-  const promptAware = force || expectsResidualTransparentOpening(prompt);
+  const openingHint = expectsResidualTransparentOpening(prompt);
+  const complexScene = COMPLEX_SCENE_HINT.test(prompt) && !force;
+  // A prompt can mention a backpack inside a detailed landscape. That must not
+  // unlock aggressive cleanup for every dark region in the whole illustration.
+  const promptAware = force || (openingHint && !complexScene);
   const protectBlack = PROTECTED_BLACK_ART.test(prompt) && !force;
 
   const isDarkNeutral = (position: number) => {
@@ -63,11 +69,79 @@ export const repairResidualEnclosedMatte = async (
     return luma <= 66 && maximum - minimum <= 30;
   };
 
+  /**
+   * Detect opaque details completely trapped inside a candidate dark component.
+   * Stars, highlights, leaves and texture islands are strong evidence that the
+   * region is real artwork rather than a flat background matte.
+   */
+  const countEnclosedForeignOpaquePixels = (
+    minX: number,
+    minY: number,
+    maxX: number,
+    maxY: number
+  ) => {
+    const localWidth = maxX - minX + 1;
+    const localHeight = maxY - minY + 1;
+    const localCount = localWidth * localHeight;
+    if (localCount <= 0) return 0;
+    // Very large candidates are unsafe to auto-repair and should be handled by
+    // the explicit manual repair action instead.
+    if (!force && localCount > pixelCount * 0.12) return Number.POSITIVE_INFINITY;
+
+    const reachable = new Uint8Array(localCount);
+    const localQueue = new Int32Array(localCount);
+    let start = 0;
+    let end = 0;
+
+    const enqueue = (localX: number, localY: number) => {
+      if (localX < 0 || localY < 0 || localX >= localWidth || localY >= localHeight) return;
+      const localPosition = localY * localWidth + localX;
+      if (reachable[localPosition]) return;
+      const globalPosition = (minY + localY) * width + minX + localX;
+      if (member[globalPosition]) return;
+      reachable[localPosition] = 1;
+      localQueue[end++] = localPosition;
+    };
+
+    for (let x = 0; x < localWidth; x++) {
+      enqueue(x, 0);
+      enqueue(x, localHeight - 1);
+    }
+    for (let y = 0; y < localHeight; y++) {
+      enqueue(0, y);
+      enqueue(localWidth - 1, y);
+    }
+
+    while (start < end) {
+      const localPosition = localQueue[start++];
+      const x = localPosition % localWidth;
+      const y = Math.floor(localPosition / localWidth);
+      enqueue(x - 1, y);
+      enqueue(x + 1, y);
+      enqueue(x, y - 1);
+      enqueue(x, y + 1);
+    }
+
+    let enclosedOpaquePixels = 0;
+    for (let localPosition = 0; localPosition < localCount; localPosition++) {
+      if (reachable[localPosition]) continue;
+      const x = localPosition % localWidth;
+      const y = Math.floor(localPosition / localWidth);
+      const globalPosition = (minY + y) * width + minX + x;
+      if (member[globalPosition]) continue;
+      if (data[globalPosition * 4 + 3] > 32) enclosedOpaquePixels++;
+    }
+    return enclosedOpaquePixels;
+  };
+
   const minimumArea = Math.max(36, Math.round(pixelCount * 0.00012));
-  const genericMaximumArea = Math.round(pixelCount * 0.06);
-  const promptMaximumArea = Math.round(pixelCount * 0.24);
+  const genericMaximumArea = Math.round(pixelCount * 0.025);
+  const promptMaximumArea = Math.round(pixelCount * 0.08);
+  const complexSceneMaximumArea = Math.round(pixelCount * 0.018);
   const forcedMaximumArea = Math.round(pixelCount * 0.38);
   let changed = false;
+  let removedComponentCount = 0;
+  let removedPixelCount = 0;
 
   for (let seed = 0; seed < pixelCount; seed++) {
     if (visited[seed] || !isDarkNeutral(seed)) continue;
@@ -151,17 +225,38 @@ export const repairResidualEnclosedMatte = async (
     const averageLuma = lumaSum / Math.max(1, area);
     const lumaVariance = Math.max(0, lumaSquaredSum / Math.max(1, area) - averageLuma * averageLuma);
     const lumaDeviation = Math.sqrt(lumaVariance);
-    const maximumArea = force ? forcedMaximumArea : promptAware ? promptMaximumArea : genericMaximumArea;
-    const fullyEnclosed = transparentBoundaryRatio <= (force ? 0.10 : promptAware ? 0.055 : 0.008);
-    const thickFilledRegion = interiorCoreRatio >= (promptAware ? 0.035 : 0.13)
-      && compactness >= (promptAware ? 0.014 : 0.05)
-      && density >= (promptAware ? 0.12 : 0.28);
-    const uniformMatte = averageLuma <= (promptAware ? 58 : 42)
-      && lumaDeviation <= (promptAware ? 19 : 9.5);
-    const boundaryEvidence = promptAware
-      ? lightBoundaryRatio >= 0.008 || interiorCoreRatio >= 0.10
-      : lightBoundaryRatio >= 0.10;
-    const eligible = !protectBlack
+
+    const maximumArea = force
+      ? forcedMaximumArea
+      : complexScene
+        ? complexSceneMaximumArea
+        : promptAware
+          ? promptMaximumArea
+          : genericMaximumArea;
+    const fullyEnclosed = transparentBoundaryRatio <= (
+      force ? 0.10 : complexScene ? 0.003 : promptAware ? 0.025 : 0.004
+    );
+    const thickFilledRegion = interiorCoreRatio >= (
+      force ? 0.025 : complexScene ? 0.18 : promptAware ? 0.08 : 0.16
+    ) && compactness >= (
+      force ? 0.012 : complexScene ? 0.07 : promptAware ? 0.035 : 0.065
+    ) && density >= (
+      force ? 0.10 : complexScene ? 0.42 : promptAware ? 0.30 : 0.40
+    );
+    const uniformMatte = averageLuma <= (
+      force ? 64 : complexScene ? 36 : promptAware ? 48 : 38
+    ) && lumaDeviation <= (
+      force ? 22 : complexScene ? 7.5 : promptAware ? 10.5 : 8
+    );
+    const boundaryEvidence = force
+      ? lightBoundaryRatio >= 0.005 || interiorCoreRatio >= 0.08
+      : complexScene
+        ? lightBoundaryRatio >= 0.12
+        : promptAware
+          ? lightBoundaryRatio >= 0.04
+          : lightBoundaryRatio >= 0.14;
+
+    const preliminaryCandidate = !protectBlack
       && area >= minimumArea
       && area <= maximumArea
       && Math.min(componentWidth, componentHeight) >= 4
@@ -170,14 +265,39 @@ export const repairResidualEnclosedMatte = async (
       && uniformMatte
       && boundaryEvidence;
 
+    const enclosedForeignOpaquePixels = preliminaryCandidate && !force
+      ? countEnclosedForeignOpaquePixels(minX, minY, maxX, maxY)
+      : 0;
+    const foreignDetailLimit = complexScene
+      ? 0
+      : promptAware
+        ? Math.max(2, Math.floor(area * 0.0008))
+        : 1;
+    const preservesInternalDetail = force || enclosedForeignOpaquePixels <= foreignDetailLimit;
+    const eligible = preliminaryCandidate && preservesInternalDetail;
+
     if (eligible) {
       changed = true;
+      removedComponentCount++;
+      removedPixelCount += area;
       for (let index = 0; index < end; index++) removal[queue[index]] = 1;
     }
     for (let index = 0; index < end; index++) member[queue[index]] = 0;
   }
 
   if (!changed) return blob;
+
+  // Last-resort damage budget: automatic cleanup is cancelled completely when
+  // several separate regions or too much of the illustration would disappear.
+  if (!force) {
+    const maximumComponents = complexScene ? 1 : promptAware ? 4 : 2;
+    const maximumRemovedPixels = Math.round(pixelCount * (
+      complexScene ? 0.012 : promptAware ? 0.06 : 0.025
+    ));
+    if (removedComponentCount > maximumComponents || removedPixelCount > maximumRemovedPixels) {
+      return blob;
+    }
+  }
 
   for (let position = 0; position < pixelCount; position++) {
     if (removal[position]) data[position * 4 + 3] = 0;

@@ -11,8 +11,37 @@ interface SeedreamResponse {
   error?: { message?: string };
 }
 
+interface StickerMatteChoice {
+  hex: string;
+  label: string;
+  avoid: RegExp;
+}
+
 const DEFAULT_BASE_URL = 'https://ark.ap-southeast.bytepluses.com/api/v3';
 let lastSuccessfulRequestAt: string | null = null;
+
+const STICKER_MATTE_CHOICES: StickerMatteChoice[] = [
+  {
+    hex: '#00FF3B',
+    label: 'electric chroma green',
+    avoid: /\b(green|lime|emerald|mint|forest|leaf|leaves|foliage|grass|plant|nature|frog|cactus)\b/i
+  },
+  {
+    hex: '#FF00D4',
+    label: 'electric chroma magenta',
+    avoid: /\b(pink|magenta|fuchsia|purple|violet|rose|candy|princess|unicorn|pastel)\b/i
+  },
+  {
+    hex: '#00E5FF',
+    label: 'electric chroma cyan',
+    avoid: /\b(blue|cyan|aqua|turquoise|teal|ocean|water|ice|sky|snow)\b/i
+  },
+  {
+    hex: '#FF5A00',
+    label: 'electric chroma orange',
+    avoid: /\b(red|orange|coral|fire|sunset|autumn|warm|gold)\b/i
+  }
+];
 
 const getApiKey = () => (process.env.SEEDREAM_API_KEY || process.env.ARK_API_KEY)?.trim();
 export const getSeedreamModel = () => process.env.SEEDREAM_MODEL?.trim() || 'dola-seedream-5-0-pro-260628';
@@ -39,6 +68,48 @@ const sizeToPixels = (size: ImageSize = '2K') => ({
   '2K_LANDSCAPE': '2048x1536',
   '4K': '4096x4096'
 }[size]);
+
+const chooseStickerMatte = (prompt: string) => {
+  const scored = STICKER_MATTE_CHOICES.map((choice, index) => ({
+    choice,
+    score: choice.avoid.test(prompt) ? 100 + index : index
+  }));
+  scored.sort((left, right) => left.score - right.score);
+  return scored[0].choice;
+};
+
+/**
+ * Legacy sticker prompts used black as a removable matte. Black is also a real
+ * illustration color, so dark doors, shadows and interiors could not be safely
+ * distinguished from background. New sticker requests reserve a vivid chroma
+ * color that is selected away from the requested palette and forbidden inside
+ * the artwork.
+ */
+export const applyStickerChromaMatte = (prompt: string) => {
+  if (!/GENERATE A RAW DIGITAL STICKER ASSET/i.test(prompt)) return prompt;
+  const matte = chooseStickerMatte(prompt);
+  const matteUpper = matte.label.toUpperCase();
+  const rewritten = prompt
+    .replace(/#000000/gi, matte.hex)
+    .replace(/SOLID BLACK/gi, `SOLID ${matteUpper}`)
+    .replace(/PURE BLACK/gi, `THE RESERVED ${matteUpper}`)
+    .replace(/flat black/gi, `flat ${matte.label}`)
+    .replace(/black background/gi, `${matte.label} background`)
+    .replace(/black is a removable matte color/gi, `${matte.label} is the removable matte color`)
+    .replace(/NO BLACK BLOBS/gi, 'NO MATTE-COLOR BLOBS')
+    .replace(/black spots/gi, `${matte.label} spots`)
+    .replace(/black islands/gi, `${matte.label} islands`)
+    .replace(/black marks/gi, `${matte.label} marks`);
+
+  return `${rewritten}
+
+FINAL CHROMA-MATTE OVERRIDE — THIS OVERRIDES ANY EARLIER BACKGROUND WORDING:
+- Use one perfectly uniform ${matte.label} (${matte.hex}) for the entire canvas background.
+- Every intentional empty opening or negative-space hole must show that exact same ${matte.hex} color, including doorways, arches, handles, rings, windows, tent openings and spaces between structural parts.
+- Reserve ${matte.hex} exclusively for removable background. It must never appear in the artwork, white die-cut border, outlines, highlights, shadows, decorations or textures.
+- Black and dark colors are allowed as legitimate artwork colors. Never use black as the canvas background or as a substitute fill for an intended transparent opening.
+- Keep all four corners identical ${matte.hex}; no gradient, lighting, texture, vignette or color variation in the matte.`;
+};
 
 const sleep = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds));
 
@@ -101,12 +172,10 @@ export const generateSeedreamImage = async (request: ImageRequest): Promise<Imag
   }
 
   const baseUrl = (process.env.SEEDREAM_BASE_URL?.trim() || DEFAULT_BASE_URL).replace(/\/$/, '');
-  // Seedream 5 Pro accepts up to 14 reference images when producing one output
-  // image (15 total input + output images per request).
   const inputImages = (request.images || []).slice(0, 14);
   const body: Record<string, unknown> = {
     model: getSeedreamModel(),
-    prompt: request.prompt,
+    prompt: applyStickerChromaMatte(request.prompt),
     size: sizeToPixels(request.size),
     output_format: 'png',
     watermark: false

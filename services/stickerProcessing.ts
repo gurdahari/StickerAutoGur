@@ -15,8 +15,8 @@ export const expectsTransparentOpening = (prompt = '') =>
  * 1. Remove the exterior matte and obvious enclosed background using the
  *    established processor.
  * 2. Inspect the already-transparent PNG for thick neutral-dark islands that
- *    are topologically trapped inside handles, chairs, stalls, lanterns and
- *    similar open geometry.
+ *    are topologically trapped inside handles, chairs, market stalls,
+ *    lanterns and similar open geometry.
  */
 export const processStickerImage = async (
   source: string,

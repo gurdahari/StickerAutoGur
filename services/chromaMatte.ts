@@ -103,15 +103,13 @@ export const detectVividCornerMatte = async (source: string): Promise<ChromaMatt
 };
 
 /**
- * Removes only enclosed components that strongly match the reserved chroma key.
+ * Removes reserved chroma from both enclosed openings and residual exterior
+ * debris while preserving the soft alpha edge created by stickerExteriorMatte.
  *
- * Exterior matte and its antialiased white cutline have already been handled by
- * stickerExteriorMatte. The previous implementation scanned every component and
- * then forced two global neighbouring layers to alpha 0; that second binary pass
- * re-cut the good outer edge into a staircase. Components touching existing
- * transparency or the canvas margin are now rejected here. Accepted inner holes
- * receive a continuous alpha transition and RGB decontamination instead of a
- * hard two-layer cut.
+ * Exterior cleanup grows only through pixels that still strongly resemble the
+ * measured key color. A matte-to-white mixture is converted to white plus
+ * fractional alpha; a key-color core becomes transparent. This removes green,
+ * magenta, cyan or orange spill without thresholding or redrawing the cutline.
  */
 export const removeResidualChromaMatte = async (
   blob: Blob,
@@ -131,13 +129,10 @@ export const removeResidualChromaMatte = async (
   const width = image.width;
   const height = image.height;
   const pixelCount = width * height;
-  const visited = new Uint8Array(pixelCount);
-  const queue = new Int32Array(pixelCount);
-  const removal = new Uint8Array(pixelCount);
   const seedTolerance = 44;
   const growTolerance = 92;
   const fringeTolerance = 126;
-  let totalRemoval = 0;
+  const exteriorTolerance = 150;
 
   const distanceAt = (position: number) => {
     const index = position * 4;
@@ -145,6 +140,145 @@ export const removeResidualChromaMatte = async (
   };
 
   const originalAlphaAt = (position: number) => original[position * 4 + 3];
+  const whiteVector = {
+    r: 255 - matte.r,
+    g: 255 - matte.g,
+    b: 255 - matte.b
+  };
+  const whiteVectorLengthSquared = Math.max(
+    1,
+    whiteVector.r * whiteVector.r + whiteVector.g * whiteVector.g + whiteVector.b * whiteVector.b
+  );
+
+  const projectOntoMatteWhite = (position: number) => {
+    const index = position * 4;
+    const red = original[index] - matte.r;
+    const green = original[index + 1] - matte.g;
+    const blue = original[index + 2] - matte.b;
+    const rawCoverage = (
+      red * whiteVector.r + green * whiteVector.g + blue * whiteVector.b
+    ) / whiteVectorLengthSquared;
+    const coverage = Math.max(0, Math.min(1, rawCoverage));
+    const expectedRed = matte.r + whiteVector.r * coverage;
+    const expectedGreen = matte.g + whiteVector.g * coverage;
+    const expectedBlue = matte.b + whiteVector.b * coverage;
+    const residualRed = original[index] - expectedRed;
+    const residualGreen = original[index + 1] - expectedGreen;
+    const residualBlue = original[index + 2] - expectedBlue;
+    const residual = Math.sqrt(
+      residualRed * residualRed + residualGreen * residualGreen + residualBlue * residualBlue
+    );
+    return { rawCoverage, coverage, residual };
+  };
+
+  const setTransparent = (position: number) => {
+    const index = position * 4;
+    data[index] = 0;
+    data[index + 1] = 0;
+    data[index + 2] = 0;
+    data[index + 3] = 0;
+  };
+
+  const decontaminate = (position: number, coverage: number) => {
+    const index = position * 4;
+    const originalAlpha = original[index + 3];
+    if (coverage <= 0.025) {
+      setTransparent(position);
+      return;
+    }
+
+    const safeCoverage = Math.max(0.06, Math.min(1, coverage));
+    data[index] = clampByte((original[index] - matte.r * (1 - safeCoverage)) / safeCoverage);
+    data[index + 1] = clampByte((original[index + 1] - matte.g * (1 - safeCoverage)) / safeCoverage);
+    data[index + 2] = clampByte((original[index + 2] - matte.b * (1 - safeCoverage)) / safeCoverage);
+    data[index + 3] = Math.min(originalAlpha, Math.max(1, clampByte(originalAlpha * safeCoverage)));
+  };
+
+  // Build only the transparency connected to the canvas exterior. Internal holes
+  // are deliberately excluded so the exterior debris pass cannot cross into art.
+  const exteriorTransparency = new Uint8Array(pixelCount);
+  const exteriorQueue = new Int32Array(pixelCount);
+  let exteriorStart = 0;
+  let exteriorEnd = 0;
+  const enqueueExteriorTransparency = (position: number) => {
+    if (position < 0 || position >= pixelCount || exteriorTransparency[position]) return;
+    if (originalAlphaAt(position) > 8) return;
+    exteriorTransparency[position] = 1;
+    exteriorQueue[exteriorEnd++] = position;
+  };
+
+  for (let x = 0; x < width; x++) {
+    enqueueExteriorTransparency(x);
+    enqueueExteriorTransparency((height - 1) * width + x);
+  }
+  for (let y = 1; y < height - 1; y++) {
+    enqueueExteriorTransparency(y * width);
+    enqueueExteriorTransparency(y * width + width - 1);
+  }
+  while (exteriorStart < exteriorEnd) {
+    const position = exteriorQueue[exteriorStart++];
+    const x = position % width;
+    const y = Math.floor(position / width);
+    if (x > 0) enqueueExteriorTransparency(position - 1);
+    if (x + 1 < width) enqueueExteriorTransparency(position + 1);
+    if (y > 0) enqueueExteriorTransparency(position - width);
+    if (y + 1 < height) enqueueExteriorTransparency(position + width);
+  }
+
+  // Peel residual key-colored islands from the outside inward. Pure matte is
+  // removed; matte/white mixtures are whitened and retain fractional alpha. A
+  // preserved soft edge is not used as a new frontier, so the pass stops there.
+  const exteriorProcessed = new Uint8Array(pixelCount);
+  let exteriorFrontier = exteriorTransparency;
+  let exteriorChanges = 0;
+  for (let pass = 0; pass < 32; pass++) {
+    const nextFrontier = new Uint8Array(pixelCount);
+    let passChanges = 0;
+    for (let position = 0; position < pixelCount; position++) {
+      if (exteriorProcessed[position] || originalAlphaAt(position) === 0) continue;
+      const x = position % width;
+      const y = Math.floor(position / width);
+      const adjacentToExterior = (x > 0 && exteriorFrontier[position - 1])
+        || (x + 1 < width && exteriorFrontier[position + 1])
+        || (y > 0 && exteriorFrontier[position - width])
+        || (y + 1 < height && exteriorFrontier[position + width]);
+      if (!adjacentToExterior) continue;
+
+      const distance = distanceAt(position);
+      if (distance > exteriorTolerance) continue;
+      const projection = projectOntoMatteWhite(position);
+      const validWhiteBlend = projection.rawCoverage >= 0.006
+        && projection.rawCoverage <= 1.10
+        && projection.residual <= 82;
+
+      exteriorProcessed[position] = 1;
+      if (validWhiteBlend && projection.coverage > 0.025) {
+        const index = position * 4;
+        data[index] = 255;
+        data[index + 1] = 255;
+        data[index + 2] = 255;
+        data[index + 3] = Math.min(
+          originalAlphaAt(position),
+          Math.max(1, clampByte(projection.coverage * 255))
+        );
+      } else {
+        setTransparent(position);
+        nextFrontier[position] = 1;
+      }
+      passChanges++;
+    }
+    exteriorChanges += passChanges;
+    if (!passChanges) break;
+    exteriorFrontier = nextFrontier;
+  }
+
+  // Enclosed chroma components are handled separately. Components touching the
+  // exterior remain excluded here because the exterior pass above already made
+  // the safe distinction between key cores and soft white-cutline mixtures.
+  const visited = new Uint8Array(pixelCount);
+  const queue = new Int32Array(pixelCount);
+  const removal = new Uint8Array(pixelCount);
+  let totalRemoval = 0;
 
   for (let seed = 0; seed < pixelCount; seed++) {
     const seedIndex = seed * 4;
@@ -153,7 +287,7 @@ export const removeResidualChromaMatte = async (
     let end = 0;
     let corePixels = 0;
     let distanceSum = 0;
-    let touchesExteriorTransparency = false;
+    let touchesExterior = false;
     visited[seed] = 1;
     queue[end++] = seed;
 
@@ -173,15 +307,12 @@ export const removeResidualChromaMatte = async (
       distanceSum += distance;
       if (distance <= seedTolerance) corePixels++;
 
-      if (x <= 1 || y <= 1 || x >= width - 2 || y >= height - 2) {
-        touchesExteriorTransparency = true;
-      } else if (
-        originalAlphaAt(position - 1) <= 8
-        || originalAlphaAt(position + 1) <= 8
-        || originalAlphaAt(position - width) <= 8
-        || originalAlphaAt(position + width) <= 8
-      ) {
-        touchesExteriorTransparency = true;
+      if (exteriorTransparency[position]
+        || (x > 0 && exteriorTransparency[position - 1])
+        || (x + 1 < width && exteriorTransparency[position + 1])
+        || (y > 0 && exteriorTransparency[position - width])
+        || (y + 1 < height && exteriorTransparency[position + width])) {
+        touchesExterior = true;
       }
 
       if (x > 0) enqueue(position - 1);
@@ -193,7 +324,7 @@ export const removeResidualChromaMatte = async (
     const area = end;
     const coreRatio = corePixels / Math.max(1, area);
     const averageDistance = distanceSum / Math.max(1, area);
-    const eligible = !touchesExteriorTransparency
+    const eligible = !touchesExterior
       && area >= 8
       && area <= pixelCount * 0.35
       && coreRatio >= 0.58
@@ -203,58 +334,38 @@ export const removeResidualChromaMatte = async (
     for (let index = 0; index < end; index++) removal[queue[index]] = 1;
   }
 
-  if (!totalRemoval || totalRemoval > pixelCount * 0.30) return blob;
-
-  const decontaminate = (position: number, coverage: number) => {
-    const index = position * 4;
-    const originalAlpha = original[index + 3];
-    if (coverage <= 0.025) {
-      data[index] = 0;
-      data[index + 1] = 0;
-      data[index + 2] = 0;
-      data[index + 3] = 0;
-      return;
-    }
-
-    const safeCoverage = Math.max(0.06, Math.min(1, coverage));
-    data[index] = clampByte((original[index] - matte.r * (1 - safeCoverage)) / safeCoverage);
-    data[index + 1] = clampByte((original[index + 1] - matte.g * (1 - safeCoverage)) / safeCoverage);
-    data[index + 2] = clampByte((original[index + 2] - matte.b * (1 - safeCoverage)) / safeCoverage);
-    data[index + 3] = Math.min(originalAlpha, Math.max(1, clampByte(originalAlpha * safeCoverage)));
-  };
-
-  // Key-color cores become transparent. Their model-created mixed edge remains a
-  // subpixel transition instead of being flattened into a binary mask.
-  for (let position = 0; position < pixelCount; position++) {
-    if (!removal[position]) continue;
-    const coverage = smoothStep(seedTolerance - 8, fringeTolerance, distanceAt(position));
-    decontaminate(position, coverage);
-  }
-
-  // Add at most a two-pixel soft ring around accepted enclosed components only.
-  // Never scan the exterior edge globally again.
-  let frontier = new Uint8Array(removal);
-  for (let pass = 0; pass < 2; pass++) {
-    const nextFrontier = new Uint8Array(pixelCount);
+  if (totalRemoval <= pixelCount * 0.30) {
     for (let position = 0; position < pixelCount; position++) {
-      if (removal[position] || originalAlphaAt(position) === 0) continue;
-      const x = position % width;
-      const y = Math.floor(position / width);
-      const adjacent = (x > 0 && frontier[position - 1])
-        || (x + 1 < width && frontier[position + 1])
-        || (y > 0 && frontier[position - width])
-        || (y + 1 < height && frontier[position + width]);
-      if (!adjacent) continue;
-      const distance = distanceAt(position);
-      if (distance > fringeTolerance) continue;
-      const coverage = smoothStep(seedTolerance - 8, fringeTolerance, distance);
+      if (!removal[position]) continue;
+      const coverage = smoothStep(seedTolerance - 8, fringeTolerance, distanceAt(position));
       decontaminate(position, coverage);
-      nextFrontier[position] = 1;
     }
-    frontier = nextFrontier;
+
+    let frontier = new Uint8Array(removal);
+    for (let pass = 0; pass < 2; pass++) {
+      const nextFrontier = new Uint8Array(pixelCount);
+      for (let position = 0; position < pixelCount; position++) {
+        if (removal[position] || originalAlphaAt(position) === 0) continue;
+        const x = position % width;
+        const y = Math.floor(position / width);
+        const adjacent = (x > 0 && frontier[position - 1])
+          || (x + 1 < width && frontier[position + 1])
+          || (y > 0 && frontier[position - width])
+          || (y + 1 < height && frontier[position + width]);
+        if (!adjacent) continue;
+        const distance = distanceAt(position);
+        if (distance > fringeTolerance) continue;
+        const coverage = smoothStep(seedTolerance - 8, fringeTolerance, distance);
+        decontaminate(position, coverage);
+        nextFrontier[position] = 1;
+      }
+      frontier = nextFrontier;
+    }
   }
 
-  // Fail closed if the soft operation changed implausibly much effective alpha.
+  if (!exteriorChanges && !totalRemoval) return blob;
+
+  // Fail closed if the complete soft operation changed implausibly much alpha.
   let effectiveRemovedPixels = 0;
   for (let position = 0; position < pixelCount; position++) {
     effectiveRemovedPixels += Math.max(0, originalAlphaAt(position) - data[position * 4 + 3]) / 255;

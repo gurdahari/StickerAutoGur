@@ -1,6 +1,7 @@
 import type { ImageSize, NicheVisualAnalysis, StylePreset } from '../types';
 import * as legacy from './aiServiceLegacy';
 import { appendStickerQualityGuidelines, STICKER_GENERATION_QUALITY_COMPACT } from './stickerQualityGuidelines';
+import { STICKER_SOURCE_SIZE } from './stickerResolutionPolicy';
 
 export * from './aiServiceLegacy';
 
@@ -31,7 +32,21 @@ const toDataUrl=async(url:string,maxDimension=1200):Promise<string>=>{
 
 export const generateStickerPrompts=(niche:string,style:StylePreset,count=30,analysis?:NicheVisualAnalysis)=>legacy.generateStickerPrompts(niche,{...style,prompt:appendStickerQualityGuidelines(style.prompt)},count,analysis);
 export const generateReplacementStickerPrompts=(niche:string,style:StylePreset,count:number,existingPrompts:string[],rejectedReasons:string[],analysis?:NicheVisualAnalysis)=>legacy.generateReplacementStickerPrompts(niche,{...style,prompt:appendStickerQualityGuidelines(style.prompt)},count,existingPrompts,rejectedReasons,analysis);
-export const generateAutopilotSticker=(itemPrompt:string,stylePrompt:string,useTurbo=false,nicheContext='',analysis?:NicheVisualAnalysis)=>legacy.generateAutopilotSticker(itemPrompt,`${stylePrompt}\n\n${STICKER_GENERATION_QUALITY_COMPACT}`,useTurbo,nicheContext,analysis);
+
+/**
+ * Keep Turbo as a queue/concurrency setting only. Sticker source resolution is
+ * always 2K so the final 1024px PNG receives a genuine high-quality downsample
+ * instead of preserving the model's 1K raster stair-stepping.
+ */
+export const generateAutopilotSticker=(itemPrompt:string,stylePrompt:string,_useTurbo=false,nicheContext='',analysis?:NicheVisualAnalysis)=>{
+  const enhancedStyle=`${stylePrompt}\n\n${STICKER_GENERATION_QUALITY_COMPACT}`;
+  if(STICKER_SOURCE_SIZE!=='2K')throw new Error(`Unsupported sticker source policy: ${STICKER_SOURCE_SIZE}`);
+  return legacy.generateAutopilotSticker(itemPrompt,enhancedStyle,false,nicheContext,analysis);
+};
+
+// Listing copy must describe the real source resolution rather than the legacy
+// Turbo flag. The legacy boolean is false here because false means 2K metadata.
+export const generateAutopilotListing=(niche:string,styleName:string,_useTurbo:boolean,stickerCount=100)=>legacy.generateAutopilotListing(niche,styleName,false,stickerCount);
 
 const openAICover=async(stickerUrls:string[],niche:string,totalStickerCount:number)=>{
   const references=await Promise.all(stickerUrls.slice(0,10).map(url=>toDataUrl(url,1000)));

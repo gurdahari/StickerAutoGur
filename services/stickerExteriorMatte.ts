@@ -13,6 +13,8 @@ const canvasToBlob = (canvas: HTMLCanvasElement): Promise<Blob> => new Promise((
   }, 'image/png');
 });
 
+const clampByte = (value: number) => Math.max(0, Math.min(255, Math.round(value)));
+
 const median = (values: number[]) => {
   values.sort((left, right) => left - right);
   return values[Math.floor(values.length / 2)] || 0;
@@ -46,10 +48,15 @@ const estimateBackground = (data: Uint8ClampedArray, width: number, height: numb
 };
 
 /**
- * Removes only the matte connected to the outside of the canvas. This is the
- * proven pre-halo pipeline from the earlier good exports: it preserves a soft
- * antialiased white edge and never globally clamps alpha values. Enclosed
- * openings are intentionally handled later by the safer chroma/manual stages.
+ * Removes only the matte connected to the outside canvas and reconstructs the
+ * model-created matte/white transition as a continuous alpha edge.
+ *
+ * The earlier black-matte pipeline could identify an antialiased white border
+ * by looking for neutral gray pixels. With a vivid chroma matte, a valid blended
+ * edge is tinted rather than neutral. Treating it as generic fringe and setting
+ * it directly to alpha 0 caused the visible one-pixel staircase. We now project
+ * each boundary pixel onto the actual line between the sampled matte color and
+ * pure white. That projection is the subpixel white-cutline coverage.
  */
 export const processStickerImage = async (
   source: string,
@@ -74,11 +81,48 @@ export const processStickerImage = async (
   const floodTolerance = backgroundLuma < 70 ? 205 : 105;
   const haloTolerance = backgroundLuma < 70 ? 305 : 145;
 
+  const whiteVector = {
+    r: 255 - background.r,
+    g: 255 - background.g,
+    b: 255 - background.b
+  };
+  const whiteVectorLengthSquared = Math.max(
+    1,
+    whiteVector.r * whiteVector.r + whiteVector.g * whiteVector.g + whiteVector.b * whiteVector.b
+  );
+
   const distanceFromBackground = (pixelIndex: number) => {
     const red = data[pixelIndex] - background.r;
     const green = data[pixelIndex + 1] - background.g;
     const blue = data[pixelIndex + 2] - background.b;
     return Math.sqrt(red * red + green * green + blue * blue);
+  };
+
+  const projectOntoMatteWhite = (pixelIndex: number) => {
+    const red = data[pixelIndex] - background.r;
+    const green = data[pixelIndex + 1] - background.g;
+    const blue = data[pixelIndex + 2] - background.b;
+    const rawCoverage = (
+      red * whiteVector.r + green * whiteVector.g + blue * whiteVector.b
+    ) / whiteVectorLengthSquared;
+    const coverage = Math.max(0, Math.min(1, rawCoverage));
+    const expectedRed = background.r + whiteVector.r * coverage;
+    const expectedGreen = background.g + whiteVector.g * coverage;
+    const expectedBlue = background.b + whiteVector.b * coverage;
+    const residualRed = data[pixelIndex] - expectedRed;
+    const residualGreen = data[pixelIndex + 1] - expectedGreen;
+    const residualBlue = data[pixelIndex + 2] - expectedBlue;
+    const residual = Math.sqrt(
+      residualRed * residualRed + residualGreen * residualGreen + residualBlue * residualBlue
+    );
+    return { rawCoverage, coverage, residual };
+  };
+
+  const isMatteWhiteBlend = (pixelIndex: number) => {
+    const projection = projectOntoMatteWhite(pixelIndex);
+    return projection.rawCoverage >= 0.012
+      && projection.rawCoverage <= 1.08
+      && projection.residual <= 46;
   };
 
   const visited = new Uint8Array(pixelCount);
@@ -89,7 +133,10 @@ export const processStickerImage = async (
     const position = y * width + x;
     if (visited[position]) return;
     const pixelIndex = position * 4;
-    if (data[pixelIndex + 3] === 0 || distanceFromBackground(pixelIndex) <= floodTolerance) {
+    const transparent = data[pixelIndex + 3] === 0;
+    const plainMatte = distanceFromBackground(pixelIndex) <= floodTolerance
+      && !isMatteWhiteBlend(pixelIndex);
+    if (transparent || plainMatte) {
       visited[position] = 1;
       queue[queueEnd++] = position;
     }
@@ -116,47 +163,48 @@ export const processStickerImage = async (
 
   const hasTransparentNeighbour = (x: number, y: number) => {
     if (x === 0 || y === 0 || x === width - 1 || y === height - 1) return true;
-    return data[((y * width + x - 1) * 4) + 3] === 0
-      || data[((y * width + x + 1) * 4) + 3] === 0
-      || data[(((y - 1) * width + x) * 4) + 3] === 0
-      || data[(((y + 1) * width + x) * 4) + 3] === 0;
+    return data[((y * width + x - 1) * 4) + 3] <= 2
+      || data[((y * width + x + 1) * 4) + 3] <= 2
+      || data[(((y - 1) * width + x) * 4) + 3] <= 2
+      || data[(((y + 1) * width + x) * 4) + 3] <= 2;
   };
 
-  // Peel only two edge-connected matte-contaminated layers, matching the older
-  // successful implementation. No global alpha threshold follows this pass.
-  for (let pass = 0; pass < 2; pass++) {
+  // Resolve only the narrow edge-connected band. Valid matte/white mixtures get
+  // fractional alpha; unrelated matte contamination is removed. No global alpha
+  // threshold, blur, morphology or contour guessing is used.
+  for (let pass = 0; pass < 3; pass++) {
     const remove = new Uint8Array(pixelCount);
+    let changed = 0;
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
         const position = y * width + x;
         const pixelIndex = position * 4;
         if (data[pixelIndex + 3] === 0 || !hasTransparentNeighbour(x, y)) continue;
-        if (distanceFromBackground(pixelIndex) <= haloTolerance) remove[position] = 1;
+
+        const projection = projectOntoMatteWhite(pixelIndex);
+        const validBlend = projection.rawCoverage >= 0.012
+          && projection.rawCoverage <= 1.08
+          && projection.residual <= 46;
+        if (validBlend) {
+          const nextAlpha = projection.coverage <= 0.012
+            ? 0
+            : Math.max(1, clampByte(projection.coverage * 255));
+          data[pixelIndex] = 255;
+          data[pixelIndex + 1] = 255;
+          data[pixelIndex + 2] = 255;
+          data[pixelIndex + 3] = Math.min(data[pixelIndex + 3], nextAlpha);
+          changed++;
+        } else if (distanceFromBackground(pixelIndex) <= haloTolerance) {
+          remove[position] = 1;
+        }
       }
     }
     for (let position = 0; position < pixelCount; position++) {
-      if (remove[position]) data[position * 4 + 3] = 0;
+      if (!remove[position]) continue;
+      data[position * 4 + 3] = 0;
+      changed++;
     }
-  }
-
-  // Reconstruct the short white antialias band from matte distance. Crucially,
-  // keep its full continuous alpha range; do not discard values below 104.
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const position = y * width + x;
-      const pixelIndex = position * 4;
-      if (data[pixelIndex + 3] === 0 || !hasTransparentNeighbour(x, y)) continue;
-      const maximum = Math.max(data[pixelIndex], data[pixelIndex + 1], data[pixelIndex + 2]);
-      const minimum = Math.min(data[pixelIndex], data[pixelIndex + 1], data[pixelIndex + 2]);
-      const distance = distanceFromBackground(pixelIndex);
-      if (maximum - minimum > 32 || distance >= 405) continue;
-      const denominator = Math.max(1, 405 - haloTolerance);
-      const alpha = Math.max(1, Math.min(255, Math.round(((distance - haloTolerance) / denominator) * 255)));
-      data[pixelIndex] = 255;
-      data[pixelIndex + 1] = 255;
-      data[pixelIndex + 2] = 255;
-      data[pixelIndex + 3] = Math.min(data[pixelIndex + 3], alpha);
-    }
+    if (!changed) break;
   }
 
   context.putImageData(imageData, 0, 0);

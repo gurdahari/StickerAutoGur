@@ -7,6 +7,7 @@ import {
   detectVividCornerMatte,
   removeResidualChromaMatte
 } from './chromaMatte';
+import { isolateStickerByWhiteCutline } from './stickerCutlineIsolation';
 import { normalizeStickerExport } from './stickerExportNormalization';
 
 const SIMPLE_OBJECT_TYPE = /\bTYPE\s*:\s*(?:OBJECT|PROP|ICON|FUNCTIONAL_LABEL)\b/i;
@@ -27,11 +28,20 @@ export const expectsTransparentOpening = (prompt = '') =>
   expectsResidualTransparentOpening(prompt);
 
 const finishStickerExport = async (blob: Blob) => {
+  let isolated = blob;
   try {
-    return await normalizeStickerExport(blob, 1024);
+    // This color-agnostic geometry pass removes Seedream fragments that sit
+    // outside the continuous white cutline. It runs for black and vivid mattes.
+    isolated = await isolateStickerByWhiteCutline(blob);
+  } catch (error) {
+    console.warn('White-cutline debris isolation was skipped; preserving the cleaned PNG.', error);
+  }
+
+  try {
+    return await normalizeStickerExport(isolated, 1024);
   } catch (error) {
     console.warn('Historical sticker export normalization was skipped; preserving the cleaned PNG.', error);
-    return blob;
+    return isolated;
   }
 };
 

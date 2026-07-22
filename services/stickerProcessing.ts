@@ -1,7 +1,4 @@
-import {
-  expectsTransparentOpening as baseExpectsTransparentOpening,
-  processStickerImage as processStickerImageBase
-} from './stickerProcessingBase';
+import { processStickerImage as removeExteriorMatte } from './stickerExteriorMatte';
 import {
   expectsResidualTransparentOpening,
   repairResidualEnclosedMatte
@@ -27,7 +24,7 @@ export const isSafeAutomaticEnclosedCleanupPrompt = (prompt = '') =>
   && !COMPLEX_OR_DETAIL_RISK.test(prompt);
 
 export const expectsTransparentOpening = (prompt = '') =>
-  baseExpectsTransparentOpening(prompt) || expectsResidualTransparentOpening(prompt);
+  expectsResidualTransparentOpening(prompt);
 
 const finishStickerExport = async (blob: Blob) => {
   try {
@@ -46,20 +43,12 @@ export const processStickerImage = async (
   const chromaMatte = await detectVividCornerMatte(source).catch(() => null);
   const allowAutomaticEnclosedCleanup = isSafeAutomaticEnclosedCleanupPrompt(itemPrompt);
 
-  let base: Blob;
-  if (!forceOpeningRepair && !allowAutomaticEnclosedCleanup) {
-    base = await processStickerImageBase(
-      source,
-      'TYPE: PROTECTED_ARTWORK | silhouette | preserve all enclosed dark artwork',
-      false
-    );
-  } else {
-    base = await processStickerImageBase(source, itemPrompt, forceOpeningRepair);
-  }
+  // Stage 1 is intentionally simple and proven: remove only the exterior matte
+  // while preserving the full continuous alpha range of the white cutline.
+  const base = await removeExteriorMatte(source, itemPrompt, forceOpeningRepair);
 
-  // A vivid key color is reserved exclusively for removable background. This
-  // pass is safe for scenes and characters because it never targets black,
-  // shadows, windows, interiors or generic dark pixels.
+  // Stage 2 removes the reserved vivid key, including intended inner openings,
+  // without interpreting black shadows or dark illustration pixels as matte.
   if (chromaMatte) {
     const cleaned = await removeResidualChromaMatte(base, chromaMatte);
     return finishStickerExport(cleaned);

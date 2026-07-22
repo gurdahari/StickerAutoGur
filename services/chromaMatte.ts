@@ -33,6 +33,13 @@ const canvasToBlob = (canvas: HTMLCanvasElement): Promise<Blob> => new Promise((
   }, 'image/png');
 });
 
+const clampByte = (value: number) => Math.max(0, Math.min(255, Math.round(value)));
+
+const smoothStep = (minimum: number, maximum: number, value: number) => {
+  const normalized = Math.max(0, Math.min(1, (value - minimum) / Math.max(0.0001, maximum - minimum)));
+  return normalized * normalized * (3 - 2 * normalized);
+};
+
 const median = (values: number[]) => {
   const sorted = [...values].sort((left, right) => left - right);
   return sorted[Math.floor(sorted.length / 2)] || 0;
@@ -96,9 +103,15 @@ export const detectVividCornerMatte = async (source: string): Promise<ChromaMatt
 };
 
 /**
- * Removes only components that strongly match the vivid corner key color.
- * It never targets black or generic dark pixels, so it is safe to run even on
- * detailed scenes where the normal enclosed-matte algorithm is fail-closed.
+ * Removes only enclosed components that strongly match the reserved chroma key.
+ *
+ * Exterior matte and its antialiased white cutline have already been handled by
+ * stickerExteriorMatte. The previous implementation scanned every component and
+ * then forced two global neighbouring layers to alpha 0; that second binary pass
+ * re-cut the good outer edge into a staircase. Components touching existing
+ * transparency or the canvas margin are now rejected here. Accepted inner holes
+ * receive a continuous alpha transition and RGB decontamination instead of a
+ * hard two-layer cut.
  */
 export const removeResidualChromaMatte = async (
   blob: Blob,
@@ -114,6 +127,7 @@ export const removeResidualChromaMatte = async (
   context.drawImage(image, 0, 0);
   const imageData = context.getImageData(0, 0, image.width, image.height);
   const data = imageData.data;
+  const original = new Uint8ClampedArray(data);
   const width = image.width;
   const height = image.height;
   const pixelCount = width * height;
@@ -121,28 +135,32 @@ export const removeResidualChromaMatte = async (
   const queue = new Int32Array(pixelCount);
   const removal = new Uint8Array(pixelCount);
   const seedTolerance = 44;
-  const growTolerance = 88;
+  const growTolerance = 92;
+  const fringeTolerance = 126;
   let totalRemoval = 0;
 
   const distanceAt = (position: number) => {
     const index = position * 4;
-    return colorDistance(data[index], data[index + 1], data[index + 2], matte);
+    return colorDistance(original[index], original[index + 1], original[index + 2], matte);
   };
+
+  const originalAlphaAt = (position: number) => original[position * 4 + 3];
 
   for (let seed = 0; seed < pixelCount; seed++) {
     const seedIndex = seed * 4;
-    if (visited[seed] || data[seedIndex + 3] < 80 || distanceAt(seed) > seedTolerance) continue;
+    if (visited[seed] || original[seedIndex + 3] < 80 || distanceAt(seed) > seedTolerance) continue;
     let start = 0;
     let end = 0;
     let corePixels = 0;
     let distanceSum = 0;
+    let touchesExteriorTransparency = false;
     visited[seed] = 1;
     queue[end++] = seed;
 
     const enqueue = (position: number) => {
       if (position < 0 || position >= pixelCount || visited[position]) return;
       const index = position * 4;
-      if (data[index + 3] < 45 || distanceAt(position) > growTolerance) return;
+      if (original[index + 3] < 45 || distanceAt(position) > growTolerance) return;
       visited[position] = 1;
       queue[end++] = position;
     };
@@ -154,6 +172,18 @@ export const removeResidualChromaMatte = async (
       const distance = distanceAt(position);
       distanceSum += distance;
       if (distance <= seedTolerance) corePixels++;
+
+      if (x <= 1 || y <= 1 || x >= width - 2 || y >= height - 2) {
+        touchesExteriorTransparency = true;
+      } else if (
+        originalAlphaAt(position - 1) <= 8
+        || originalAlphaAt(position + 1) <= 8
+        || originalAlphaAt(position - width) <= 8
+        || originalAlphaAt(position + width) <= 8
+      ) {
+        touchesExteriorTransparency = true;
+      }
+
       if (x > 0) enqueue(position - 1);
       if (x + 1 < width) enqueue(position + 1);
       if (y > 0) enqueue(position - width);
@@ -163,44 +193,73 @@ export const removeResidualChromaMatte = async (
     const area = end;
     const coreRatio = corePixels / Math.max(1, area);
     const averageDistance = distanceSum / Math.max(1, area);
-    const eligible = area >= 8
+    const eligible = !touchesExteriorTransparency
+      && area >= 8
       && area <= pixelCount * 0.35
       && coreRatio >= 0.58
-      && averageDistance <= 64;
+      && averageDistance <= 66;
     if (!eligible) continue;
     totalRemoval += area;
     for (let index = 0; index < end; index++) removal[queue[index]] = 1;
   }
 
   if (!totalRemoval || totalRemoval > pixelCount * 0.30) return blob;
-  for (let position = 0; position < pixelCount; position++) {
-    if (removal[position]) data[position * 4 + 3] = 0;
-  }
 
-  const hasTransparentNeighbour = (position: number) => {
-    const x = position % width;
-    const y = Math.floor(position / width);
-    return x === 0
-      || y === 0
-      || x === width - 1
-      || y === height - 1
-      || data[(position - 1) * 4 + 3] === 0
-      || data[(position + 1) * 4 + 3] === 0
-      || data[(position - width) * 4 + 3] === 0
-      || data[(position + width) * 4 + 3] === 0;
+  const decontaminate = (position: number, coverage: number) => {
+    const index = position * 4;
+    const originalAlpha = original[index + 3];
+    if (coverage <= 0.025) {
+      data[index] = 0;
+      data[index + 1] = 0;
+      data[index + 2] = 0;
+      data[index + 3] = 0;
+      return;
+    }
+
+    const safeCoverage = Math.max(0.06, Math.min(1, coverage));
+    data[index] = clampByte((original[index] - matte.r * (1 - safeCoverage)) / safeCoverage);
+    data[index + 1] = clampByte((original[index + 1] - matte.g * (1 - safeCoverage)) / safeCoverage);
+    data[index + 2] = clampByte((original[index + 2] - matte.b * (1 - safeCoverage)) / safeCoverage);
+    data[index + 3] = Math.min(originalAlpha, Math.max(1, clampByte(originalAlpha * safeCoverage)));
   };
 
-  for (let pass = 0; pass < 2; pass++) {
-    const fringe = new Uint8Array(pixelCount);
-    for (let position = 0; position < pixelCount; position++) {
-      const index = position * 4;
-      if (data[index + 3] === 0 || !hasTransparentNeighbour(position)) continue;
-      if (distanceAt(position) <= 112) fringe[position] = 1;
-    }
-    for (let position = 0; position < pixelCount; position++) {
-      if (fringe[position]) data[position * 4 + 3] = 0;
-    }
+  // Key-color cores become transparent. Their model-created mixed edge remains a
+  // subpixel transition instead of being flattened into a binary mask.
+  for (let position = 0; position < pixelCount; position++) {
+    if (!removal[position]) continue;
+    const coverage = smoothStep(seedTolerance - 8, fringeTolerance, distanceAt(position));
+    decontaminate(position, coverage);
   }
+
+  // Add at most a two-pixel soft ring around accepted enclosed components only.
+  // Never scan the exterior edge globally again.
+  let frontier = new Uint8Array(removal);
+  for (let pass = 0; pass < 2; pass++) {
+    const nextFrontier = new Uint8Array(pixelCount);
+    for (let position = 0; position < pixelCount; position++) {
+      if (removal[position] || originalAlphaAt(position) === 0) continue;
+      const x = position % width;
+      const y = Math.floor(position / width);
+      const adjacent = (x > 0 && frontier[position - 1])
+        || (x + 1 < width && frontier[position + 1])
+        || (y > 0 && frontier[position - width])
+        || (y + 1 < height && frontier[position + width]);
+      if (!adjacent) continue;
+      const distance = distanceAt(position);
+      if (distance > fringeTolerance) continue;
+      const coverage = smoothStep(seedTolerance - 8, fringeTolerance, distance);
+      decontaminate(position, coverage);
+      nextFrontier[position] = 1;
+    }
+    frontier = nextFrontier;
+  }
+
+  // Fail closed if the soft operation changed implausibly much effective alpha.
+  let effectiveRemovedPixels = 0;
+  for (let position = 0; position < pixelCount; position++) {
+    effectiveRemovedPixels += Math.max(0, originalAlphaAt(position) - data[position * 4 + 3]) / 255;
+  }
+  if (effectiveRemovedPixels > pixelCount * 0.30) return blob;
 
   context.putImageData(imageData, 0, 0);
   return canvasToBlob(canvas);

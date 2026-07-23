@@ -6,6 +6,12 @@ import { ensureProvidersConfigured, generateStickerPrompts, generateAutopilotSti
 import { processStickerImage } from '../services/stickerProcessing';
 import { imageSourceToBlob } from '../services/stickerSource';
 import { findVisualDuplicateGroups, inspectStickerLocally } from '../services/qualityControl';
+import {
+  canAutomaticallyRegenerate,
+  hasBlockingQaFailure,
+  MAX_AUTOMATIC_REPLACEMENTS_PER_STICKER,
+  requiresNewArtwork
+} from '../services/stickerReplacementPolicy';
 import { clearRunCheckpoint, loadRunCheckpoint, saveMarketingAssetCheckpoint, saveRunCheckpointMeta, saveStickerCheckpoint, saveStickerCheckpoints, type RunCheckpointMeta } from '../services/runPersistence';
 import { Play, Pause, RefreshCw, CheckCircle, Download, FileText, Image as ImageIcon, Box, Archive, Zap, Gauge, Copy, FastForward, RotateCcw, Beaker, DollarSign, AlertCircle, Scissors, Eye, Globe, Search, ExternalLink, X, ArrowRight, BarChart3, Plus, Palette, ShoppingBag, Loader2, Wand2, Laptop, Tablet, Grid, BookOpen, Layers, ShieldCheck, Save, Video } from 'lucide-react';
 import JSZip from 'jszip';
@@ -38,12 +44,6 @@ const PRODUCTION_STICKER_COUNT = 100;
 const TEST_STICKER_COUNT = 10;
 const PRODUCTION_REPLACEMENT_BUDGET = 25;
 const TEST_REPLACEMENT_BUDGET = 5;
-const requiresNewArtwork = (sticker: Sticker) =>
-  (sticker.qaIssues || []).some(issue => /near-exact duplicate/i.test(issue));
-const hasPreservedTechnicalFailure = (sticker: Sticker) =>
-  Boolean(sticker.sourceBlob)
-  && sticker.qaStatus === 'rejected'
-  && !requiresNewArtwork(sticker);
 
 const emptyUsageStage = (): AiUsageStageMetrics => ({
   openaiTextRequests: 0,
@@ -1121,19 +1121,21 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
 
     while (quality.report.approved < targetCount) {
       const remainingBudget = targetCount + replacementBudget - metricsRef.current.seedreamRequests;
-      const rejectedSlots = quality.stickers
-        .filter(sticker =>
-          sticker.qaStatus !== 'approved'
-          && (!sticker.sourceBlob || requiresNewArtwork(sticker))
-        )
+      const replacementCandidates = quality.stickers
+        .filter(canAutomaticallyRegenerate)
         .slice(0, targetCount - quality.report.approved);
-      if (!rejectedSlots.length || remainingBudget < rejectedSlots.length) {
-        const blockedTechnical = quality.stickers.filter(hasPreservedTechnicalFailure);
+      const rejectedSlots = replacementCandidates.slice(0, Math.max(0, remainingBudget));
+      if (!rejectedSlots.length) {
+        const blockedTechnical = quality.stickers.filter(hasBlockingQaFailure);
+        const exhaustedSlots = blockedTechnical.filter(sticker =>
+          requiresNewArtwork(sticker)
+          && (sticker.replacementCount || 0) >= MAX_AUTOMATIC_REPLACEMENTS_PER_STICKER
+        );
         const completed = quality.stickers.filter(sticker =>
           sticker.status === 'completed'
           && sticker.blob
           && sticker.url
-          && !hasPreservedTechnicalFailure(sticker)
+          && !hasBlockingQaFailure(sticker)
         ).slice(0, targetCount);
         const completedIds = new Set(completed.map(sticker => sticker.id));
         const manuallyAccepted = quality.stickers.map(sticker => completedIds.has(sticker.id)
@@ -1156,13 +1158,19 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         setState(prev => ({ ...prev, stickers: manuallyAccepted, qualityReport: report }));
         if (runIdRef.current) await saveStickerCheckpoints(runIdRef.current, manuallyAccepted);
         if (blockedTechnical.length) {
-          addLog(`Held back ${blockedTechnical.length} technically rejected PNG${blockedTechnical.length === 1 ? '' : 's'}; their paid sources remain available for free local reprocessing.`);
+          addLog(`Held back ${blockedTechnical.length} QA-rejected sticker slot${blockedTechnical.length === 1 ? '' : 's'}; failed images will not enter the ZIP.`);
         }
-        addLog(`Fail-open inventory: replacement loop ended at ${completed.length}/${targetCount} generated PNGs. Continuing automatically to packaging.`);
+        if (exhaustedSlots.length) {
+          addLog(`${exhaustedSlots.length} sticker slot${exhaustedSlots.length === 1 ? '' : 's'} reached the ${MAX_AUTOMATIC_REPLACEMENTS_PER_STICKER}-replacement safety limit.`);
+        }
+        if (remainingBudget <= 0) {
+          addLog(`Automatic replacement budget exhausted (${replacementBudget} extra Seedream images maximum).`);
+        }
+        addLog(`Replacement loop ended with ${completed.length}/${targetCount} approved PNGs. Continuing automatically to packaging.`);
         return { stickers: completed.map(sticker => ({ ...sticker, qaStatus: 'approved' as const })), report };
       }
 
-      addLog(`Creating ${rejectedSlots.length} distinct replacement concept${rejectedSlots.length === 1 ? '' : 's'}...`);
+      addLog(`Automatically regenerating ${rejectedSlots.length} QA-failed sticker${rejectedSlots.length === 1 ? '' : 's'} within the replacement budget...`);
       const replacementPrompts = await generateReplacementStickerPrompts(
         getNicheGenerationBrief(niche),
         style,

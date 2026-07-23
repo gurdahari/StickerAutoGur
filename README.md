@@ -10,8 +10,8 @@ StickerOS is an autonomous digital-sticker production app for Etsy. This version
 
 ```text
 React/Vite browser
-  |-- Local U2NETP foreground segmentation
-  |-- Deterministic Canvas cutline/export
+  |-- Proven 1K edge-connected matte cleanup
+  |-- Whole-RGBA high-quality square resampling
   `-- IndexedDB raw-source checkpoints
       |
       | /api/*
@@ -19,7 +19,7 @@ React/Vite browser
 Node API server
   |-- OpenAI Responses API (brain + web search)
   |-- OpenAI GPT Image 2 (single 2K Main Cover)
-  `-- BytePlus ModelArk (illustration generation only)
+  `-- BytePlus ModelArk (Seedream images)
 ```
 
 ## Run locally
@@ -59,11 +59,11 @@ The production server serves both the compiled React app and `/api/*` on `PORT` 
 ## Asset integrity
 
 - Production Mode targets exactly 100 unique PNGs packaged as five valid ZIPs of 20 PNGs. Test Mode produces a smaller 10-sticker validation run. If a provider fails, the run enters fail-open recovery: every completed PNG is packaged with its real count, a recovery notice is added, and completed work is never discarded.
-- Fast seller QC is the default: every sticker receives free local PNG/alpha/crop/dimension checks and conservative near-exact duplicate detection. Only a near-exact duplicate can trigger an automatic paid replacement. Technical export failures hold back the PNG and preserve its paid source for free local reprocessing. OpenAI visual judgment is not part of the automatic rejection gate, so usable art is not regenerated because of subjective scoring.
-- Active runs are checkpointed in browser IndexedDB, including each immutable paid Seedream source before local processing, every completed sticker and every completed marketing asset. A local masking failure therefore retains the paid source for free reprocessing and never triggers a second Seedream request. Refreshes, browser crashes and restarts reuse finished work instead of charging Seedream again. Older checkpoints that already reached copywriting but predate mockup persistence skip automatic mockup regeneration; individual missing assets can still be regenerated manually. A saved run must be resumed or explicitly discarded before starting another run.
+- Fast seller QC is the default: every sticker receives free local PNG/alpha/crop/dimension checks and conservative near-exact duplicate detection. Only a near-exact duplicate can trigger an automatic paid replacement. Technical export failures preserve the paid source for free local reprocessing.
+- Active runs are checkpointed in browser IndexedDB, including each immutable paid Seedream source before local processing, every completed sticker and every completed marketing asset. A local processing failure retains the paid source and never triggers a second Seedream request.
 - A current-market niche preflight scores demand, catalog variety, saturation and potential brand/franchise risk. High-risk niches are blocked unless the seller explicitly confirms a manual rights review; this is decision support, not legal clearance.
 - Trend Intelligence searches two separate lanes: five broad buyer markets with room for a varied 100-design catalog and five emerging micro-trends. Each micro-trend is mapped to a broader production niche before import, while the UI shows demand evidence, competition, target buyer, selling logic and variety scores. These are research signals, not guaranteed sales or revenue.
-- Seedream generates only one centered illustration on a neutral canvas; no generated color is treated as a mask. The browser runs a bundled U2NETP foreground-segmentation model, selects the centered subject, constructs the white die-cut border from that mask, and normalizes the final transparent PNG locally. The former chroma-key, flood-fill, residual-matte and cutline-guessing pipelines were removed. The repair action reruns this same local pipeline from the preserved paid source without another image-model request.
+- Sticker PNGs use the last known-good 1K path from before commit `e1e1985`: Seedream supplies one solid sticker with its white die-cut border on a flat black matte; the browser removes only background connected to the canvas edge, preserves continuous soft alpha, and rescales the complete RGBA crop onto a 1024×1024 square with high-quality smoothing. There is no chroma key, segmentation model, contour reconstruction, enclosed-hole guessing or alpha cutoff.
 - Downloadable sticker files never contain a baked-in drop shadow. Shadows are added only while composing marketing images.
 - Before cover generation, one cached OpenAI visual creative-director call studies six real stickers and proposes a meaningful 2–4 word headline plus a niche-specific palette, emotional concept and composition. OpenAI GPT Image 2 then receives 10 selected real PNG references and renders one high-quality 2048×1152 visual hero with zero typography. The browser composes the exact headline, subtitle, quantity badge and download line afterward, eliminating misspellings and clipped text. If GPT Image 2 is unavailable, a free deterministic exact-pixel cover is used; the app never spends a Seedream cover call.
 - Lifestyle mockups send up to five completed sticker PNGs to Seedream as reference images for natural placement on tablets, laptops, and journals. They render at 1K and are finalized locally at 2K; four lifestyle requests can run in parallel. If reference generation fails, the app falls back to generic scenery with clipped exact-pixel placement.
@@ -80,8 +80,8 @@ The production server serves both the compiled React app and `/api/*` on `PORT` 
 
 1. Choose **TEST · 10** to validate a new provider/model/style inexpensively, or **PRODUCTION · 100** for a sellable bundle.
 2. The market/rights preflight runs before any paid Seedream request.
-3. Seedream generates with adaptive concurrency. Each paid source is saved immediately, then local segmentation and cutline construction run without another provider request. Rate-limit pressure automatically lowers the worker count and successful requests gradually restore it.
-4. Free local inspection approves normal sellable variation and rejects only severe technical defects or near-exact duplicates. A local processing failure keeps its source for repair and is excluded from paid automatic replacement.
+3. Seedream generates with adaptive concurrency. Each paid source is saved immediately, then the proven local 1K cleanup runs without another provider request.
+4. Free local inspection approves normal sellable variation. A local processing failure keeps its source for repair and is excluded from paid automatic replacement; only a near-exact duplicate can request new artwork automatically.
 5. QA-approved files are preferred. If replacement or provider budgets are exhausted, all successfully generated PNGs are kept, clearly reported and automatically sent to recovery packaging instead of stopping the run.
 6. **PAUSE SAFELY** finishes active requests and saves the run. **RESUME SAVED RUN** continues only unfinished work.
 7. If the replacement budget ends but all target PNGs exist, **FINISH WITH 100 GENERATED** explicitly accepts the remaining rejected images for manual seller review and continues directly to ZIPs, mockups and listing copy without another replacement loop.

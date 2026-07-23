@@ -1,109 +1,224 @@
-import { normalizeStickerExport } from './stickerExportNormalization';
-import {
-  inferStickerForegroundMask,
-  type StickerForegroundMask
-} from './stickerForegroundMask';
-
-const OPEN_GEOMETRY = /\b(frame|window|tube|tubing|pipe|hose|ring|hoop|loop|coil|chain|link|scissors|glasses|eyeglasses|stethoscope|wheel|tire|bracelet|necklace|keyring|carabiner|handle|mug|cup|teapot|bottle|flask|vial|beaker|cauldron|kettle|apparatus|alembic|retort|alchemy|laboratory|basket|bag|bucket|padlock|lock|keyhole|door|doorway|arch|archway|tunnel|portal|tent|teepee|tipi|canopy|hood|helmet|mask|visor|cave|wreath|donut|doughnut|opening|cutout|negative space)\b/i;
-
-export const expectsTransparentOpening = (prompt = '') => OPEN_GEOMETRY.test(prompt);
+const loadImage = (source: string | Blob): Promise<HTMLImageElement> => new Promise((resolve, reject) => {
+  const image = new Image();
+  const objectUrl = source instanceof Blob ? URL.createObjectURL(source) : null;
+  image.crossOrigin = 'anonymous';
+  image.onload = () => {
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+    resolve(image);
+  };
+  image.onerror = () => {
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+    reject(new Error('Failed to load image for sticker processing.'));
+  };
+  image.src = typeof source === 'string' ? source : objectUrl!;
+});
 
 const canvasToBlob = (canvas: HTMLCanvasElement): Promise<Blob> => new Promise((resolve, reject) => {
   canvas.toBlob(blob => {
     if (blob) resolve(blob);
-    else reject(new Error('Could not encode the locally masked sticker PNG.'));
+    else reject(new Error('Failed to encode processed sticker PNG.'));
   }, 'image/png');
 });
 
-const loadImage = (source: string | Blob): Promise<{ image: HTMLImageElement; revoke?: () => void }> =>
-  new Promise((resolve, reject) => {
-    const url = typeof source === 'string' ? source : URL.createObjectURL(source);
-    const image = new Image();
-    image.onload = () => resolve({
-      image,
-      ...(typeof source === 'string' ? {} : { revoke: () => URL.revokeObjectURL(url) })
-    });
-    image.onerror = () => {
-      if (typeof source !== 'string') URL.revokeObjectURL(url);
-      reject(new Error('Could not decode the preserved source image.'));
-    };
-    image.src = url;
-  });
-
-const alphaCanvas = (
-  alpha: Uint8ClampedArray,
-  size: number
-) => {
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const context = canvas.getContext('2d');
-  if (!context) throw new Error('Canvas is unavailable for local mask composition.');
-  const imageData = context.createImageData(size, size);
-  for (let position = 0; position < size * size; position++) {
-    const index = position * 4;
-    imageData.data[index] = 255;
-    imageData.data[index + 1] = 255;
-    imageData.data[index + 2] = 255;
-    imageData.data[index + 3] = alpha[position];
-  }
-  context.putImageData(imageData, 0, 0);
-  return canvas;
+const median = (values: number[]) => {
+  values.sort((a, b) => a - b);
+  return values[Math.floor(values.length / 2)] || 0;
 };
 
-const composeSticker = async (
-  image: HTMLImageElement,
-  mask: StickerForegroundMask
-) => {
-  const width = image.naturalWidth || image.width;
-  const height = image.naturalHeight || image.height;
-  if (!width || !height) throw new Error('The preserved source image has invalid dimensions.');
+const estimateBackground = (data: Uint8ClampedArray, width: number, height: number) => {
+  const reds: number[] = [];
+  const greens: number[] = [];
+  const blues: number[] = [];
+  const sampleSize = Math.max(3, Math.floor(Math.min(width, height) * 0.018));
+  const corners = [
+    [0, 0],
+    [width - sampleSize, 0],
+    [0, height - sampleSize],
+    [width - sampleSize, height - sampleSize]
+  ];
 
-  const subjectMask = alphaCanvas(mask.subjectAlpha, mask.size);
-  const borderMask = alphaCanvas(mask.borderAlpha, mask.size);
-  const artworkCanvas = document.createElement('canvas');
-  artworkCanvas.width = width;
-  artworkCanvas.height = height;
-  const artworkContext = artworkCanvas.getContext('2d');
-  if (!artworkContext) throw new Error('Canvas is unavailable for local foreground composition.');
+  for (const [startX, startY] of corners) {
+    for (let y = startY; y < startY + sampleSize; y += 2) {
+      for (let x = startX; x < startX + sampleSize; x += 2) {
+        const index = (y * width + x) * 4;
+        if (data[index + 3] === 0) continue;
+        reds.push(data[index]);
+        greens.push(data[index + 1]);
+        blues.push(data[index + 2]);
+      }
+    }
+  }
 
-  artworkContext.drawImage(image, 0, 0, width, height);
-  artworkContext.globalCompositeOperation = 'destination-in';
-  artworkContext.imageSmoothingEnabled = true;
-  artworkContext.imageSmoothingQuality = 'high';
-  artworkContext.drawImage(subjectMask, 0, 0, width, height);
-  artworkContext.globalCompositeOperation = 'source-over';
-
-  const outputCanvas = document.createElement('canvas');
-  outputCanvas.width = width;
-  outputCanvas.height = height;
-  const outputContext = outputCanvas.getContext('2d');
-  if (!outputContext) throw new Error('Canvas is unavailable for local sticker composition.');
-  outputContext.imageSmoothingEnabled = true;
-  outputContext.imageSmoothingQuality = 'high';
-  outputContext.drawImage(borderMask, 0, 0, width, height);
-  outputContext.drawImage(artworkCanvas, 0, 0);
-  return canvasToBlob(outputCanvas);
+  return { r: median(reds), g: median(greens), b: median(blues) };
 };
 
 /**
- * One paid generation, one immutable source, one deterministic local export.
- *
- * Seedream is responsible only for illustration. A local segmentation model
- * owns transparency, and Canvas owns the white die-cut border. No generated
- * color is treated as a technical mask contract.
+ * Turns Seedream's flat matte background into a clean transparent PNG.
+ * Only pixels connected to the canvas edge are treated as background, so dark
+ * details inside the sticker remain protected by the white die-cut border.
  */
+export const expectsTransparentOpening = (_prompt = '') => false;
+
 export const processStickerImage = async (
   source: string | Blob,
   _itemPrompt = '',
   _forceOpeningRepair = false
 ): Promise<Blob> => {
-  const loaded = await loadImage(source);
-  try {
-    const mask = await inferStickerForegroundMask(loaded.image);
-    const composed = await composeSticker(loaded.image, mask);
-    return normalizeStickerExport(composed, 1024);
-  } finally {
-    loaded.revoke?.();
+  const image = await loadImage(source);
+  const workingCanvas = document.createElement('canvas');
+  workingCanvas.width = image.width;
+  workingCanvas.height = image.height;
+  const context = workingCanvas.getContext('2d', { willReadFrequently: true });
+  if (!context) throw new Error('Canvas is unavailable for sticker processing.');
+
+  context.drawImage(image, 0, 0);
+  const imageData = context.getImageData(0, 0, image.width, image.height);
+  const data = imageData.data;
+  const width = image.width;
+  const height = image.height;
+  const pixelCount = width * height;
+  const background = estimateBackground(data, width, height);
+  const backgroundLuma = 0.2126 * background.r + 0.7152 * background.g + 0.0722 * background.b;
+  const floodTolerance = backgroundLuma < 70 ? 205 : 105;
+  const haloTolerance = backgroundLuma < 70 ? 305 : 145;
+
+  const distanceFromBackground = (pixelIndex: number) => {
+    const red = data[pixelIndex] - background.r;
+    const green = data[pixelIndex + 1] - background.g;
+    const blue = data[pixelIndex + 2] - background.b;
+    return Math.sqrt(red * red + green * green + blue * blue);
+  };
+
+  const visited = new Uint8Array(pixelCount);
+  const queue = new Int32Array(pixelCount);
+  let queueStart = 0;
+  let queueEnd = 0;
+
+  const tryQueue = (x: number, y: number) => {
+    const position = y * width + x;
+    if (visited[position]) return;
+    const pixelIndex = position * 4;
+    if (data[pixelIndex + 3] === 0 || distanceFromBackground(pixelIndex) <= floodTolerance) {
+      visited[position] = 1;
+      queue[queueEnd++] = position;
+    }
+  };
+
+  for (let x = 0; x < width; x++) {
+    tryQueue(x, 0);
+    tryQueue(x, height - 1);
   }
+  for (let y = 0; y < height; y++) {
+    tryQueue(0, y);
+    tryQueue(width - 1, y);
+  }
+
+  while (queueStart < queueEnd) {
+    const position = queue[queueStart++];
+    const x = position % width;
+    const y = Math.floor(position / width);
+    data[position * 4 + 3] = 0;
+
+    if (x > 0) tryQueue(x - 1, y);
+    if (x + 1 < width) tryQueue(x + 1, y);
+    if (y > 0) tryQueue(x, y - 1);
+    if (y + 1 < height) tryQueue(x, y + 1);
+  }
+
+  const hasTransparentNeighbor = (x: number, y: number) => {
+    if (x === 0 || y === 0 || x === width - 1 || y === height - 1) return true;
+    return data[((y * width + x - 1) * 4) + 3] === 0
+      || data[((y * width + x + 1) * 4) + 3] === 0
+      || data[(((y - 1) * width + x) * 4) + 3] === 0
+      || data[(((y + 1) * width + x) * 4) + 3] === 0;
+  };
+
+  // Peel away two exterior halo layers. This removes matte contamination and
+  // model-created gray/dotted edge noise without touching protected interior art.
+  for (let pass = 0; pass < 2; pass++) {
+    const remove = new Uint8Array(pixelCount);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const position = y * width + x;
+        const pixelIndex = position * 4;
+        if (data[pixelIndex + 3] === 0 || !hasTransparentNeighbor(x, y)) continue;
+        if (distanceFromBackground(pixelIndex) <= haloTolerance) remove[position] = 1;
+      }
+    }
+    for (let position = 0; position < pixelCount; position++) {
+      if (remove[position]) data[position * 4 + 3] = 0;
+    }
+  }
+
+  // Reconstruct a short anti-aliased white cutline instead of keeping a dirty
+  // gray fringe that was blended against Seedream's black matte.
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const position = y * width + x;
+      const pixelIndex = position * 4;
+      if (data[pixelIndex + 3] === 0 || !hasTransparentNeighbor(x, y)) continue;
+
+      const channelSpread = Math.max(data[pixelIndex], data[pixelIndex + 1], data[pixelIndex + 2])
+        - Math.min(data[pixelIndex], data[pixelIndex + 1], data[pixelIndex + 2]);
+      const distance = distanceFromBackground(pixelIndex);
+      if (channelSpread <= 32 && distance < 405) {
+        const alpha = Math.max(70, Math.min(255, Math.round(((distance - haloTolerance) / (405 - haloTolerance)) * 255)));
+        data[pixelIndex] = 255;
+        data[pixelIndex + 1] = 255;
+        data[pixelIndex + 2] = 255;
+        data[pixelIndex + 3] = Math.min(data[pixelIndex + 3], alpha);
+      }
+    }
+  }
+
+  context.putImageData(imageData, 0, 0);
+
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (data[(y * width + x) * 4 + 3] <= 8) continue;
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+    }
+  }
+
+  if (maxX < minX || maxY < minY) throw new Error('Sticker cleanup removed the entire image.');
+
+  // Normalize every sticker to a consistent square canvas and let the artwork
+  // occupy 92% of it. This replaces the old shadow padding that made assets small.
+  const outputSize = Math.max(width, height);
+  const outputCanvas = document.createElement('canvas');
+  outputCanvas.width = outputSize;
+  outputCanvas.height = outputSize;
+  const outputContext = outputCanvas.getContext('2d');
+  if (!outputContext) throw new Error('Canvas is unavailable for sticker normalization.');
+
+  const cropWidth = maxX - minX + 1;
+  const cropHeight = maxY - minY + 1;
+  const availableSize = outputSize * 0.92;
+  const scale = Math.min(availableSize / cropWidth, availableSize / cropHeight);
+  const drawWidth = cropWidth * scale;
+  const drawHeight = cropHeight * scale;
+
+  outputContext.clearRect(0, 0, outputSize, outputSize);
+  outputContext.imageSmoothingEnabled = true;
+  outputContext.imageSmoothingQuality = 'high';
+  outputContext.drawImage(
+    workingCanvas,
+    minX,
+    minY,
+    cropWidth,
+    cropHeight,
+    (outputSize - drawWidth) / 2,
+    (outputSize - drawHeight) / 2,
+    drawWidth,
+    drawHeight
+  );
+
+  return canvasToBlob(outputCanvas);
 };

@@ -1728,10 +1728,13 @@ export const generateAutopilotSticker = async (
   const isFrame = cleanType.toUpperCase().includes('FRAME');
   
   if (isFrame) {
+      // IF FRAME: Force center to be PURE WHITE. The Luma Keyer (set to > 65) will NOT delete white.
+      // BUT, we actually want the center to be REMOVED.
+      // TRICK: We tell AI to make the center a specific "Key Color" or just rely on Black background.
       visualDescription = `A TOP-DOWN view of a ${cleanSubject} frame overlay.`;
-      strictConstraints = `Keep the center opening completely empty and show the same neutral background through it.`;
+      strictConstraints = `CENTER MUST BE PURE BLACK (#000000). NO CONTENT INSIDE FRAME.`;
   } else {
-      visualDescription = `A SINGLE, ISOLATED illustration of ${cleanSubject}, prepared for later sticker production.`;
+      visualDescription = `A SINGLE, ISOLATED digital sticker design of ${cleanSubject}.`;
   }
 
   // Determine aesthetic vibe from analysis or default
@@ -1742,10 +1745,10 @@ export const generateAutopilotSticker = async (
     : 'NO TEXT: Do not render any words, letters, numbers, labels, logos, signatures, or watermarks anywhere in the sticker.';
 
   const fullPrompt = `
-  GENERATE ONE RAW ISOLATED ILLUSTRATION ASSET (NOT A PHOTO OF A STICKER).
+  GENERATE A RAW VECTOR STICKER ASSET (NOT A PHOTO OF A STICKER).
   
   SUBJECT: ${visualDescription}
-  BROAD THEME UNIVERSE: "${analysis?.themeUniverse || nicheContext}"
+  NICHE CONTEXT: "${nicheContext}"
   COMPOSITION: ${cleanComp || 'Centered, isolated, and fully visible'}
   TEXT REQUIREMENT: ${textInstruction}
   
@@ -1754,17 +1757,18 @@ export const generateAutopilotSticker = async (
   - KEY AESTHETICS: ${aestheticKeywords}
   
   TECHNICAL RULES (DO NOT IGNORE):
-  1. **ONE CONNECTED SUBJECT ONLY**: Generate one clear primary subject in the center. Named supporting details must touch or overlap the primary subject so the composition reads as one connected object. Do not generate floating accents, a sticker sheet, grid, pattern, or collection.
-  2. **BACKGROUND**: Use a plain, perfectly flat neutral light-gray canvas (#ECECEC). No texture, paper, noise, scenery, lighting, gradient, vignette, checkerboard, card, frame, or surface.
-  3. **NO STICKER BORDER**: Do not draw a white die-cut border, outline, halo, glow, shadow, backing, cut line, or sticker edge. The application constructs the final white border deterministically after generation.
+  1. **SINGLE OBJECT ONLY**: Generate ONE single sticker subject in the center. Do NOT generate a sticker sheet, a grid, a pattern, or a collection of small items.
+  2. **BACKGROUND**: SOLID BLACK HEX #000000. DO NOT USE DARK GRAY. DO NOT USE GRADIENTS. MUST BE FLAT BLACK.
+  3. **BORDER**: MANDATORY THICK WHITE DIE-CUT BORDER surrounding the object. This border protects the sticker content.
+  3A. **EDGE QUALITY**: The outside of the white border must be perfectly clean, continuous, and crisp. NO gray rim, NO dotted/dashed cut line, NO glow, NO texture, NO drop shadow, and NO second outline.
   4. **NO CROPPING**: The object must be floating in the center with padding on all sides.
   5. **NO CARDS**: Do NOT place the sticker on a paper card or square backing. It must be floating in void.
-  6. **NATURAL OPENINGS**: Preserve openings that physically belong to the subject, such as the center of a ring, frame, hose loop, chain link, wheel, handle or scissors. Show the exact same neutral background through every intended opening. Do not invent decorative holes or break a normally solid object.
-  7. **FULL ART PALETTE**: Black, white, dark outlines, highlights and every color requested by the concept are legitimate artwork colors. Do not reserve any artwork color for technical masking.
+  6. **NO INTERNAL HOLES**: The object MUST be completely solid. NO rings, NO chains, NO empty gaps inside. Fill any natural holes with solid white or a matching color.
+  7. **COLOR RULE**: Inside the sticker, NEVER use pure black (#000000). Use dark gray (#1A1A1A) for dark details so it does not blend with the background.
   
   ${strictConstraints}
   
-  NEGATIVE PROMPT (AVOID): ${negativeKeywords}, sticker sheet, sticker set, grid, pattern, multiple disconnected items, floating accents, collection, cropping, blurry, text watermark, complex background, square crop, photo of a sticker on a table, realistic background lighting, card backing, square paper, accidental cutouts, unintended holes, broken silhouette, shadow, drop shadow, glow, white border, die-cut outline, halo, gray fringe, dotted outline, dashed cut line, textured edge.
+  NEGATIVE PROMPT (AVOID): ${negativeKeywords}, sticker sheet, sticker set, grid, pattern, multiple items, collection, cropping, blurry, text watermark, gray background, complex background, square crop, photo of a sticker on a table, realistic lighting on background, dark card backing, square paper behind sticker, holes, loops, empty space inside, transparent gaps, rings, chains, shadow, drop shadow, glow, gray fringe, dotted outline, dashed cut line, textured edge.
   `;
 
   return generateSeedreamImage(fullPrompt, useTurbo ? '1K' : '2K');

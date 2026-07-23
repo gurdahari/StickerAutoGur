@@ -7,7 +7,10 @@ import { processStickerImage } from '../services/stickerProcessing';
 import { imageSourceToBlob } from '../services/stickerSource';
 import { findVisualDuplicateGroups, inspectStickerLocally } from '../services/qualityControl';
 import {
+  assertCompleteApprovedInventory,
   canAutomaticallyRegenerate,
+  countApprovedInventory,
+  getRemainingReplacementBudget,
   hasBlockingQaFailure,
   MAX_AUTOMATIC_REPLACEMENTS_PER_STICKER,
   requiresNewArtwork
@@ -893,14 +896,14 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       stickersRef.current = stickersRef.current.map(sticker => unavailableById.get(sticker.id) || sticker);
       setState(prev => ({ ...prev, stickers: [...stickersRef.current] }));
       if (runIdRef.current) await saveStickerCheckpoints(runIdRef.current, unavailable);
-      addLog(`Skipped ${items.length} missing Seedream image request${items.length === 1 ? '' : 's'} and continued to recovery packaging.`);
+      addLog(`Seedream is unavailable for ${items.length} sticker slot${items.length === 1 ? '' : 's'}; the run is checkpointed and packaging will remain blocked until the inventory is complete.`);
       return;
     }
     const initialConcurrency = turboMode
       ? seedreamWorkerLimitRef.current
       : Math.min(seedreamWorkerLimitRef.current, 8);
     const replacementBudget = mode === 'production' ? PRODUCTION_REPLACEMENT_BUDGET : TEST_REPLACEMENT_BUDGET;
-    const requestBudget = targetCount + replacementBudget;
+    const baseRequestBudget = targetCount + replacementBudget;
     let fatalProviderError = '';
     addLog(`Generating ${items.length} sticker${items.length === 1 ? '' : 's'} with up to ${initialConcurrency} adaptive Seedream workers...`);
 
@@ -915,8 +918,15 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
           lastError = fatalProviderError;
           break;
         }
-        if (metricsRef.current.seedreamRequests >= requestBudget) {
-          throw new Error(`Seedream request budget reached (${requestBudget}).`);
+        const baseStickerAttempts = metricsRef.current.seedreamRequests - metricsRef.current.replacementImages;
+        if (
+          (isReplacement && metricsRef.current.replacementImages >= replacementBudget)
+          || (!isReplacement && baseStickerAttempts >= baseRequestBudget)
+        ) {
+          lastError = isReplacement
+            ? `Automatic replacement budget reached (${replacementBudget}).`
+            : `Base sticker request budget reached (${baseRequestBudget}).`;
+          break;
         }
         attempts++;
         updateMetrics({
@@ -1120,7 +1130,10 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
     const replacementBudget = mode === 'production' ? PRODUCTION_REPLACEMENT_BUDGET : TEST_REPLACEMENT_BUDGET;
 
     while (quality.report.approved < targetCount) {
-      const remainingBudget = targetCount + replacementBudget - metricsRef.current.seedreamRequests;
+      const remainingBudget = getRemainingReplacementBudget(
+        replacementBudget,
+        metricsRef.current.replacementImages
+      );
       const replacementCandidates = quality.stickers
         .filter(canAutomaticallyRegenerate)
         .slice(0, targetCount - quality.report.approved);
@@ -1131,32 +1144,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
           requiresNewArtwork(sticker)
           && (sticker.replacementCount || 0) >= MAX_AUTOMATIC_REPLACEMENTS_PER_STICKER
         );
-        const completed = quality.stickers.filter(sticker =>
-          sticker.status === 'completed'
-          && sticker.blob
-          && sticker.url
-          && !hasBlockingQaFailure(sticker)
-        ).slice(0, targetCount);
-        const completedIds = new Set(completed.map(sticker => sticker.id));
-        const manuallyAccepted = quality.stickers.map(sticker => completedIds.has(sticker.id)
-          ? {
-              ...sticker,
-              qaStatus: 'approved' as const,
-              manuallyAccepted: sticker.qaStatus !== 'approved' || sticker.manuallyAccepted
-            }
-          : sticker
-        );
-        const report: QualityReport = {
-          checked: completed.length,
-          approved: completed.length,
-          rejected: Math.max(0, targetCount - completed.length),
-          duplicateGroups: quality.report.duplicateGroups,
-          generatedAt: new Date().toISOString(),
-          manualOverrideCount: completed.filter(sticker => sticker.qaStatus !== 'approved').length
-        };
-        stickersRef.current = manuallyAccepted;
-        setState(prev => ({ ...prev, stickers: manuallyAccepted, qualityReport: report }));
-        if (runIdRef.current) await saveStickerCheckpoints(runIdRef.current, manuallyAccepted);
+        const approved = countApprovedInventory(quality.stickers, targetCount);
         if (blockedTechnical.length) {
           addLog(`Held back ${blockedTechnical.length} QA-rejected sticker slot${blockedTechnical.length === 1 ? '' : 's'}; failed images will not enter the ZIP.`);
         }
@@ -1166,8 +1154,16 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         if (remainingBudget <= 0) {
           addLog(`Automatic replacement budget exhausted (${replacementBudget} extra Seedream images maximum).`);
         }
-        addLog(`Replacement loop ended with ${completed.length}/${targetCount} approved PNGs. Continuing automatically to packaging.`);
-        return { stickers: completed.map(sticker => ({ ...sticker, qaStatus: 'approved' as const })), report };
+        throw new Error(
+          `Replacement loop stopped with ${approved}/${targetCount} approved PNGs. `
+          + 'Packaging and mockups will not start with an incomplete inventory.'
+        );
+      }
+      if (!seedreamAvailableRef.current) {
+        throw new Error(
+          `Seedream is unavailable with ${quality.report.approved}/${targetCount} approved PNGs. `
+          + 'The run is saved, and packaging and mockups are blocked until replacement generation can resume.'
+        );
       }
 
       addLog(`Automatically regenerating ${rejectedSlots.length} QA-failed sticker${rejectedSlots.length === 1 ? '' : 's'} within the replacement budget...`);
@@ -1817,6 +1813,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
     skipMissingMarketing = false,
     recoveredListing?: string
   ) => {
+    assertCompleteApprovedInventory(stickersRef.current, targetCount);
     setAiUsageStage('packaging');
     setState(prev => ({ ...prev, status: 'zipping', progress: 75 }));
     addLog('Packaging recovered run after the final inventory decision...');
@@ -2290,6 +2287,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       const qualityResult = await ensureApprovedInventory(niche, style, analysis, activeMode, activeTarget, useTurbo);
       logUsageCheckpoint('quality_control');
       stickersRef.current = qualityResult.stickers;
+      assertCompleteApprovedInventory(stickersRef.current, activeTarget);
       skipToNextStageSignal.current = false; 
       setState(prev => ({ ...prev, status: 'zipping', progress: 75 }));
       setAiUsageStage('packaging');

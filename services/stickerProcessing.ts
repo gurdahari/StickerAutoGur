@@ -52,6 +52,60 @@ const estimateBackground = (data: Uint8ClampedArray, width: number, height: numb
   return { r: median(reds), g: median(greens), b: median(blues) };
 };
 
+const removeDetachedPixels = (data: Uint8ClampedArray, width: number, height: number) => {
+  const pixelCount = width * height;
+  const visited = new Uint8Array(pixelCount);
+  const queue = new Int32Array(pixelCount);
+  let largestSeed = -1;
+  let largestSize = 0;
+  const isVisible = (position: number) => data[position * 4 + 3] > 8;
+
+  const visitComponent = (seed: number) => {
+    let start = 0;
+    let end = 0;
+    visited[seed] = 1;
+    queue[end++] = seed;
+
+    while (start < end) {
+      const position = queue[start++];
+      const x = position % width;
+      const y = Math.floor(position / width);
+
+      for (let offsetY = -1; offsetY <= 1; offsetY++) {
+        for (let offsetX = -1; offsetX <= 1; offsetX++) {
+          if (offsetX === 0 && offsetY === 0) continue;
+          const nextX = x + offsetX;
+          const nextY = y + offsetY;
+          if (nextX < 0 || nextX >= width || nextY < 0 || nextY >= height) continue;
+          const next = nextY * width + nextX;
+          if (visited[next] || !isVisible(next)) continue;
+          visited[next] = 1;
+          queue[end++] = next;
+        }
+      }
+    }
+
+    return end;
+  };
+
+  for (let position = 0; position < pixelCount; position++) {
+    if (visited[position] || !isVisible(position)) continue;
+    const size = visitComponent(position);
+    if (size > largestSize) {
+      largestSeed = position;
+      largestSize = size;
+    }
+  }
+
+  if (largestSeed < 0) return;
+  visited.fill(0);
+  visitComponent(largestSeed);
+
+  for (let position = 0; position < pixelCount; position++) {
+    if (!visited[position]) data[position * 4 + 3] = 0;
+  }
+};
+
 /**
  * Turns Seedream's flat matte background into a clean transparent PNG.
  * Only pixels connected to the canvas edge are treated as background, so dark
@@ -170,6 +224,10 @@ export const processStickerImage = async (
       }
     }
   }
+
+  // The generation contract requires one connected sticker. Preserve its
+  // pixels exactly and discard only detached dots or matte debris.
+  removeDetachedPixels(data, width, height);
 
   context.putImageData(imageData, 0, 0);
 

@@ -17,6 +17,48 @@ interface AlphaTopologyMetrics {
   largestOpaqueComponentRatio: number;
 }
 
+const RESERVED_CHROMA_MATTES = [
+  { name: 'green', r: 0, g: 255, b: 59 },
+  { name: 'magenta', r: 255, g: 0, b: 212 },
+  { name: 'cyan', r: 0, g: 229, b: 255 },
+  { name: 'orange', r: 255, g: 90, b: 0 }
+] as const;
+const RESERVED_CHROMA_DISTANCE_SQUARED = 48 * 48;
+
+export const measureReservedChromaLeak = (
+  data: Uint8ClampedArray,
+  artworkPixels: number
+) => {
+  const counts = new Uint32Array(RESERVED_CHROMA_MATTES.length);
+  const pixelCount = Math.floor(data.length / 4);
+
+  for (let position = 0; position < pixelCount; position++) {
+    const index = position * 4;
+    if (data[index + 3] <= 20) continue;
+    for (let matteIndex = 0; matteIndex < RESERVED_CHROMA_MATTES.length; matteIndex++) {
+      const matte = RESERVED_CHROMA_MATTES[matteIndex];
+      const red = data[index] - matte.r;
+      const green = data[index + 1] - matte.g;
+      const blue = data[index + 2] - matte.b;
+      if (red * red + green * green + blue * blue <= RESERVED_CHROMA_DISTANCE_SQUARED) {
+        counts[matteIndex]++;
+      }
+    }
+  }
+
+  let dominantIndex = 0;
+  for (let index = 1; index < counts.length; index++) {
+    if (counts[index] > counts[dominantIndex]) dominantIndex = index;
+  }
+  const leakedPixels = counts[dominantIndex] || 0;
+  return {
+    matte: RESERVED_CHROMA_MATTES[dominantIndex].name,
+    leakedPixels,
+    canvasRatio: leakedPixels / Math.max(1, pixelCount),
+    artworkRatio: leakedPixels / Math.max(1, artworkPixels)
+  };
+};
+
 const loadBlobImage = (blob: Blob): Promise<HTMLImageElement> => new Promise((resolve, reject) => {
   const url = URL.createObjectURL(blob);
   const image = new Image();
@@ -309,6 +351,7 @@ export const inspectStickerLocally = async (sticker: Sticker): Promise<LocalStic
     touchesCanvasEdge
   };
   const topology = measureAlphaTopology(data, image.width, image.height, artwork);
+  const chromaLeak = measureReservedChromaLeak(data, artwork);
   const issues: string[] = [];
   if (Math.min(image.width, image.height) < 256) issues.push('Exported PNG is below the minimum safe pixel dimension.');
   if (sticker.blob.type && sticker.blob.type !== 'image/png') issues.push('Final sticker file is not a PNG.');
@@ -346,6 +389,14 @@ export const inspectStickerLocally = async (sticker: Sticker): Promise<LocalStic
     && topology.largestOpaqueComponentRatio < 0.72
   ) {
     issues.push('Artwork is fragmented into too many disconnected pieces.');
+  }
+  if (
+    chromaLeak.canvasRatio > 0.04
+    && chromaLeak.artworkRatio > 0.16
+    && topology.significantOpaqueComponents >= 2
+    && topology.largestOpaqueComponentRatio < 0.82
+  ) {
+    issues.push(`Reserved ${chromaLeak.matte} chroma-matte background remains in multiple large image regions.`);
   }
   if (touchesCanvasEdge) issues.push('Artwork touches the canvas edge and may be cropped.');
 

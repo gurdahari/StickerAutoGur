@@ -41,7 +41,7 @@ GEOMETRY-FIRST STICKER QUALITY STANDARD (${STICKER_QUALITY_GUIDELINE_VERSION}):
 - Fill the canvas confidently while preserving comfortable, consistent margins and room for the die-cut outline; center by visual weight, not only coordinates.
 - Use one thin, smooth, consistent white die-cut outline that follows the real silhouette, preserves intentional openings and never becomes a chunky halo.
 - Keep the subject fully visible and readable at small marketplace-thumbnail size. Simplify edge noise and control detail so it enriches rather than weakens the silhouette.
-- Keep the generated sticker as one solid protected shape; fill natural openings with white or a matching artwork color so background removal never has to infer interior holes.
+- Preserve physically meaningful openings and fill them with the exact reserved matte key used in all four canvas corners; never infer holes from black or other artwork colors.
 - Maintain clear depth, contrast, color separation, highlights and shadows inside the artwork while keeping the external presentation shadow-free and transparency-ready.
 - Match the collection's rendering style, outline thickness, margins, subject scale, texture density, edge sharpness and color treatment.
 - Across the pack, vary silhouette, orientation, aspect ratio, visual-mass distribution and viewing angle without changing the locked art style.

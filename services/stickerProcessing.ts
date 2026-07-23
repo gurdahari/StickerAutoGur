@@ -1,3 +1,9 @@
+import {
+  inspectStickerBackground,
+  reconstructReservedMatteWhitePixel,
+  removeEnclosedReservedMatte
+} from './reservedMatte';
+
 const loadImage = (source: string | Blob): Promise<HTMLImageElement> => new Promise((resolve, reject) => {
   const image = new Image();
   const objectUrl = source instanceof Blob ? URL.createObjectURL(source) : null;
@@ -19,38 +25,6 @@ const canvasToBlob = (canvas: HTMLCanvasElement): Promise<Blob> => new Promise((
     else reject(new Error('Failed to encode processed sticker PNG.'));
   }, 'image/png');
 });
-
-const median = (values: number[]) => {
-  values.sort((a, b) => a - b);
-  return values[Math.floor(values.length / 2)] || 0;
-};
-
-const estimateBackground = (data: Uint8ClampedArray, width: number, height: number) => {
-  const reds: number[] = [];
-  const greens: number[] = [];
-  const blues: number[] = [];
-  const sampleSize = Math.max(3, Math.floor(Math.min(width, height) * 0.018));
-  const corners = [
-    [0, 0],
-    [width - sampleSize, 0],
-    [0, height - sampleSize],
-    [width - sampleSize, height - sampleSize]
-  ];
-
-  for (const [startX, startY] of corners) {
-    for (let y = startY; y < startY + sampleSize; y += 2) {
-      for (let x = startX; x < startX + sampleSize; x += 2) {
-        const index = (y * width + x) * 4;
-        if (data[index + 3] === 0) continue;
-        reds.push(data[index]);
-        greens.push(data[index + 1]);
-        blues.push(data[index + 2]);
-      }
-    }
-  }
-
-  return { r: median(reds), g: median(greens), b: median(blues) };
-};
 
 const removeDetachedPixels = (data: Uint8ClampedArray, width: number, height: number) => {
   const pixelCount = width * height;
@@ -152,15 +126,17 @@ const softenFinalAlphaEdge = (context: CanvasRenderingContext2D, width: number, 
 
 /**
  * Turns Seedream's flat matte background into a clean transparent PNG.
- * Only pixels connected to the canvas edge are treated as background, so dark
- * details inside the sticker remain protected by the white die-cut border.
+ * Edge-connected pixels remain the default background path. Enclosed pixels
+ * are removed only when all four corners verify one exact reserved matte key,
+ * so black outlines, shadows and artwork stay protected.
  */
-export const expectsTransparentOpening = (_prompt = '') => false;
+export const expectsTransparentOpening = (prompt = '') =>
+  /\b(frame|window|tube|pipe|hose|ring|hoop|loop|chain|scissors|glasses|stethoscope|wheel|handle|arch|doorway|portal|opening|cutout|negative space)\b/i.test(prompt);
 
 export const processStickerImage = async (
   source: string | Blob,
   _itemPrompt = '',
-  _forceOpeningRepair = false
+  forceOpeningRepair = false
 ): Promise<Blob> => {
   const image = await loadImage(source);
   const workingCanvas = document.createElement('canvas');
@@ -175,10 +151,22 @@ export const processStickerImage = async (
   const width = image.width;
   const height = image.height;
   const pixelCount = width * height;
-  const background = estimateBackground(data, width, height);
+  const backgroundInspection = inspectStickerBackground(data, width, height);
+  const background = backgroundInspection.background;
+  if (!forceOpeningRepair && !backgroundInspection.hasStableReservedMatte) {
+    throw new Error('The generated source did not contain one verified reserved matte key in all four corners.');
+  }
   const backgroundLuma = 0.2126 * background.r + 0.7152 * background.g + 0.0722 * background.b;
-  const floodTolerance = backgroundLuma < 70 ? 205 : 105;
-  const haloTolerance = backgroundLuma < 70 ? 305 : 145;
+  const floodTolerance = backgroundInspection.hasStableReservedMatte
+    ? 88
+    : backgroundLuma < 70
+      ? 205
+      : 105;
+  const haloTolerance = backgroundInspection.hasStableReservedMatte
+    ? 112
+    : backgroundLuma < 70
+      ? 305
+      : 145;
 
   const distanceFromBackground = (pixelIndex: number) => {
     const red = data[pixelIndex] - background.r;
@@ -223,6 +211,10 @@ export const processStickerImage = async (
     if (y + 1 < height) tryQueue(x, y + 1);
   }
 
+  if (backgroundInspection.hasStableReservedMatte) {
+    removeEnclosedReservedMatte(data, width, height, distanceFromBackground);
+  }
+
   const hasTransparentNeighbor = (x: number, y: number) => {
     if (x === 0 || y === 0 || x === width - 1 || y === height - 1) return true;
     return data[((y * width + x - 1) * 4) + 3] === 0
@@ -231,8 +223,8 @@ export const processStickerImage = async (
       || data[(((y + 1) * width + x) * 4) + 3] === 0;
   };
 
-  // Peel away two exterior halo layers. This removes matte contamination and
-  // model-created gray/dotted edge noise without touching protected interior art.
+  // Peel two contamination layers around the exterior and any verified reserved
+  // matte openings. No generic black/dark-pixel cleanup runs here.
   for (let pass = 0; pass < 2; pass++) {
     const remove = new Uint8Array(pixelCount);
     for (let y = 0; y < height; y++) {
@@ -255,6 +247,13 @@ export const processStickerImage = async (
       const position = y * width + x;
       const pixelIndex = position * 4;
       if (data[pixelIndex + 3] === 0 || !hasTransparentNeighbor(x, y)) continue;
+
+      if (
+        backgroundInspection.hasStableReservedMatte
+        && reconstructReservedMatteWhitePixel(data, pixelIndex, background)
+      ) {
+        continue;
+      }
 
       const channelSpread = Math.max(data[pixelIndex], data[pixelIndex + 1], data[pixelIndex + 2])
         - Math.min(data[pixelIndex], data[pixelIndex + 1], data[pixelIndex + 2]);

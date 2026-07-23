@@ -11,8 +11,37 @@ interface SeedreamResponse {
   error?: { message?: string };
 }
 
+interface StickerMatteChoice {
+  hex: string;
+  label: string;
+  avoid: RegExp;
+}
+
 const DEFAULT_BASE_URL = 'https://ark.ap-southeast.bytepluses.com/api/v3';
 let lastSuccessfulRequestAt: string | null = null;
+
+const STICKER_MATTE_CHOICES: StickerMatteChoice[] = [
+  {
+    hex: '#00FF3B',
+    label: 'electric key green',
+    avoid: /\b(green|lime|emerald|mint|forest|leaf|leaves|foliage|grass|plant|nature|frog|cactus)\b/i
+  },
+  {
+    hex: '#FF00D4',
+    label: 'electric key magenta',
+    avoid: /\b(pink|magenta|fuchsia|purple|violet|rose|candy|princess|unicorn|pastel)\b/i
+  },
+  {
+    hex: '#00E5FF',
+    label: 'electric key cyan',
+    avoid: /\b(blue|cyan|aqua|turquoise|teal|ocean|water|ice|sky|snow)\b/i
+  },
+  {
+    hex: '#FF5A00',
+    label: 'electric key orange',
+    avoid: /\b(red|orange|coral|fire|sunset|autumn|warm|gold)\b/i
+  }
+];
 
 const getApiKey = () => (process.env.SEEDREAM_API_KEY || process.env.ARK_API_KEY)?.trim();
 export const getSeedreamModel = () => process.env.SEEDREAM_MODEL?.trim() || 'dola-seedream-5-0-pro-260628';
@@ -39,6 +68,62 @@ const sizeToPixels = (size: ImageSize = '2K') => ({
   '2K_LANDSCAPE': '2048x1536',
   '4K': '4096x4096'
 }[size]);
+
+const chooseStickerMatte = (prompt: string) => {
+  const scored = STICKER_MATTE_CHOICES.map((choice, index) => ({
+    choice,
+    score: choice.avoid.test(prompt) ? 100 + index : index
+  }));
+  scored.sort((left, right) => left.score - right.score);
+  return scored[0].choice;
+};
+
+/**
+ * Gives every raw sticker request one exact, reserved matte key. The browser
+ * removes enclosed pixels only after it verifies this same key in all four
+ * corners, so ordinary black artwork never becomes a background candidate.
+ */
+export const applyStickerReservedMatte = (prompt: string) => {
+  if (!/GENERATE A RAW (?:VECTOR|DIGITAL) STICKER ASSET/i.test(prompt)) return prompt;
+  const matte = chooseStickerMatte(prompt);
+  const matteUpper = matte.label.toUpperCase();
+  const rewritten = prompt
+    .replace(/\{\{STICKER_MATTE_HEX\}\}/g, matte.hex)
+    .replace(/\{\{STICKER_MATTE_LABEL\}\}/g, matteUpper)
+    .replace(
+      /SOLID BLACK HEX #000000\. DO NOT USE DARK GRAY\. DO NOT USE GRADIENTS\. MUST BE FLAT BLACK\./gi,
+      `SOLID ${matteUpper} HEX ${matte.hex}. Use this exact technical key color with no gradient or variation.`
+    )
+    .replace(
+      /CENTER MUST BE PURE BLACK \(#000000\)\. NO CONTENT INSIDE FRAME\./gi,
+      `THE CENTER OPENING MUST SHOW THE EXACT RESERVED BACKGROUND KEY ${matte.hex}. NO CONTENT INSIDE THE OPENING.`
+    )
+    .replace(
+      /\*\*NO INTERNAL HOLES\*\*: The object MUST be completely solid\. NO rings, NO chains, NO empty gaps inside\. Fill any natural holes with solid white or a matching color\./gi,
+      `**INTENTIONAL OPENINGS**: Preserve physically meaningful openings in frames, rings, handles, arches, windows, loops and small gaps between parts. Fill every intended opening with ${matte.hex}. Do not create accidental holes in solid surfaces, bodies or faces.`
+    )
+    .replace(
+      /\*\*COLOR RULE\*\*: Inside the sticker, NEVER use pure black \(#000000\)\. Use dark gray \(#1A1A1A\) for dark details so it does not blend with the background\./gi,
+      `**RESERVED COLOR RULE**: Never use ${matte.hex} inside the artwork. Black and dark gray are valid for legitimate outlines, details and shadows.`
+    )
+    .replace(
+      /, holes, loops, empty space inside, transparent gaps, rings, chains,/gi,
+      ', accidental holes, corrupted voids, missing solid surfaces,'
+    )
+    .replace(
+      /fill natural openings with white or a matching artwork color so background removal never has to infer interior holes/gi,
+      `preserve physically meaningful openings and fill them with the exact reserved matte key ${matte.hex}`
+    );
+
+  return `${rewritten}
+
+FINAL RESERVED-MATTE CONTRACT — THIS OVERRIDES ANY EARLIER BACKGROUND WORDING:
+- The entire canvas background must be one perfectly uniform ${matte.label} (${matte.hex}).
+- Every intentional empty opening or negative-space hole must show that exact same ${matte.hex}, including doorways, arches, handles, rings, windows and small spaces between structural parts.
+- ${matte.hex} is a technical removal key, not an artwork color. Never use it in the illustration, white die-cut border, outlines, highlights, shadows, decorations or texture.
+- Black and dark colors are valid artwork colors. Never use black as the canvas background or as a substitute fill for an intended transparent opening.
+- Keep all four corners identical ${matte.hex}; no gradient, lighting, texture, vignette, noise or color variation in the matte.`;
+};
 
 const sleep = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds));
 
@@ -104,7 +189,7 @@ export const generateSeedreamImage = async (request: ImageRequest): Promise<Imag
   const inputImages = (request.images || []).slice(0, 14);
   const body: Record<string, unknown> = {
     model: getSeedreamModel(),
-    prompt: request.prompt,
+    prompt: applyStickerReservedMatte(request.prompt),
     size: sizeToPixels(request.size),
     output_format: 'png',
     watermark: false

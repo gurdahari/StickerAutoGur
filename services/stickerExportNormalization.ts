@@ -21,6 +21,137 @@ const canvasToBlob = (canvas: HTMLCanvasElement): Promise<Blob> => new Promise((
 
 const DEFAULT_EXPORT_SIZE = 1024;
 const ARTWORK_OCCUPANCY = 0.92;
+const EXTERIOR_ALPHA_THRESHOLD = 8;
+const WHITE_EDGE_DEPTH = 4;
+
+/**
+ * Neutralizes the final antialias band without changing its geometry.
+ *
+ * Seedream's vivid matte can survive as a few low-alpha green or magenta
+ * samples at the white-cutline boundary. Earlier cleanup runs before the final
+ * resize, so drawImage can blend those samples back into the exported edge.
+ * At this point the sticker contract is stronger than color inference: every
+ * exterior-facing edge is the white die-cut border. We therefore whiten only
+ * the short band connected to real canvas-exterior transparency and preserve
+ * every alpha value exactly.
+ */
+export const neutralizeExteriorCutlineFringe = (
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  edgeDepth = WHITE_EDGE_DEPTH
+) => {
+  const pixelCount = width * height;
+  if (!pixelCount || data.length < pixelCount * 4) return 0;
+
+  const exterior = new Uint8Array(pixelCount);
+  const queue = new Int32Array(pixelCount);
+  let start = 0;
+  let end = 0;
+
+  const enqueueExterior = (position: number) => {
+    if (position < 0 || position >= pixelCount || exterior[position]) return;
+    if (data[position * 4 + 3] > EXTERIOR_ALPHA_THRESHOLD) return;
+    exterior[position] = 1;
+    queue[end++] = position;
+  };
+
+  for (let x = 0; x < width; x++) {
+    enqueueExterior(x);
+    enqueueExterior((height - 1) * width + x);
+  }
+  for (let y = 1; y < height - 1; y++) {
+    enqueueExterior(y * width);
+    enqueueExterior(y * width + width - 1);
+  }
+
+  while (start < end) {
+    const position = queue[start++];
+    const x = position % width;
+    const y = Math.floor(position / width);
+    if (x > 0) enqueueExterior(position - 1);
+    if (x + 1 < width) enqueueExterior(position + 1);
+    if (y > 0) enqueueExterior(position - width);
+    if (y + 1 < height) enqueueExterior(position + width);
+  }
+
+  let changedPixels = 0;
+  const whiten = (position: number) => {
+    const index = position * 4;
+    if (!data[index + 3]) return;
+    if (data[index] === 255 && data[index + 1] === 255 && data[index + 2] === 255) return;
+    data[index] = 255;
+    data[index + 1] = 255;
+    data[index + 2] = 255;
+    changedPixels++;
+  };
+
+  const safeDepth = Math.max(1, Math.min(8, Math.round(edgeDepth)));
+  const edgeDistance = new Uint8Array(pixelCount);
+  const edgeQueue = new Int32Array(pixelCount);
+  let edgeStart = 0;
+  let edgeEnd = 0;
+
+  // Alpha 1–8 pixels belong to the exterior flood, but remain visible on dark
+  // surfaces. Neutralize their RGB instead of thresholding them away. In the
+  // same pass, seed only the first opaque edge row so later growth is O(edge)
+  // rather than rescanning the full 1K canvas for every depth.
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const position = y * width + x;
+      if (exterior[position]) {
+        whiten(position);
+        continue;
+      }
+      if (data[position * 4 + 3] === 0) continue;
+
+      let adjacentToExterior = false;
+      for (let offsetY = -1; offsetY <= 1 && !adjacentToExterior; offsetY++) {
+        const nextY = y + offsetY;
+        if (nextY < 0 || nextY >= height) continue;
+        for (let offsetX = -1; offsetX <= 1; offsetX++) {
+          if (!offsetX && !offsetY) continue;
+          const nextX = x + offsetX;
+          if (nextX < 0 || nextX >= width) continue;
+          if (exterior[nextY * width + nextX]) {
+            adjacentToExterior = true;
+            break;
+          }
+        }
+      }
+
+      if (!adjacentToExterior) continue;
+      edgeDistance[position] = 1;
+      edgeQueue[edgeEnd++] = position;
+      whiten(position);
+    }
+  }
+
+  while (edgeStart < edgeEnd) {
+    const position = edgeQueue[edgeStart++];
+    const currentDistance = edgeDistance[position];
+    if (currentDistance >= safeDepth) continue;
+    const x = position % width;
+    const y = Math.floor(position / width);
+
+    for (let offsetY = -1; offsetY <= 1; offsetY++) {
+      const nextY = y + offsetY;
+      if (nextY < 0 || nextY >= height) continue;
+      for (let offsetX = -1; offsetX <= 1; offsetX++) {
+        if (!offsetX && !offsetY) continue;
+        const nextX = x + offsetX;
+        if (nextX < 0 || nextX >= width) continue;
+        const next = nextY * width + nextX;
+        if (exterior[next] || edgeDistance[next] || data[next * 4 + 3] === 0) continue;
+        edgeDistance[next] = currentDistance + 1;
+        edgeQueue[edgeEnd++] = next;
+        whiten(next);
+      }
+    }
+  }
+
+  return changedPixels;
+};
 
 /**
  * Restores the export method that produced the historically smooth cutlines:
@@ -86,6 +217,12 @@ export const normalizeStickerExport = async (
     drawWidth,
     drawHeight
   );
+
+  // Run after the last resample. Doing this earlier allows interpolation to
+  // reintroduce chroma into otherwise clean low-alpha edge pixels.
+  const outputImageData = outputContext.getImageData(0, 0, safeOutputSize, safeOutputSize);
+  neutralizeExteriorCutlineFringe(outputImageData.data, safeOutputSize, safeOutputSize);
+  outputContext.putImageData(outputImageData, 0, 0);
 
   return canvasToBlob(outputCanvas);
 };

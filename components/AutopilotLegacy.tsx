@@ -37,6 +37,10 @@ const PRODUCTION_STICKER_COUNT = 100;
 const TEST_STICKER_COUNT = 10;
 const PRODUCTION_REPLACEMENT_BUDGET = 25;
 const TEST_REPLACEMENT_BUDGET = 5;
+const BLOCKING_TECHNICAL_QA_ISSUE = /reserved \w+ chroma-matte background remains|local qa failed/i;
+
+const hasBlockingTechnicalQaFailure = (sticker: Sticker) =>
+  (sticker.qaIssues || []).some(issue => BLOCKING_TECHNICAL_QA_ISSUE.test(issue));
 
 const emptyUsageStage = (): AiUsageStageMetrics => ({
   openaiTextRequests: 0,
@@ -994,8 +998,9 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         try {
           return await inspectStickerLocally(sticker);
         } catch (error) {
-          addLog(`Local QA skipped Sticker #${sticker.id}: ${error instanceof Error ? error.message : String(error)}. Keeping the generated PNG.`);
-          return { id: sticker.id, issues: [], perceptualHash: '' };
+          const message = error instanceof Error ? error.message : String(error);
+          addLog(`Local QA failed for Sticker #${sticker.id}: ${message}. Rejecting it instead of silently keeping an unchecked PNG.`);
+          return { id: sticker.id, issues: [`Local QA failed: ${message.slice(0, 160)}`], perceptualHash: '' };
         }
       }));
       results.forEach(result => {
@@ -1083,7 +1088,18 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         .filter(sticker => sticker.qaStatus !== 'approved')
         .slice(0, targetCount - quality.report.approved);
       if (!rejectedSlots.length || remainingBudget < rejectedSlots.length) {
-        const completed = quality.stickers.filter(sticker => sticker.status === 'completed' && sticker.blob && sticker.url).slice(0, targetCount);
+        const blocked = quality.stickers.filter(sticker =>
+          sticker.status === 'completed'
+          && sticker.blob
+          && sticker.url
+          && hasBlockingTechnicalQaFailure(sticker)
+        );
+        const completed = quality.stickers.filter(sticker =>
+          sticker.status === 'completed'
+          && sticker.blob
+          && sticker.url
+          && !hasBlockingTechnicalQaFailure(sticker)
+        ).slice(0, targetCount);
         const completedIds = new Set(completed.map(sticker => sticker.id));
         const manuallyAccepted = quality.stickers.map(sticker => completedIds.has(sticker.id)
           ? {
@@ -1104,6 +1120,9 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         stickersRef.current = manuallyAccepted;
         setState(prev => ({ ...prev, stickers: manuallyAccepted, qualityReport: report }));
         if (runIdRef.current) await saveStickerCheckpoints(runIdRef.current, manuallyAccepted);
+        if (blocked.length) {
+          addLog(`Safety block: excluded ${blocked.length} chroma-corrupted or unchecked PNG${blocked.length === 1 ? '' : 's'} from fail-open packaging.`);
+        }
         addLog(`Fail-open inventory: replacement loop ended at ${completed.length}/${targetCount} generated PNGs. Continuing automatically to packaging.`);
         return { stickers: completed.map(sticker => ({ ...sticker, qaStatus: 'approved' as const })), report };
       }

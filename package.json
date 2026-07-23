@@ -4,21 +4,19 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "prepare:mask": "node scripts/prepareStickerMaskAssets.mjs",
-    "dev": "npm run prepare:mask && concurrently -k -n api,web -c cyan,magenta \"tsx watch --include .env --include .env.local server/index.ts\" \"vite\"",
+    "dev": "concurrently -k -n api,web -c cyan,magenta \"tsx watch --include .env --include .env.local server/index.ts\" \"vite\"",
     "typecheck": "tsc --noEmit",
-    "build": "npm run prepare:mask && npm run typecheck && vite build && tsc -p tsconfig.server.json",
+    "build": "npm run typecheck && vite build && tsc -p tsconfig.server.json",
     "start": "node server-dist/index.js",
     "preview": "vite preview"
   },
   "dependencies": {
-    "dotenv": "^17.2.3",
-    "jszip": "^3.10.1",
     "lucide-react": "^0.563.0",
-    "onnxruntime-web": "^1.22.0",
+    "dotenv": "^17.2.3",
     "openai": "^6.25.0",
     "react": "^19.2.4",
-    "react-dom": "^19.2.4"
+    "react-dom": "^19.2.4",
+    "jszip": "^3.10.1"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

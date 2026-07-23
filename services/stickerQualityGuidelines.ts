@@ -38,13 +38,13 @@ export const STICKER_GENERATION_QUALITY_COMPACT = `
 GEOMETRY-FIRST STICKER QUALITY STANDARD (${STICKER_QUALITY_GUIDELINE_VERSION}):
 - Prioritize the complete visual shape over subject complexity: strong recognizable silhouette, compact cohesive mass, smooth intentional contour and balanced organic asymmetry.
 - Build a stable composition with one clear focal area, useful negative space, believable overlaps, coherent internal geometry and visually balanced weight.
-- Fill the canvas confidently while preserving comfortable, consistent margins for the die-cut outline that the application adds after generation; center by visual weight, not only coordinates.
-- Do not render a sticker outline, backing, shadow, cut line or halo in the source illustration. Preserve a clean subject silhouette and intentional openings so the application can construct one consistent white die-cut outline locally.
+- Fill the canvas confidently while preserving comfortable, consistent margins and room for the die-cut outline; center by visual weight, not only coordinates.
+- Use one thin, smooth, consistent white die-cut outline that follows the real silhouette, preserves intentional openings and never becomes a chunky halo.
 - Keep the subject fully visible and readable at small marketplace-thumbnail size. Simplify edge noise and control detail so it enriches rather than weakens the silhouette.
-- Preserve intentional holes in rings, handles, frames and arches; never create accidental holes, broken anatomy, disconnected fragments, floating marks or malformed perspective.
+- Keep the generated sticker as one solid protected shape; fill natural openings with white or a matching artwork color so background removal never has to infer interior holes.
 - Maintain clear depth, contrast, color separation, highlights and shadows inside the artwork while keeping the external presentation shadow-free and transparency-ready.
-- Match the collection's rendering style, internal line weight, margins, subject scale, texture density, edge sharpness and color treatment.
-- Across the pack, vary silhouette, orientation, aspect ratio, visual-mass distribution, viewing angle and negative-space structure without changing the locked art style.
+- Match the collection's rendering style, outline thickness, margins, subject scale, texture density, edge sharpness and color treatment.
+- Across the pack, vary silhouette, orientation, aspect ratio, visual-mass distribution and viewing angle without changing the locked art style.
 - A simple polished sticker is better than a complex sticker with weak geometry.`.trim();
 
 export const STICKER_QA_RUBRIC_COMPACT = `

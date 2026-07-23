@@ -11,8 +11,6 @@ node_modules
 dist
 dist-ssr
 server-dist
-public/models/onnxruntime/
-public/models/u2netp.onnx
 *.local
 .env
 .env.*.local

@@ -25,3 +25,29 @@ export const canAutomaticallyRegenerate = (
 
 export const hasBlockingQaFailure = (sticker: Pick<Sticker, 'qaStatus'>) =>
   sticker.qaStatus === 'rejected';
+
+export const getRemainingReplacementBudget = (limit: number, replacementAttempts: number) =>
+  Math.max(0, limit - replacementAttempts);
+
+export const countApprovedInventory = (
+  stickers: Pick<Sticker, 'status' | 'blob' | 'url' | 'qaStatus'>[],
+  targetCount: number
+) => stickers.filter(sticker =>
+  sticker.status === 'completed'
+  && Boolean(sticker.blob)
+  && Boolean(sticker.url)
+  && sticker.qaStatus === 'approved'
+).slice(0, targetCount).length;
+
+export const assertCompleteApprovedInventory = (
+  stickers: Pick<Sticker, 'status' | 'blob' | 'url' | 'qaStatus'>[],
+  targetCount: number
+) => {
+  const approved = countApprovedInventory(stickers, targetCount);
+  if (approved < targetCount) {
+    throw new Error(
+      `Approved sticker inventory is incomplete (${approved}/${targetCount}). `
+      + 'Packaging and mockups are blocked until every severe QA rejection has a valid replacement.'
+    );
+  }
+};

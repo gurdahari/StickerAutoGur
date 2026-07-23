@@ -106,6 +106,50 @@ const removeDetachedPixels = (data: Uint8ClampedArray, width: number, height: nu
   }
 };
 
+const softenFinalAlphaEdge = (context: CanvasRenderingContext2D, width: number, height: number) => {
+  const imageData = context.getImageData(0, 0, width, height);
+  const data = imageData.data;
+  const source = new Uint8ClampedArray(data);
+  const weights = [0.216, 0.568, 0.216];
+  let originalCoverage = 0;
+  let revisedCoverage = 0;
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const index = (y * width + x) * 4;
+      const originalAlpha = source[index + 3];
+      originalCoverage += originalAlpha;
+      let blurredAlpha = 0;
+
+      for (let offsetY = -1; offsetY <= 1; offsetY++) {
+        const neighbourY = y + offsetY;
+        if (neighbourY < 0 || neighbourY >= height) continue;
+        for (let offsetX = -1; offsetX <= 1; offsetX++) {
+          const neighbourX = x + offsetX;
+          if (neighbourX < 0 || neighbourX >= width) continue;
+          const neighbour = (neighbourY * width + neighbourX) * 4;
+          blurredAlpha += source[neighbour + 3]
+            * weights[offsetX + 1]
+            * weights[offsetY + 1];
+        }
+      }
+
+      const revisedAlpha = Math.round(blurredAlpha);
+      data[index + 3] = revisedAlpha;
+      revisedCoverage += revisedAlpha;
+      if (originalAlpha === 0 && revisedAlpha > 0) {
+        data[index] = 255;
+        data[index + 1] = 255;
+        data[index + 2] = 255;
+      }
+    }
+  }
+
+  const coverageChange = Math.abs(revisedCoverage - originalCoverage) / Math.max(1, originalCoverage);
+  if (coverageChange > 0.003) return;
+  context.putImageData(imageData, 0, 0);
+};
+
 /**
  * Turns Seedream's flat matte background into a clean transparent PNG.
  * Only pixels connected to the canvas edge are treated as background, so dark
@@ -277,6 +321,7 @@ export const processStickerImage = async (
     drawWidth,
     drawHeight
   );
+  softenFinalAlphaEdge(outputContext, outputSize, outputSize);
 
   return canvasToBlob(outputCanvas);
 };

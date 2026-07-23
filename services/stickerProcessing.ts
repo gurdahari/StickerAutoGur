@@ -3,6 +3,10 @@ import {
   reconstructReservedMatteWhitePixel,
   removeEnclosedReservedMatte
 } from './reservedMatte';
+import {
+  expectsEnclosedOpening,
+  removeVerifiedEnclosedBlackOpenings
+} from './enclosedBlackOpening';
 
 const loadImage = (source: string | Blob): Promise<HTMLImageElement> => new Promise((resolve, reject) => {
   const image = new Image();
@@ -130,8 +134,7 @@ const softenFinalAlphaEdge = (context: CanvasRenderingContext2D, width: number, 
  * are removed only when all four corners verify one exact reserved matte key,
  * so black outlines, shadows and artwork stay protected.
  */
-export const expectsTransparentOpening = (prompt = '') =>
-  /\b(frame|window|tube|pipe|hose|ring|hoop|loop|chain|scissors|glasses|stethoscope|wheel|handle|arch|doorway|portal|opening|cutout|negative space)\b/i.test(prompt);
+export const expectsTransparentOpening = expectsEnclosedOpening;
 
 export const processStickerImage = async (
   source: string | Blob,
@@ -213,6 +216,9 @@ export const processStickerImage = async (
 
   if (backgroundInspection.hasStableReservedMatte) {
     removeEnclosedReservedMatte(data, width, height, distanceFromBackground);
+  }
+  if (backgroundInspection.hasStableReservedMatte || forceOpeningRepair) {
+    removeVerifiedEnclosedBlackOpenings(data, width, height, _itemPrompt, forceOpeningRepair);
   }
 
   const hasTransparentNeighbor = (x: number, y: number) => {

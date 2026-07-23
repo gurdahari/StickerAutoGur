@@ -4,6 +4,7 @@ import { AutopilotState, NicheIdea, StylePreset, Sticker, MarketingAsset, TrendR
 import { NICHE_IDEAS, STYLE_PRESETS } from '../data/presets';
 import { ensureProvidersConfigured, generateStickerPrompts, generateAutopilotSticker, generateAutopilotListing, generateSeedreamMockup, findViralNiche, getTrendAnalysis, discoverTopTrends, analyzeNicheVisuals, selectCoverStickerIds, assessNicheForProduction, generateReplacementStickerPrompts, createListingPreviewVideo, setAiUsageStage, subscribeAiUsage } from '../services/aiService';
 import { processStickerImage } from '../services/stickerProcessing';
+import { imageSourceToBlob } from '../services/stickerSource';
 import { findVisualDuplicateGroups, inspectStickerLocally } from '../services/qualityControl';
 import { clearRunCheckpoint, loadRunCheckpoint, saveMarketingAssetCheckpoint, saveRunCheckpointMeta, saveStickerCheckpoint, saveStickerCheckpoints, type RunCheckpointMeta } from '../services/runPersistence';
 import { Play, Pause, RefreshCw, CheckCircle, Download, FileText, Image as ImageIcon, Box, Archive, Zap, Gauge, Copy, FastForward, RotateCcw, Beaker, DollarSign, AlertCircle, Scissors, Eye, Globe, Search, ExternalLink, X, ArrowRight, BarChart3, Plus, Palette, ShoppingBag, Loader2, Wand2, Laptop, Tablet, Grid, BookOpen, Layers, ShieldCheck, Save, Video } from 'lucide-react';
@@ -37,6 +38,12 @@ const PRODUCTION_STICKER_COUNT = 100;
 const TEST_STICKER_COUNT = 10;
 const PRODUCTION_REPLACEMENT_BUDGET = 25;
 const TEST_REPLACEMENT_BUDGET = 5;
+const requiresNewArtwork = (sticker: Sticker) =>
+  (sticker.qaIssues || []).some(issue => /near-exact duplicate/i.test(issue));
+const hasPreservedTechnicalFailure = (sticker: Sticker) =>
+  Boolean(sticker.sourceBlob)
+  && sticker.qaStatus === 'rejected'
+  && !requiresNewArtwork(sticker);
 
 const emptyUsageStage = (): AiUsageStageMetrics => ({
   openaiTextRequests: 0,
@@ -901,7 +908,9 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       if (stopSignal.current || skipToNextStageSignal.current) return;
       let attempts = 0;
       let lastError = '';
-      while (attempts < 3) {
+      let sourceBlob = sticker.sourceBlob;
+
+      while (!sourceBlob && attempts < 3) {
         if (fatalProviderError) {
           lastError = fatalProviderError;
           break;
@@ -914,17 +923,53 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
           seedreamRequests: metricsRef.current.seedreamRequests + 1,
           replacementImages: metricsRef.current.replacementImages + (isReplacement ? 1 : 0)
         });
+        let paidSource = '';
         try {
-          const base64 = await generateAutopilotSticker(sticker.prompt, style.prompt, turboMode, getNicheGenerationBrief(niche), analysis);
-          const processedBlob = await processStickerImage(base64, sticker.prompt);
+          paidSource = await generateAutopilotSticker(sticker.prompt, style.prompt, turboMode, getNicheGenerationBrief(niche), analysis);
+        } catch (error) {
+          lastError = error instanceof Error ? error.message : String(error);
+          if (/\b(?:401|402|403)\b|invalid api key|incorrect api key|authentication|unauthorized|insufficient|quota|billing|credit/i.test(lastError)) {
+            if (!fatalProviderError) {
+              fatalProviderError = lastError;
+              addLog(`Seedream provider is unavailable for the rest of this batch. Stopping paid retries and preserving completed PNGs: ${lastError.slice(0, 110)}`);
+            }
+            break;
+          }
+          if (/request budget reached/i.test(lastError)) break;
+          if (attempts < 3) await new Promise(resolve => setTimeout(resolve, attempts * 900));
+          continue;
+        }
+
+        try {
+          sourceBlob = await imageSourceToBlob(paidSource);
+        } catch (error) {
+          lastError = error instanceof Error ? error.message : String(error);
+          addLog(`Sticker #${sticker.id} provider output was received, but could not be preserved. No paid retry was attempted.`);
+          break;
+        }
+      }
+
+      if (sourceBlob) {
+        const captured: Sticker = {
+          ...sticker,
+          sourceBlob,
+          status: 'generating',
+          regenCount: (sticker.regenCount || 0) + Math.max(0, attempts - 1)
+        };
+        const capturedIndex = stickersRef.current.findIndex(item => item.id === sticker.id);
+        if (capturedIndex === -1) stickersRef.current.push(captured);
+        else stickersRef.current[capturedIndex] = captured;
+        if (runIdRef.current) await saveStickerCheckpoint(runIdRef.current, captured);
+
+        try {
+          const processedBlob = await processStickerImage(sourceBlob, sticker.prompt);
           const previous = stickersRef.current.find(item => item.id === sticker.id);
           if (previous?.url?.startsWith('blob:')) URL.revokeObjectURL(previous.url);
           const completed: Sticker = {
-            ...sticker,
+            ...captured,
             url: URL.createObjectURL(processedBlob),
             blob: processedBlob,
             status: 'completed',
-            regenCount: (sticker.regenCount || 0) + attempts - 1,
             qaStatus: 'pending',
             qaIssues: [],
             qaScore: undefined,
@@ -944,32 +989,29 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
           return;
         } catch (error) {
           lastError = error instanceof Error ? error.message : String(error);
-          if (/\b(?:401|402|403)\b|invalid api key|incorrect api key|authentication|unauthorized|insufficient|quota|billing|credit/i.test(lastError)) {
-            if (!fatalProviderError) {
-              fatalProviderError = lastError;
-              addLog(`Seedream provider is unavailable for the rest of this batch. Stopping paid retries and preserving completed PNGs: ${lastError.slice(0, 110)}`);
-            }
-            break;
-          }
-          if (/request budget reached/i.test(lastError)) break;
-          if (attempts < 3) await new Promise(resolve => setTimeout(resolve, attempts * 900));
+          addLog(`Sticker #${sticker.id} source was preserved, but local masking failed. No additional Seedream request was made.`);
         }
       }
 
       const failed: Sticker = {
         ...sticker,
+        sourceBlob,
         status: 'error',
         url: null,
         blob: undefined,
         qaStatus: 'rejected',
-        qaIssues: [`Generation failed: ${lastError.slice(0, 180)}`]
+        qaIssues: [sourceBlob
+          ? `Local processing failed; paid source preserved: ${lastError.slice(0, 160)}`
+          : `Generation failed: ${lastError.slice(0, 180)}`]
       };
       const currentIndex = stickersRef.current.findIndex(item => item.id === sticker.id);
       if (currentIndex === -1) stickersRef.current.push(failed);
       else stickersRef.current[currentIndex] = failed;
       setState(prev => ({ ...prev, stickers: [...stickersRef.current] }));
       if (runIdRef.current) await saveStickerCheckpoint(runIdRef.current, failed);
-      addLog(`Sticker #${sticker.id} failed after ${attempts} attempt${attempts === 1 ? '' : 's'}: ${lastError.slice(0, 90)}`);
+      addLog(sourceBlob
+        ? `Sticker #${sticker.id} needs local reprocessing from its preserved source: ${lastError.slice(0, 90)}`
+        : `Sticker #${sticker.id} failed after ${attempts} attempt${attempts === 1 ? '' : 's'}: ${lastError.slice(0, 90)}`);
     });
   };
 
@@ -1080,10 +1122,19 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
     while (quality.report.approved < targetCount) {
       const remainingBudget = targetCount + replacementBudget - metricsRef.current.seedreamRequests;
       const rejectedSlots = quality.stickers
-        .filter(sticker => sticker.qaStatus !== 'approved')
+        .filter(sticker =>
+          sticker.qaStatus !== 'approved'
+          && (!sticker.sourceBlob || requiresNewArtwork(sticker))
+        )
         .slice(0, targetCount - quality.report.approved);
       if (!rejectedSlots.length || remainingBudget < rejectedSlots.length) {
-        const completed = quality.stickers.filter(sticker => sticker.status === 'completed' && sticker.blob && sticker.url).slice(0, targetCount);
+        const blockedTechnical = quality.stickers.filter(hasPreservedTechnicalFailure);
+        const completed = quality.stickers.filter(sticker =>
+          sticker.status === 'completed'
+          && sticker.blob
+          && sticker.url
+          && !hasPreservedTechnicalFailure(sticker)
+        ).slice(0, targetCount);
         const completedIds = new Set(completed.map(sticker => sticker.id));
         const manuallyAccepted = quality.stickers.map(sticker => completedIds.has(sticker.id)
           ? {
@@ -1104,6 +1155,9 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         stickersRef.current = manuallyAccepted;
         setState(prev => ({ ...prev, stickers: manuallyAccepted, qualityReport: report }));
         if (runIdRef.current) await saveStickerCheckpoints(runIdRef.current, manuallyAccepted);
+        if (blockedTechnical.length) {
+          addLog(`Held back ${blockedTechnical.length} technically rejected PNG${blockedTechnical.length === 1 ? '' : 's'}; their paid sources remain available for free local reprocessing.`);
+        }
         addLog(`Fail-open inventory: replacement loop ended at ${completed.length}/${targetCount} generated PNGs. Continuing automatically to packaging.`);
         return { stickers: completed.map(sticker => ({ ...sticker, qaStatus: 'approved' as const })), report };
       }
@@ -1126,6 +1180,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
           prompt: replacementPrompts[index],
           url: null,
           blob: undefined,
+          sourceBlob: undefined,
           status: 'pending',
           qaStatus: 'pending',
           qaIssues: [],
@@ -1164,7 +1219,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
           return;
       }
       const confirmed = window.confirm(
-        `Replace Sticker #${stickerId}?\n\nThis permanently changes the concept and can use up to two paid Seedream image calls. Use the purple repair button instead when only transparency needs fixing.`
+        `Replace Sticker #${stickerId}?\n\nThis permanently changes the concept and uses one paid Seedream image call. Use the purple repair button instead when only transparency needs fixing.`
       );
       if (!confirmed) return;
       
@@ -1186,38 +1241,57 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
            const replacementPrompts = await generateReplacementStickerPrompts(
              getNicheGenerationBrief(state.currentNiche),
              state.currentStyle,
-             2,
+             1,
              stickersRef.current.map(item => item.prompt),
              [...(sticker.qaIssues || []), 'Manual replacement requested because regenerating the same concept repeated the visual defect.'],
              visualAnalysisRef.current
            );
-           let accepted: { prompt: string; blob: Blob; perceptualHash: string } | null = null;
+           let accepted: { prompt: string; blob: Blob; sourceBlob: Blob; perceptualHash: string; issues: string[] } | null = null;
            const localFailures: string[] = [];
 
-           for (const freshPrompt of replacementPrompts.slice(0, 2)) {
+           for (const freshPrompt of replacementPrompts.slice(0, 1)) {
              try {
                updateMetrics({
                  seedreamRequests: metricsRef.current.seedreamRequests + 1,
                  replacementImages: metricsRef.current.replacementImages + 1
                });
                const base64 = await generateAutopilotSticker(freshPrompt, state.currentStyle.prompt, useTurbo, getNicheGenerationBrief(state.currentNiche), visualAnalysisRef.current);
-               const processedBlob = await processStickerImage(base64, freshPrompt);
+               const sourceBlob = await imageSourceToBlob(base64);
+               const capturedReplacement: Sticker = {
+                 ...sticker,
+                 prompt: freshPrompt,
+                 url: null,
+                 blob: undefined,
+                 sourceBlob,
+                 status: 'generating',
+                 regenCount: newRegenCount,
+                 qaStatus: 'pending',
+                 qaIssues: []
+               };
+               const capturedIndex = stickersRef.current.findIndex(item => item.id === stickerId);
+               if (capturedIndex === -1) stickersRef.current.push(capturedReplacement);
+               else stickersRef.current[capturedIndex] = capturedReplacement;
+               if (runIdRef.current) await saveStickerCheckpoint(runIdRef.current, capturedReplacement);
+               const processedBlob = await processStickerImage(sourceBlob, freshPrompt);
                const localResult = await inspectStickerLocally({
                  ...sticker,
                  prompt: freshPrompt,
+                 sourceBlob,
                  blob: processedBlob,
                  url: null,
                  status: 'completed'
                });
-               if (!localResult.issues.length) {
-                 accepted = { prompt: freshPrompt, blob: processedBlob, perceptualHash: localResult.perceptualHash };
-                 break;
-               }
-               localFailures.push(...localResult.issues);
+               accepted = {
+                 prompt: freshPrompt,
+                 blob: processedBlob,
+                 sourceBlob,
+                 perceptualHash: localResult.perceptualHash,
+                 issues: localResult.issues
+               };
+               break;
              } catch (candidateError) {
                localFailures.push(candidateError instanceof Error ? candidateError.message : String(candidateError));
              }
-             addLog(`Replacement candidate for #${stickerId} failed local QA; trying a different concept.`);
            }
 
            if (!accepted) {
@@ -1230,10 +1304,11 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
              prompt: accepted.prompt,
              url: finalUrl,
              blob: accepted.blob,
+             sourceBlob: accepted.sourceBlob,
              status: 'completed',
              regenCount: newRegenCount,
-             qaStatus: 'pending',
-             qaIssues: [],
+             qaStatus: accepted.issues.length ? 'rejected' : 'pending',
+             qaIssues: accepted.issues,
              qaScore: undefined,
              perceptualHash: accepted.perceptualHash,
              replacementCount: (sticker.replacementCount || 0) + 1
@@ -1251,17 +1326,31 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
                return { ...prev, stickers: newStickers };
            });
            
-           addLog(`Sticker #${stickerId} replaced with a fresh concept and passed local QA.`);
+           addLog(accepted.issues.length
+             ? `Sticker #${stickerId} replacement source was preserved, but its PNG needs free local review.`
+             : `Sticker #${stickerId} replaced with a fresh concept and passed local QA.`);
            setNeedsZipUpdate(true); 
            if (runIdRef.current) await saveStickerCheckpoint(runIdRef.current, updatedSticker);
 
       } catch (e: any) {
           addLog(`Error regenerating sticker #${stickerId}: ${e.message}`);
+          const preserved = stickersRef.current.find(item => item.id === stickerId);
+          const failedReplacement: Sticker = preserved?.sourceBlob
+            ? {
+                ...preserved,
+                status: 'error',
+                qaStatus: 'rejected',
+                qaIssues: [`Local processing failed; paid source preserved: ${String(e.message).slice(0, 160)}`]
+              }
+            : { ...sticker, status: sticker.url ? 'completed' : 'error', regenCount: newRegenCount };
+          const failedIndex = stickersRef.current.findIndex(item => item.id === stickerId);
+          if (failedIndex !== -1) stickersRef.current[failedIndex] = failedReplacement;
           setState(prev => {
               const newStickers = [...prev.stickers];
-              newStickers[stickerIndex] = { ...sticker, status: sticker.url ? 'completed' : 'error', regenCount: newRegenCount };
+              newStickers[stickerIndex] = failedReplacement;
               return { ...prev, stickers: newStickers };
           });
+          if (runIdRef.current) await saveStickerCheckpoint(runIdRef.current, failedReplacement);
       } finally {
           replacementInFlightRef.current.delete(stickerId);
       }
@@ -1275,7 +1364,8 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       const stickerIndex = stickersRef.current.findIndex(sticker => sticker.id === stickerId);
       if (stickerIndex === -1) return;
       const sticker = stickersRef.current[stickerIndex];
-      if (!sticker.url || !sticker.blob) return;
+      const repairSource = sticker.sourceBlob || sticker.url;
+      if (!repairSource) return;
 
       addLog(`Repairing transparent openings for Sticker #${stickerId} locally...`);
       setState(prev => {
@@ -1286,7 +1376,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
       });
 
       try {
-          const processedBlob = await processStickerImage(sticker.url, sticker.prompt, true);
+          const processedBlob = await processStickerImage(repairSource, sticker.prompt, true);
           const finalUrl = URL.createObjectURL(processedBlob);
           const repairedSticker = { ...sticker, url: finalUrl, blob: processedBlob, status: 'completed' as const, qaStatus: 'pending' as const, qaIssues: [], qaScore: undefined, perceptualHash: undefined };
 
@@ -1298,7 +1388,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
           });
           stickersRef.current[stickerIndex] = repairedSticker;
           if (runIdRef.current) await saveStickerCheckpoint(runIdRef.current, repairedSticker);
-          if (sticker.url.startsWith('blob:')) URL.revokeObjectURL(sticker.url);
+          if (sticker.url?.startsWith('blob:')) URL.revokeObjectURL(sticker.url);
           setNeedsZipUpdate(true);
           addLog(`Sticker #${stickerId} transparency repaired without regeneration.`);
       } catch (error: any) {
@@ -1336,6 +1426,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
     }));
     stickersRef.current.push(placeholder);
 
+    let capturedBonus: Sticker | null = null;
     try {
         // 1. Generate a new prompt on the fly (or just use a generic one based on niche)
         const prompts = await generateStickerPrompts(getNicheGenerationBrief(state.currentNiche), state.currentStyle, 1, visualAnalysisRef.current);
@@ -1344,7 +1435,12 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         // 2. Generate Image
         updateMetrics({ seedreamRequests: metricsRef.current.seedreamRequests + 1 });
         const base64 = await generateAutopilotSticker(freshPrompt, state.currentStyle.prompt, useTurbo, getNicheGenerationBrief(state.currentNiche), visualAnalysisRef.current);
-        const processedBlob = await processStickerImage(base64, freshPrompt);
+        const sourceBlob = await imageSourceToBlob(base64);
+        capturedBonus = { ...placeholder, prompt: freshPrompt, sourceBlob, status: 'generating' as const };
+        const capturedIndex = stickersRef.current.findIndex(sticker => sticker.id === newId);
+        if (capturedIndex !== -1) stickersRef.current[capturedIndex] = capturedBonus;
+        if (runIdRef.current) await saveStickerCheckpoint(runIdRef.current, capturedBonus);
+        const processedBlob = await processStickerImage(sourceBlob, freshPrompt);
         const finalUrl = URL.createObjectURL(processedBlob);
 
         // 3. Update Result
@@ -1352,7 +1448,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
              const list = [...prev.stickers];
              const idx = list.findIndex(s => s.id === newId);
              if (idx !== -1) {
-                 list[idx] = { ...list[idx], prompt: freshPrompt, url: finalUrl, blob: processedBlob, status: 'completed', qaStatus: 'pending', qaIssues: [], qaScore: undefined, perceptualHash: undefined };
+                 list[idx] = { ...list[idx], prompt: freshPrompt, url: finalUrl, blob: processedBlob, sourceBlob, status: 'completed', qaStatus: 'pending', qaIssues: [], qaScore: undefined, perceptualHash: undefined };
              }
              return { ...prev, stickers: list };
         });
@@ -1360,7 +1456,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
         // Update Ref
         const refIdx = stickersRef.current.findIndex(s => s.id === newId);
         if (refIdx !== -1) {
-             stickersRef.current[refIdx] = { id: newId, prompt: freshPrompt, url: finalUrl, blob: processedBlob, status: 'completed', regenCount: 0, qaStatus: 'pending', qaIssues: [], replacementCount: 0 };
+             stickersRef.current[refIdx] = { id: newId, prompt: freshPrompt, url: finalUrl, blob: processedBlob, sourceBlob, status: 'completed', regenCount: 0, qaStatus: 'pending', qaIssues: [], replacementCount: 0 };
              if (runIdRef.current) await saveStickerCheckpoint(runIdRef.current, stickersRef.current[refIdx]);
         }
         
@@ -1369,12 +1465,23 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
 
     } catch (e: any) {
         addLog(`Failed to create bonus sticker: ${e.message}`);
+         const failedBonus: Sticker = capturedBonus
+           ? {
+               ...capturedBonus,
+               status: 'error',
+               qaStatus: 'rejected',
+               qaIssues: [`Local processing failed; paid source preserved: ${String(e.message).slice(0, 160)}`]
+             }
+           : { ...placeholder, status: 'error' };
+         const refIndex = stickersRef.current.findIndex(sticker => sticker.id === newId);
+         if (refIndex !== -1) stickersRef.current[refIndex] = failedBonus;
          setState(prev => {
              const list = [...prev.stickers];
              const idx = list.findIndex(s => s.id === newId);
-             if (idx !== -1) list[idx].status = 'error';
+             if (idx !== -1) list[idx] = failedBonus;
              return { ...prev, stickers: list };
         });
+        if (runIdRef.current) await saveStickerCheckpoint(runIdRef.current, failedBonus);
     }
   };
 
@@ -2716,7 +2823,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
                                     onClick={() => handleRegenerateSticker(s.id)}
                                     disabled={!['completed', 'error', 'paused'].includes(state.status)}
                                     className="bg-indigo-600 hover:bg-indigo-500 text-white p-2 rounded-full shadow-lg transform hover:scale-110 transition-all disabled:opacity-35 disabled:cursor-not-allowed disabled:hover:scale-100"
-                                    title="Paid manual replacement — asks for confirmation and can use up to two Seedream calls"
+                                    title="Paid manual replacement — asks for confirmation and uses one Seedream call"
                                 >
                                     <RefreshCw className="w-4 h-4" />
                                 </button>
@@ -2724,7 +2831,7 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
                                     onClick={() => handleRepairStickerTransparency(s.id)}
                                     disabled={!['completed', 'error', 'paused'].includes(state.status)}
                                     className="bg-fuchsia-600 hover:bg-fuchsia-500 text-white p-2 rounded-full shadow-lg transform hover:scale-110 transition-all disabled:opacity-35 disabled:cursor-not-allowed disabled:hover:scale-100"
-                                    title="Free local transparency and black-matte-hole repair"
+                                    title="Free local transparency repair from the preserved paid source"
                                 >
                                     <Wand2 className="w-4 h-4" />
                                 </button>
@@ -2744,12 +2851,22 @@ const Autopilot: React.FC<AutopilotProps> = ({ initialNiche }) => {
                        ) : s.status === 'error' ? (
                          <div className="w-full h-full flex flex-col items-center justify-center bg-red-900/20 text-red-500 font-bold p-1">
                              <AlertCircle className="w-6 h-6 mb-1" />
-                             <button 
-                                onClick={() => handleRegenerateSticker(s.id)}
-                                className="text-[10px] bg-red-800 hover:bg-red-700 text-white px-2 py-1 rounded"
-                             >
-                                RETRY
-                             </button>
+                             {s.sourceBlob ? (
+                               <button
+                                  onClick={() => handleRepairStickerTransparency(s.id)}
+                                  className="text-[10px] bg-fuchsia-700 hover:bg-fuchsia-600 text-white px-2 py-1 rounded"
+                                  title="Reprocess the preserved paid source locally without another Seedream request"
+                               >
+                                  REPROCESS SOURCE
+                               </button>
+                             ) : (
+                               <button
+                                  onClick={() => handleRegenerateSticker(s.id)}
+                                  className="text-[10px] bg-red-800 hover:bg-red-700 text-white px-2 py-1 rounded"
+                               >
+                                  GENERATE
+                               </button>
+                             )}
                          </div>
                        ) : (
                          <div className="w-full h-full flex items-center justify-center">

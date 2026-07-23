@@ -27,13 +27,12 @@ const WHITE_EDGE_DEPTH = 4;
 /**
  * Neutralizes the final antialias band without changing its geometry.
  *
- * Seedream's vivid matte can survive as a few low-alpha green or magenta
- * samples at the white-cutline boundary. Earlier cleanup runs before the final
- * resize, so drawImage can blend those samples back into the exported edge.
- * At this point the sticker contract is stronger than color inference: every
- * exterior-facing edge is the white die-cut border. We therefore whiten only
- * the short band connected to real canvas-exterior transparency and preserve
- * every alpha value exactly.
+ * Source-background RGB can survive inside low-alpha samples at the generated
+ * subject boundary. The final resize can blend those samples into the
+ * deterministic white cutline. At this point the sticker contract is strong:
+ * every exterior-facing edge is the locally constructed white border. We
+ * therefore whiten only the short band connected to real canvas-exterior
+ * transparency and preserve every alpha value exactly.
  */
 export const neutralizeExteriorCutlineFringe = (
   data: Uint8ClampedArray,
@@ -218,8 +217,8 @@ export const normalizeStickerExport = async (
     drawHeight
   );
 
-  // Run after the last resample. Doing this earlier allows interpolation to
-  // reintroduce chroma into otherwise clean low-alpha edge pixels.
+  // Run after the last resample so interpolation cannot tint the locally
+  // constructed white border with source-background RGB.
   const outputImageData = outputContext.getImageData(0, 0, safeOutputSize, safeOutputSize);
   neutralizeExteriorCutlineFringe(outputImageData.data, safeOutputSize, safeOutputSize);
   outputContext.putImageData(outputImageData, 0, 0);

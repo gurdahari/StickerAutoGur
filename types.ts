@@ -47,6 +47,7 @@ export interface Sticker {
   url: string | null;
   status: 'pending' | 'generating' | 'completed' | 'error';
   blob?: Blob; // JPG/PNG blob
+  sourceBlob?: Blob; // Immutable paid provider output; retained for free local reprocessing
   regenCount?: number; // Track how many times this specific sticker has been retried
   qaStatus?: 'pending' | 'approved' | 'rejected';
   qaIssues?: string[];

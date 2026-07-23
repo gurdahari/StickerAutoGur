@@ -34,6 +34,7 @@ export interface RunCheckpointMeta {
 
 type StickerRevision = Sticker & {
   contentFingerprint?: string;
+  sourceFingerprint?: string;
   checkpointSavedAt?: string;
 };
 
@@ -121,8 +122,12 @@ const blobFingerprint = async (blob?: Blob) => {
 };
 
 const withFingerprint = async (record?: PersistedSticker) => {
-  if (!record || record.contentFingerprint) return record;
-  return { ...record, contentFingerprint: await blobFingerprint(record.blob) };
+  if (!record || (record.contentFingerprint && record.sourceFingerprint)) return record;
+  return {
+    ...record,
+    contentFingerprint: record.contentFingerprint || await blobFingerprint(record.blob),
+    sourceFingerprint: record.sourceFingerprint || await blobFingerprint(record.sourceBlob)
+  };
 };
 
 const buildPersistedSticker = async (runId: string, sticker: Sticker): Promise<PersistedSticker> => ({
@@ -131,17 +136,21 @@ const buildPersistedSticker = async (runId: string, sticker: Sticker): Promise<P
   runId,
   url: null,
   contentFingerprint: await blobFingerprint(sticker.blob),
+  sourceFingerprint: await blobFingerprint(sticker.sourceBlob),
   checkpointSavedAt: new Date().toISOString()
 });
 
 const sameRecord = (left: PersistedSticker | undefined, right: PersistedSticker) => Boolean(left)
   && left!.contentFingerprint === right.contentFingerprint
+  && left!.sourceFingerprint === right.sourceFingerprint
   && left!.prompt === right.prompt
   && left!.status === right.status
   && left!.qaStatus === right.qaStatus;
 
 const pixelsChanged = (left: PersistedSticker | undefined, right: PersistedSticker) =>
-  !left || left.contentFingerprint !== right.contentFingerprint;
+  !left
+  || left.contentFingerprint !== right.contentFingerprint
+  || left.sourceFingerprint !== right.sourceFingerprint;
 
 const readPersistedSticker = async (database: IDBDatabase, key: string) => {
   const transaction = database.transaction('stickers', 'readonly');

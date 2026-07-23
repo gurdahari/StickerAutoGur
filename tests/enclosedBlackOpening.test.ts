@@ -97,3 +97,32 @@ test('manual repair keeps the same geometry guard while bypassing prompt risk', 
     25 * 30
   );
 });
+
+test('repairs several bounded openings only for multi-opening structures', () => {
+  const data = makeSticker();
+  paint(data, 66, 91, 79, 102, [105, 105, 105, 255]);
+  paint(data, 67, 92, 78, 101, [0, 0, 0, 255]);
+
+  assert.equal(
+    removeVerifiedEnclosedBlackOpenings(
+      data,
+      width,
+      height,
+      'TYPE: Object-Only | SUBJECT: bicycle with two wheels | TEXT: NONE'
+    ),
+    (25 * 30) + (12 * 10)
+  );
+  assert.equal(data[pixel(70, 60) + 3], 0);
+  assert.equal(data[pixel(70, 96) + 3], 0);
+  assert.equal(data[pixel(30, 60) + 3], 255);
+});
+
+test('keeps the single-opening budget for ordinary objects', () => {
+  const data = makeSticker();
+  paint(data, 66, 91, 79, 102, [105, 105, 105, 255]);
+  paint(data, 67, 92, 78, 101, [0, 0, 0, 255]);
+
+  assert.equal(removeVerifiedEnclosedBlackOpenings(data, width, height, basketPrompt), 0);
+  assert.equal(data[pixel(70, 60) + 3], 255);
+  assert.equal(data[pixel(70, 96) + 3], 255);
+});

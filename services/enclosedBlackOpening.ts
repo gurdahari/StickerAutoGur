@@ -1,8 +1,11 @@
 const OPENING_GEOMETRY =
-  /\b(basket|bag|tote|purse|backpack|handle|frame|window|tube|pipe|hose|ring|hoop|loop|chain|scissors|glasses|stethoscope|wheel|cage|lantern|arch|doorway|portal|opening|cutout|negative space)\b/i;
+  /\b(basket|bag|tote|purse|backpack|handle|frame|window|tube|pipe|hose|ring|hoop|loop|chain|scissors|glasses|stethoscope|wheel|bicycle|bike|motorcycle|motorbike|scooter|tricycle|wheelchair|cart|wagon|wheelbarrow|cage|lantern|arch|doorway|portal|opening|cutout|negative space)\b/i;
 
 const SAFE_AUTOMATIC_OPENING =
-  /\b(basket|bag|tote|purse|backpack|handle|frame|window|tube|pipe|hose|ring|hoop|loop|stethoscope|wheel|cage|lantern|arch|doorway|portal)\b/i;
+  /\b(basket|bag|tote|purse|backpack|handle|frame|window|tube|pipe|hose|ring|hoop|loop|stethoscope|wheel|bicycle|bike|motorcycle|motorbike|scooter|tricycle|wheelchair|cart|wagon|wheelbarrow|cage|lantern|arch|doorway|portal)\b/i;
+
+const MULTI_OPENING_STRUCTURE =
+  /\b(bicycle|bike|motorcycle|motorbike|scooter|tricycle|wheelchair|cart|wagon|wheelbarrow|cage)\b/i;
 
 const SIMPLE_OBJECT_TYPE =
   /\bTYPE:\s*(?:OBJECT(?:-ONLY)?|PROP|ICON|FUNCTIONAL_LABEL)\b/i;
@@ -161,30 +164,40 @@ export const removeVerifiedEnclosedBlackOpenings = (
     candidates.push(component);
   }
 
-  // Multiple matches are much more likely to be dark artwork than one failed
-  // opening. Manual repair remains available for ambiguous source images.
-  if (candidates.length !== 1) return 0;
+  const maximumCandidates = MULTI_OPENING_STRUCTURE.test(prompt) ? 6 : 1;
+  const totalCandidateArea = candidates.reduce((total, component) => total + component.length, 0);
+  if (
+    !candidates.length
+    || candidates.length > maximumCandidates
+    || totalCandidateArea > pixelCount * 0.06
+  ) {
+    return 0;
+  }
 
   const repaired = new Uint8Array(pixelCount);
-  for (const position of candidates[0]) {
-    repaired[position] = 1;
-    data[position * 4 + 3] = 0;
+  for (const component of candidates) {
+    for (const position of component) {
+      repaired[position] = 1;
+      data[position * 4 + 3] = 0;
+    }
   }
 
   // Reconstruct only neutral black-to-white antialias pixels touching the
   // repaired hole. This is alpha math, not color-key tolerance, so it cannot
   // introduce the green/magenta fringe produced by aggressive chroma cleanup.
   const edge = new Uint8Array(pixelCount);
-  for (const position of candidates[0]) {
-    const x = position % width;
-    const y = Math.floor(position / width);
-    for (let offsetY = -1; offsetY <= 1; offsetY++) {
-      for (let offsetX = -1; offsetX <= 1; offsetX++) {
-        const nextX = x + offsetX;
-        const nextY = y + offsetY;
-        if (nextX < 0 || nextX >= width || nextY < 0 || nextY >= height) continue;
-        const next = nextY * width + nextX;
-        if (!repaired[next]) edge[next] = 1;
+  for (const component of candidates) {
+    for (const position of component) {
+      const x = position % width;
+      const y = Math.floor(position / width);
+      for (let offsetY = -1; offsetY <= 1; offsetY++) {
+        for (let offsetX = -1; offsetX <= 1; offsetX++) {
+          const nextX = x + offsetX;
+          const nextY = y + offsetY;
+          if (nextX < 0 || nextX >= width || nextY < 0 || nextY >= height) continue;
+          const next = nextY * width + nextX;
+          if (!repaired[next]) edge[next] = 1;
+        }
       }
     }
   }
@@ -207,5 +220,5 @@ export const removeVerifiedEnclosedBlackOpenings = (
     data[pixelIndex + 3] = Math.min(data[pixelIndex + 3], Math.round(luma));
   }
 
-  return candidates[0].length;
+  return totalCandidateArea;
 };

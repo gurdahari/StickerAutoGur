@@ -7,6 +7,10 @@ const MIN_AXIS_ALIGNMENT = 0.42;
 const MIN_AXIS_MAGNITUDE = 12;
 const WHITE_SEARCH_RADIUS = 6;
 
+export const MAX_MINOR_MATTE_AXIS_PIXELS = 48;
+export const MAX_MINOR_MATTE_AXIS_EFFECTIVE_PIXELS = 32;
+export const MAX_MINOR_MATTE_AXIS_ALPHA = 224;
+
 interface WhiteSample {
   index: number;
   distance: number;
@@ -17,7 +21,13 @@ interface WhiteSample {
 
 interface ResidualCandidate {
   position: number;
-  replacementIndex: number;
+  replacementValue: number;
+}
+
+export interface ReservedMatteAxisContaminationMeasurement {
+  pixelCount: number;
+  effectivePixels: number;
+  maxAlpha: number;
 }
 
 const buildExteriorTransparency = (
@@ -213,15 +223,49 @@ const findEnclosedMatteAxisResiduals = (
       const whiteSamples = collectWhiteSamples(source, width, height, x, y, alpha);
       if (!hasWhiteCutlineProof(whiteSamples, alpha)) continue;
 
-      candidates.push({
-        position,
-        replacementIndex: whiteSamples[0].index
-      });
+      const sampleIndex = whiteSamples[0].index;
+      const replacementValue = Math.max(
+        225,
+        source[sampleIndex],
+        source[sampleIndex + 1],
+        source[sampleIndex + 2]
+      );
+      candidates.push({ position, replacementValue });
     }
   }
 
   return candidates;
 };
+
+export const measureEnclosedReservedMatteAxisContamination = (
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  background: RgbColor
+): ReservedMatteAxisContaminationMeasurement => {
+  const candidates = findEnclosedMatteAxisResiduals(data, width, height, background);
+  let alphaMass = 0;
+  let maxAlpha = 0;
+
+  for (const candidate of candidates) {
+    const alpha = data[candidate.position * 4 + 3];
+    alphaMass += alpha / 255;
+    maxAlpha = Math.max(maxAlpha, alpha);
+  }
+
+  return {
+    pixelCount: candidates.length,
+    effectivePixels: Number(alphaMass.toFixed(3)),
+    maxAlpha
+  };
+};
+
+export const isMinorEnclosedReservedMatteAxisContamination = (
+  measurement: ReservedMatteAxisContaminationMeasurement
+) => measurement.pixelCount > 0
+  && measurement.pixelCount <= MAX_MINOR_MATTE_AXIS_PIXELS
+  && measurement.effectivePixels <= MAX_MINOR_MATTE_AXIS_EFFECTIVE_PIXELS
+  && measurement.maxAlpha <= MAX_MINOR_MATTE_AXIS_ALPHA;
 
 /**
  * Counts post-resize matte chroma that drifted away from the exact key around
@@ -233,12 +277,14 @@ export const countEnclosedReservedMatteAxisContamination = (
   width: number,
   height: number,
   background: RgbColor
-) => findEnclosedMatteAxisResiduals(data, width, height, background).length;
+) => measureEnclosedReservedMatteAxisContamination(data, width, height, background).pixelCount;
 
 /**
  * Repairs the broader signed matte-axis remainder left by canvas resampling.
- * Only RGB is replaced from the nearest trusted white cutline sample; alpha is
- * preserved byte-for-byte so the hole geometry and edge smoothness do not move.
+ * A trusted cutline sample supplies brightness, but the output is made exactly
+ * neutral before writing. Copying a slightly tinted witness can reintroduce the
+ * same technical matte direction and make a clean repair fail its own check.
+ * Alpha is preserved byte-for-byte, so geometry never changes.
  */
 export const repairEnclosedReservedMatteAxisContamination = (
   data: Uint8ClampedArray,
@@ -246,14 +292,13 @@ export const repairEnclosedReservedMatteAxisContamination = (
   height: number,
   background: RgbColor
 ) => {
-  const source = new Uint8ClampedArray(data);
-  const candidates = findEnclosedMatteAxisResiduals(source, width, height, background);
+  const candidates = findEnclosedMatteAxisResiduals(data, width, height, background);
 
   for (const candidate of candidates) {
     const pixelIndex = candidate.position * 4;
-    data[pixelIndex] = source[candidate.replacementIndex];
-    data[pixelIndex + 1] = source[candidate.replacementIndex + 1];
-    data[pixelIndex + 2] = source[candidate.replacementIndex + 2];
+    data[pixelIndex] = candidate.replacementValue;
+    data[pixelIndex + 1] = candidate.replacementValue;
+    data[pixelIndex + 2] = candidate.replacementValue;
   }
 
   return {

@@ -1,7 +1,8 @@
 import {
   countReservedMatteEdgeContamination,
   extractVerifiedReservedMatte,
-  inspectStickerBackground
+  inspectStickerBackground,
+  repairSmallReservedMatteEdgeResiduals
 } from './reservedMatte';
 import {
   expectsEnclosedOpening,
@@ -325,8 +326,8 @@ export const processStickerImage = async (
   const finalizedPixels = outputContext.getImageData(0, 0, outputSize, outputSize);
   if (backgroundInspection.hasStableReservedMatte) {
     // Resize is the last operation capable of creating new mixed edge pixels.
-    // Re-run the idempotent decomposition only if the exact-key guard sees a
-    // new leak, then refuse to export if the invariant is still violated.
+    // Repair only a tiny RGB remainder without changing alpha or re-running the
+    // full topology pass on an already clean, normalized sticker.
     let remainingContamination = countReservedMatteEdgeContamination(
       finalizedPixels.data,
       outputSize,
@@ -334,7 +335,12 @@ export const processStickerImage = async (
       background
     );
     if (remainingContamination) {
-      extractVerifiedReservedMatte(finalizedPixels.data, outputSize, outputSize, background);
+      repairSmallReservedMatteEdgeResiduals(
+        finalizedPixels.data,
+        outputSize,
+        outputSize,
+        background
+      );
       remainingContamination = countReservedMatteEdgeContamination(
         finalizedPixels.data,
         outputSize,

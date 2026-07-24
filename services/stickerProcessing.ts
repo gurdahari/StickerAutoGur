@@ -324,7 +324,11 @@ export const processStickerImage = async (
     drawWidth,
     drawHeight
   );
-  // The verified trimap already owns edge antialiasing. Blurring it again can\n  // resurrect matte-colored RGB inside enclosed openings.\n  if (!backgroundInspection.hasStableReservedMatte) {\n    softenFinalAlphaEdge(outputContext, outputSize, outputSize);\n  }
+  // The verified trimap already owns edge antialiasing. Blurring it again can
+  // resurrect matte-colored RGB inside enclosed openings.
+  if (!backgroundInspection.hasStableReservedMatte) {
+    softenFinalAlphaEdge(outputContext, outputSize, outputSize);
+  }
   const finalizedPixels = outputContext.getImageData(0, 0, outputSize, outputSize);
   neutralizeTransparentWhiteCutline(finalizedPixels.data, outputSize, outputSize);
   outputContext.putImageData(finalizedPixels, 0, 0);

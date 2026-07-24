@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { removeReservedMatteWithLocalForeground } from '../services/reservedMatte';
+import { removeReservedMatteWithTrimap } from '../services/reservedMatte';
 
-const width = 24;
-const height = 16;
-const matte = { r: 0, g: 229, b: 255 };
+const width = 36;
+const height = 24;
+const matte = { r: 0, g: 255, b: 59 };
 const pixel = (x: number, y: number) => (y * width + x) * 4;
 
 const blend = (
@@ -30,77 +30,65 @@ const paint = (
   }
 };
 
-test('reconstructs black, colored, and white antialias edges from one matte', () => {
+test('creates a clean four-layer alpha ramp without keeping chroma RGB', () => {
   const data = new Uint8ClampedArray(width * height * 4);
   paint(data, 0, 0, width - 1, height - 1, [matte.r, matte.g, matte.b, 255]);
-
-  const foregrounds: [number, number, number][] = [
-    [0, 0, 0],
-    [248, 116, 151],
-    [255, 255, 255]
-  ];
-
-  foregrounds.forEach((foreground, row) => {
-    const y = 3 + row * 4;
-    data.set(blend(foreground, 0.28), pixel(7, y));
-    data.set(blend(foreground, 0.68), pixel(8, y));
-    paint(data, 9, y - 1, 14, y + 1, [...foreground, 255]);
-  });
-
-  const changed = removeReservedMatteWithLocalForeground(data, width, height, matte);
-  assert.ok(changed > 0);
-
-  foregrounds.forEach((foreground, row) => {
-    const y = 3 + row * 4;
-    assert.deepEqual(Array.from(data.slice(pixel(7, y), pixel(7, y) + 3)), foreground);
-    assert.ok(Math.abs(data[pixel(7, y) + 3] - 71) <= 2);
-    assert.deepEqual(Array.from(data.slice(pixel(8, y), pixel(8, y) + 3)), foreground);
-    assert.ok(Math.abs(data[pixel(8, y) + 3] - 173) <= 2);
-    assert.deepEqual(Array.from(data.slice(pixel(12, y), pixel(12, y) + 4)), [...foreground, 255]);
-  });
-  assert.deepEqual(Array.from(data.slice(pixel(0, 0), pixel(0, 0) + 4)), [255, 255, 255, 0]);
-});
-
-test('removes the same matte inside a closed opening', () => {
-  const data = new Uint8ClampedArray(width * height * 4);
-  paint(data, 0, 0, width - 1, height - 1, [255, 255, 255, 255]);
-  paint(data, 7, 4, 16, 11, [22, 22, 22, 255]);
-  paint(data, 8, 5, 15, 10, blend([22, 22, 22], 0.72));
-  paint(data, 9, 6, 14, 9, [matte.r, matte.g, matte.b, 255]);
-
-  removeReservedMatteWithLocalForeground(data, width, height, matte);
-
-  assert.equal(data[pixel(11, 7) + 3], 0);
-  assert.deepEqual(Array.from(data.slice(pixel(8, 7), pixel(8, 7) + 3)), [22, 22, 22]);
-  assert.ok(Math.abs(data[pixel(8, 7) + 3] - 184) <= 2);
-  assert.deepEqual(Array.from(data.slice(pixel(7, 7), pixel(7, 7) + 4)), [22, 22, 22, 255]);
-});
-
-test('never uses another matte-blended edge pixel as foreground', () => {
-  const data = new Uint8ClampedArray(width * height * 4);
-  paint(data, 0, 0, width - 1, height - 1, [255, 255, 255, 255]);
   const foreground: [number, number, number] = [190, 150, 120];
-  paint(data, 3, 4, 8, 11, [matte.r, matte.g, matte.b, 255]);
-  paint(data, 9, 4, 9, 11, blend([210, 160, 110], 0.30));
-  paint(data, 10, 4, 10, 11, blend([210, 160, 110], 0.60));
-  paint(data, 11, 4, 11, 11, blend([210, 160, 110], 0.76));
-  paint(data, 12, 4, 12, 11, blend([210, 160, 110], 0.90));
-  paint(data, 13, 4, 18, 11, [...foreground, 255]);
+  paint(data, 10, 5, 28, 18, [...foreground, 255]);
+  paint(data, 6, 5, 6, 18, blend(foreground, 0.15));
+  paint(data, 7, 5, 7, 18, blend(foreground, 0.35));
+  paint(data, 8, 5, 8, 18, blend(foreground, 0.60));
+  paint(data, 9, 5, 9, 18, blend(foreground, 0.85));
 
-  removeReservedMatteWithLocalForeground(data, width, height, matte);
+  removeReservedMatteWithTrimap(data, width, height, matte);
 
-  assert.deepEqual(Array.from(data.slice(pixel(9, 7), pixel(9, 7) + 3)), foreground);
-  assert.ok(Math.abs(data[pixel(9, 7) + 3] - 80) <= 2);
+  assert.deepEqual(Array.from(data.slice(pixel(6, 10), pixel(6, 10) + 4)), [255, 255, 255, 0]);
+  for (let x = 7; x <= 10; x++) {
+    assert.deepEqual(Array.from(data.slice(pixel(x, 10), pixel(x, 10) + 3)), foreground);
+  }
+  assert.deepEqual(
+    [7, 8, 9, 10].map(x => data[pixel(x, 10) + 3]),
+    [32, 96, 159, 223]
+  );
 });
 
-test('does not recolor unrelated artwork outside the matte boundary band', () => {
+test('uses the same trimap for a closed opening', () => {
   const data = new Uint8ClampedArray(width * height * 4);
   paint(data, 0, 0, width - 1, height - 1, [255, 255, 255, 255]);
-  paint(data, 1, 1, 3, 3, [matte.r, matte.g, matte.b, 255]);
-  paint(data, 15, 5, 20, 10, [26, 134, 67, 255]);
-  const original = Array.from(data.slice(pixel(18, 7), pixel(18, 7) + 4));
+  const foreground: [number, number, number] = [91, 58, 35];
+  paint(data, 7, 3, 28, 20, [...foreground, 255]);
+  paint(data, 11, 7, 24, 16, blend(foreground, 0.80));
+  paint(data, 12, 8, 23, 15, blend(foreground, 0.55));
+  paint(data, 13, 9, 22, 14, blend(foreground, 0.30));
+  paint(data, 14, 10, 21, 13, [matte.r, matte.g, matte.b, 255]);
 
-  removeReservedMatteWithLocalForeground(data, width, height, matte);
+  removeReservedMatteWithTrimap(data, width, height, matte);
 
-  assert.deepEqual(Array.from(data.slice(pixel(18, 7), pixel(18, 7) + 4)), original);
+  assert.equal(data[pixel(17, 11) + 3], 0);
+  assert.deepEqual(Array.from(data.slice(pixel(13, 11), pixel(13, 11) + 3)), foreground);
+  assert.equal(data[pixel(13, 11) + 3], 32);
+});
+
+test('falls back safely for a thin foreground with no wide clean core', () => {
+  const data = new Uint8ClampedArray(width * height * 4);
+  paint(data, 0, 0, width - 1, height - 1, [matte.r, matte.g, matte.b, 255]);
+  const foreground: [number, number, number] = [30, 30, 30];
+  paint(data, 8, 11, 27, 12, [...foreground, 255]);
+
+  removeReservedMatteWithTrimap(data, width, height, matte);
+
+  assert.deepEqual(Array.from(data.slice(pixel(17, 11), pixel(17, 11) + 3)), foreground);
+  assert.notEqual(data[pixel(17, 11) + 1], matte.g);
+});
+
+test('does not alter unrelated artwork outside the transition band', () => {
+  const data = new Uint8ClampedArray(width * height * 4);
+  paint(data, 0, 0, width - 1, height - 1, [255, 255, 255, 255]);
+  paint(data, 1, 1, 5, 5, [matte.r, matte.g, matte.b, 255]);
+  paint(data, 20, 8, 30, 18, [26, 134, 67, 255]);
+  const original = Array.from(data.slice(pixel(25, 12), pixel(25, 12) + 4));
+
+  removeReservedMatteWithTrimap(data, width, height, matte);
+
+  assert.deepEqual(Array.from(data.slice(pixel(25, 12), pixel(25, 12) + 4)), original);
 });

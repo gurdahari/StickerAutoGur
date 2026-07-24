@@ -82,31 +82,19 @@ const COLLECTION_ARCHITECTURE = [
   'exclude trademarks, brand names, recognizable product interfaces, official seals, copyrighted characters, franchise references and copied quotations'
 ].join('; ');
 
-type NicheScope = {
-  primarySubject: string;
-};
-
-const LIVING_ANIMAL_SCOPE: NicheScope = {
-  primarySubject: 'a living animal'
-};
-
 const niche = (
   id: number,
   name: string,
   category: string,
   themeUniverse: string,
-  isNew = false,
-  scope?: NicheScope
+  isNew = false
 ): NicheIdea => ({
   id,
   name,
   category,
-  generationBrief: `${COLLECTION_ARCHITECTURE}.${scope ? ` NON-NEGOTIABLE PRIMARY SUBJECT: ${scope.primarySubject}.` : ''} Theme universe: ${themeUniverse}.`,
+  generationBrief: `${COLLECTION_ARCHITECTURE}. Theme universe: ${themeUniverse}.`,
   isNew
 });
-
-const animalNiche = (id: number, name: string, themeUniverse: string): NicheIdea =>
-  niche(id, name, '🐾 Animals & Pets', themeUniverse, false, LIVING_ANIMAL_SCOPE);
 
 /**
  * A curated mix of evergreen demand, practical planner use cases, giftable
@@ -117,7 +105,7 @@ export const NICHE_IDEAS: NicheIdea[] = [
   // 1. Best first choices for broad buyer demand
   niche(2001, 'Digital Planner Essentials Mega Pack', '⭐ Popular Mega Packs', 'calendar moments, appointments, priorities, habits, routines, chores, errands, meals, weather, transport, work, home, goals, celebrations, dividers and status icons'),
   niche(2002, 'Everyday Life Mega Collection', '⭐ Popular Mega Packs', 'daily routines, food, home, work, study, errands, transport, hobbies, weather, moods, social plans, pets, rest and small celebrations'),
-  niche(2003, 'Cute Animals Mega Collection', '⭐ Popular Mega Packs', 'pets, woodland, farm, ocean, jungle, desert and arctic animals, birds, reptiles, insects, animal activities, animal emotions, animal-food interactions and seasonal animal moments', false, LIVING_ANIMAL_SCOPE),
+  niche(2003, 'Cute Animals Mega Collection', '⭐ Popular Mega Packs', 'pets, woodland, farm, ocean, jungle, desert and arctic animals, birds, reptiles, insects, activities, emotions, foods and seasonal moments'),
   niche(2004, 'Food & Drinks Mega Collection', '⭐ Popular Mega Packs', 'breakfast, bakery, produce, pantry, global comfort food, street food, desserts, coffee, tea, mocktails, cooking tools, groceries and celebrations'),
   niche(2005, 'Botanical Garden & Houseplants', '⭐ Popular Mega Packs', 'wildflowers, garden tools, houseplants, herbs, vegetables, greenhouse life, pollinators, watering, propagation, bouquets and seasonal growth'),
   niche(2006, 'Travel & Adventure Mega Pack', '⭐ Popular Mega Packs', 'trip planning, maps, luggage, road travel, flights, rail, camping, hiking, city breaks, beaches, food discoveries, photography, souvenirs and weather'),
@@ -166,21 +154,21 @@ export const NICHE_IDEAS: NicheIdea[] = [
   niche(2215, 'Dinner Party & Supper Club', '🍜 Food & Drink', 'tablescapes, candles, glassware, serving dishes, appetizers, main dishes, desserts, flowers, invitations without text, hosting and guest moments'),
 
   // 4. Evergreen animal buyers
-  animalNiche(2301, 'Cute Cats & Cat Parent Life', 'many cat colors and body types, play, sleep, grooming, food, toys, boxes, windows, plants, vet care and human-cat routines'),
-  animalNiche(2302, 'Cute Dogs & Dog Parent Life', 'varied generic dog forms, walks, play, sleep, training, food, toys, parks, grooming, vet care and human-dog routines'),
-  animalNiche(2303, 'Woodland Animals', 'foxes, deer, rabbits, bears, squirrels, hedgehogs, badgers, owls, forest birds, insects, seasonal activities and woodland objects'),
-  animalNiche(2304, 'Farm Animals & Country Life', 'cows, pigs, sheep, goats, chickens, ducks, horses, barn cats, farm tools, feed, fields, weather and daily care'),
-  animalNiche(2305, 'Ocean Animals & Tide Pools', 'whales, dolphins, seals, turtles, octopus, fish, rays, crabs, starfish, shells, coral, seaweed and conservation moments'),
-  animalNiche(2306, 'Birds & Backyard Birdwatching', 'songbirds, water birds, raptors, owls, feathers, nests, eggs, feeders, binoculars, field notes, habitats and seasonal behavior'),
-  animalNiche(2307, 'Butterflies, Moths & Tiny Insects', 'butterflies, moths, bees, beetles, ladybirds, dragonflies, caterpillars, cocoons, flowers, leaves, pollination and specimen-like views'),
-  animalNiche(2308, 'Dinosaurs & Prehistoric Life', 'diverse dinosaurs, marine reptiles, flying reptiles, fossils, eggs, footprints, plants, field tools, museum objects and playful paleontology'),
-  animalNiche(2309, 'Safari & Jungle Animals', 'elephants, giraffes, lions, big cats, zebras, rhinos, hippos, monkeys, tropical birds, reptiles, vegetation and watering holes'),
-  animalNiche(2310, 'Arctic & Antarctic Animals', 'polar bears, penguins, seals, whales, arctic foxes, snowy owls, walruses, ice, ocean, research tools and cold-weather behavior'),
-  animalNiche(2311, 'Reptiles & Amphibians', 'geckos, bearded dragons, snakes, turtles, frogs, toads, salamanders, habitats, safe care objects, food, plants and basking moments'),
-  animalNiche(2312, 'Rabbits & Small Pets', 'rabbits, guinea pigs, hamsters, rats, mice, chinchillas, hideouts, hay, vegetables, toys, bedding, play and gentle care'),
-  animalNiche(2313, 'Aquarium & Freshwater Life', 'generic aquarium fish, shrimp, snails, aquatic plants, stones, wood, filters, feeding, bubbles, tank tools and peaceful underwater compositions'),
-  animalNiche(2314, 'Horse & Stable Life', 'varied horses, grooming, tack without logos, stable tools, feed, riding safety, pasture, transport, competitions without official marks and horse-human bonds'),
-  animalNiche(2315, 'Funny Urban Wildlife', 'raccoons, pigeons, opossums, squirrels, crows, foxes and other adaptable city animals interacting with ordinary objects in playful original situations'),
+  niche(2301, 'Cute Cats & Cat Parent Life', '🐾 Animals & Pets', 'many cat colors and body types, play, sleep, grooming, food, toys, boxes, windows, plants, vet care and human-cat routines'),
+  niche(2302, 'Cute Dogs & Dog Parent Life', '🐾 Animals & Pets', 'varied generic dog forms, walks, play, sleep, training, food, toys, parks, grooming, vet care and human-dog routines'),
+  niche(2303, 'Woodland Animals', '🐾 Animals & Pets', 'foxes, deer, rabbits, bears, squirrels, hedgehogs, badgers, owls, forest birds, insects, seasonal activities and woodland objects'),
+  niche(2304, 'Farm Animals & Country Life', '🐾 Animals & Pets', 'cows, pigs, sheep, goats, chickens, ducks, horses, barn cats, farm tools, feed, fields, weather and daily care'),
+  niche(2305, 'Ocean Animals & Tide Pools', '🐾 Animals & Pets', 'whales, dolphins, seals, turtles, octopus, fish, rays, crabs, starfish, shells, coral, seaweed and conservation moments'),
+  niche(2306, 'Birds & Backyard Birdwatching', '🐾 Animals & Pets', 'songbirds, water birds, raptors, owls, feathers, nests, eggs, feeders, binoculars, field notes, habitats and seasonal behavior'),
+  niche(2307, 'Butterflies, Moths & Tiny Insects', '🐾 Animals & Pets', 'butterflies, moths, bees, beetles, ladybirds, dragonflies, caterpillars, cocoons, flowers, leaves, pollination and specimen-like views'),
+  niche(2308, 'Dinosaurs & Prehistoric Life', '🐾 Animals & Pets', 'diverse dinosaurs, marine reptiles, flying reptiles, fossils, eggs, footprints, plants, field tools, museum objects and playful paleontology'),
+  niche(2309, 'Safari & Jungle Animals', '🐾 Animals & Pets', 'elephants, giraffes, lions, big cats, zebras, rhinos, hippos, monkeys, tropical birds, reptiles, vegetation and watering holes'),
+  niche(2310, 'Arctic & Antarctic Animals', '🐾 Animals & Pets', 'polar bears, penguins, seals, whales, arctic foxes, snowy owls, walruses, ice, ocean, research tools and cold-weather behavior'),
+  niche(2311, 'Reptiles & Amphibians', '🐾 Animals & Pets', 'geckos, bearded dragons, snakes, turtles, frogs, toads, salamanders, habitats, safe care objects, food, plants and basking moments'),
+  niche(2312, 'Rabbits & Small Pets', '🐾 Animals & Pets', 'rabbits, guinea pigs, hamsters, rats, mice, chinchillas, hideouts, hay, vegetables, toys, bedding, play and gentle care'),
+  niche(2313, 'Aquarium & Freshwater Life', '🐾 Animals & Pets', 'generic aquarium fish, shrimp, snails, aquatic plants, stones, wood, filters, feeding, bubbles, tank tools and peaceful underwater compositions'),
+  niche(2314, 'Horse & Stable Life', '🐾 Animals & Pets', 'varied horses, grooming, tack without logos, stable tools, feed, riding safety, pasture, transport, competitions without official marks and horse-human bonds'),
+  niche(2315, 'Funny Urban Wildlife', '🐾 Animals & Pets', 'raccoons, pigeons, opossums, squirrels, crows, foxes and other adaptable city animals interacting with ordinary objects in playful original situations'),
 
   // 5. Nature and outdoor lifestyles
   niche(2401, 'Wildflowers & Meadow Life', '🌿 Nature & Outdoors', 'wildflower species, grasses, bouquets, seeds, garden tools, meadow insects, birds, weather, picnics and seasonal growth'),

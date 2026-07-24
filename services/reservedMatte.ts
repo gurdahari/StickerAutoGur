@@ -333,17 +333,18 @@ export const extractVerifiedReservedMatte = (
  * not a generic green/cyan scan: it checks the measured matte color and only
  * on visible pixels touching transparency after normalization.
  */
-export const countReservedMatteEdgeContamination = (
+const findReservedMatteEdgeContamination = (
   data: Uint8ClampedArray,
   width: number,
   height: number,
   background: RgbColor
 ) => {
-  let contaminatedPixels = 0;
+  const positions: number[] = [];
 
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
-      const pixelIndex = (y * width + x) * 4;
+      const position = y * width + x;
+      const pixelIndex = position * 4;
       if (data[pixelIndex + 3] <= 8) continue;
       const distance = Math.hypot(
         data[pixelIndex] - background.r,
@@ -366,9 +367,104 @@ export const countReservedMatteEdgeContamination = (
           }
         }
       }
-      if (touchesTransparency) contaminatedPixels++;
+      if (touchesTransparency) positions.push(position);
     }
   }
 
-  return contaminatedPixels;
+  return positions;
+};
+
+export const countReservedMatteEdgeContamination = (
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  background: RgbColor
+) => findReservedMatteEdgeContamination(data, width, height, background).length;
+
+/**
+ * Repairs only a tiny post-resize remainder of the already verified matte.
+ *
+ * Resampling can leave a handful of visible RGB pixels next to transparency
+ * even after the source matte was extracted correctly. Re-running the complete
+ * topology pass at this stage can alter an otherwise clean edge, so this final
+ * fallback copies RGB from the nearest clean visible neighbour while preserving
+ * every alpha value. Larger remainders are deliberately left untouched so the
+ * caller can fail closed instead of hiding a real extraction failure.
+ */
+export const repairSmallReservedMatteEdgeResiduals = (
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  background: RgbColor,
+  maxPixels = 32
+) => {
+  const pixelCount = width * height;
+  const residual = new Uint8Array(pixelCount);
+  const positions = findReservedMatteEdgeContamination(data, width, height, background);
+  for (const position of positions) residual[position] = 1;
+
+  if (!positions.length || positions.length > maxPixels) {
+    return { detectedPixels: positions.length, repairedPixels: 0 };
+  }
+
+  const source = new Uint8ClampedArray(data);
+  let repairedPixels = 0;
+
+  for (const position of positions) {
+    const x = position % width;
+    const y = Math.floor(position / width);
+    const pixelIndex = position * 4;
+    let bestSample = -1;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    let bestAlpha = -1;
+
+    for (let radius = 1; radius <= 8; radius++) {
+      for (let offsetY = -radius; offsetY <= radius; offsetY++) {
+        const sampleY = y + offsetY;
+        if (sampleY < 0 || sampleY >= height) continue;
+        for (let offsetX = -radius; offsetX <= radius; offsetX++) {
+          if (Math.max(Math.abs(offsetX), Math.abs(offsetY)) !== radius) continue;
+          const sampleX = x + offsetX;
+          if (sampleX < 0 || sampleX >= width) continue;
+          const samplePosition = sampleY * width + sampleX;
+          if (residual[samplePosition]) continue;
+          const sampleIndex = samplePosition * 4;
+          const sampleAlpha = source[sampleIndex + 3];
+          if (sampleAlpha <= 8) continue;
+          const sampleMatteDistance = Math.hypot(
+            source[sampleIndex] - background.r,
+            source[sampleIndex + 1] - background.g,
+            source[sampleIndex + 2] - background.b
+          );
+          if (sampleMatteDistance <= 112) continue;
+
+          const spatialDistance = offsetX * offsetX + offsetY * offsetY;
+          if (
+            spatialDistance < bestDistance
+            || (spatialDistance === bestDistance && sampleAlpha > bestAlpha)
+          ) {
+            bestSample = sampleIndex;
+            bestDistance = spatialDistance;
+            bestAlpha = sampleAlpha;
+          }
+        }
+      }
+      if (bestSample >= 0) break;
+    }
+
+    if (bestSample >= 0) {
+      data[pixelIndex] = source[bestSample];
+      data[pixelIndex + 1] = source[bestSample + 1];
+      data[pixelIndex + 2] = source[bestSample + 2];
+    } else {
+      // White is the neutral die-cut fallback when a sub-pixel remnant has no
+      // trustworthy local foreground sample. Alpha is intentionally unchanged.
+      data[pixelIndex] = 255;
+      data[pixelIndex + 1] = 255;
+      data[pixelIndex + 2] = 255;
+    }
+    repairedPixels++;
+  }
+
+  return { detectedPixels: positions.length, repairedPixels };
 };

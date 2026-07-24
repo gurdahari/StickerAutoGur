@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   countReservedMatteEdgeContamination,
   extractVerifiedReservedMatte,
+  repairSmallReservedMatteEdgeResiduals,
   type RgbColor
 } from '../services/reservedMatte';
 
@@ -115,4 +116,68 @@ test('preserves unrelated green artwork away from verified matte components', ()
   extractVerifiedReservedMatte(data, width, height, matte);
 
   assert.deepEqual(pixel(data, width, 7, 7), artworkGreen);
+});
+
+test('repairs a tiny post-resize matte remainder without changing alpha', () => {
+  const width = 15;
+  const height = 15;
+  const matte = { r: 0, g: 255, b: 59 };
+  const cleanEdge = [92, 63, 118, 170];
+  const data = new Uint8ClampedArray(width * height * 4);
+
+  for (let y = 4; y <= 10; y++) {
+    for (let x = 4; x <= 10; x++) {
+      data.set(cleanEdge, (y * width + x) * 4);
+    }
+  }
+
+  const residualPositions = [
+    [4, 5, 91],
+    [4, 6, 137],
+    [4, 7, 203],
+    [5, 4, 112],
+    [6, 4, 164],
+    [7, 4, 219],
+    [8, 4, 248]
+  ];
+  for (const [x, y, alpha] of residualPositions) {
+    data.set([matte.r, matte.g, matte.b, alpha], (y * width + x) * 4);
+  }
+  const alphasBefore = residualPositions.map(([x, y]) => pixel(data, width, x, y)[3]);
+
+  assert.equal(countReservedMatteEdgeContamination(data, width, height, matte), 7);
+  const result = repairSmallReservedMatteEdgeResiduals(data, width, height, matte);
+
+  assert.deepEqual(result, { detectedPixels: 7, repairedPixels: 7 });
+  assert.equal(countReservedMatteEdgeContamination(data, width, height, matte), 0);
+  assert.deepEqual(
+    residualPositions.map(([x, y]) => pixel(data, width, x, y)[3]),
+    alphasBefore
+  );
+  for (const [x, y] of residualPositions) {
+    assert.deepEqual(pixel(data, width, x, y).slice(0, 3), cleanEdge.slice(0, 3));
+  }
+});
+
+test('does not hide a large post-resize extraction failure', () => {
+  const width = 20;
+  const height = 20;
+  const matte = { r: 255, g: 0, b: 212 };
+  const data = new Uint8ClampedArray(width * height * 4);
+
+  for (let position = 0; position < width * height; position++) {
+    data.set([255, 255, 255, 0], position * 4);
+  }
+  for (let y = 4; y <= 15; y++) {
+    for (let x = 4; x <= 15; x++) {
+      data.set([matte.r, matte.g, matte.b, 180], (y * width + x) * 4);
+    }
+  }
+
+  const before = new Uint8ClampedArray(data);
+  const result = repairSmallReservedMatteEdgeResiduals(data, width, height, matte, 8);
+
+  assert.ok(result.detectedPixels > 8);
+  assert.equal(result.repairedPixels, 0);
+  assert.deepEqual(data, before);
 });

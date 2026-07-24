@@ -1,6 +1,7 @@
 import {
   inspectStickerBackground,
-  removeReservedMatteWithTrimap
+  reconstructReservedMatteWhitePixel,
+  removeEnclosedReservedMatte
 } from './reservedMatte';
 import {
   expectsEnclosedOpening,
@@ -159,9 +160,6 @@ export const processStickerImage = async (
   if (!forceOpeningRepair && !backgroundInspection.hasStableReservedMatte) {
     throw new Error('The generated source did not contain one verified reserved matte key in all four corners.');
   }
-  if (backgroundInspection.hasStableReservedMatte) {
-    removeReservedMatteWithTrimap(data, width, height, background);
-  }
   const backgroundLuma = 0.2126 * background.r + 0.7152 * background.g + 0.0722 * background.b;
   const floodTolerance = backgroundInspection.hasStableReservedMatte
     ? 88
@@ -217,6 +215,9 @@ export const processStickerImage = async (
     if (y + 1 < height) tryQueue(x, y + 1);
   }
 
+  if (backgroundInspection.hasStableReservedMatte) {
+    removeEnclosedReservedMatte(data, width, height, distanceFromBackground);
+  }
   if (backgroundInspection.hasStableReservedMatte || forceOpeningRepair) {
     removeVerifiedEnclosedBlackOpenings(data, width, height, _itemPrompt, forceOpeningRepair);
   }
@@ -229,45 +230,47 @@ export const processStickerImage = async (
       || data[(((y + 1) * width + x) * 4) + 3] === 0;
   };
 
-  // Images without a verified technical matte retain the conservative legacy
-  // cleanup. Verified mattes already received one local-foreground alpha pass
-  // above, so they must not be peeled or recolored a second time.
-  if (!backgroundInspection.hasStableReservedMatte) {
-    // Peel two contamination layers around the exterior and any verified reserved
-    // matte openings. No generic black/dark-pixel cleanup runs here.
-    for (let pass = 0; pass < 2; pass++) {
-      const remove = new Uint8Array(pixelCount);
-      for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-          const position = y * width + x;
-          const pixelIndex = position * 4;
-          if (data[pixelIndex + 3] === 0 || !hasTransparentNeighbor(x, y)) continue;
-          if (distanceFromBackground(pixelIndex) <= haloTolerance) remove[position] = 1;
-        }
-      }
-      for (let position = 0; position < pixelCount; position++) {
-        if (remove[position]) data[position * 4 + 3] = 0;
-      }
-    }
-
-    // Reconstruct a short anti-aliased white cutline instead of keeping a dirty
-    // gray fringe that was blended against Seedream's black matte.
+  // Peel two contamination layers around the exterior and any verified reserved
+  // matte openings. No generic black/dark-pixel cleanup runs here.
+  for (let pass = 0; pass < 2; pass++) {
+    const remove = new Uint8Array(pixelCount);
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
         const position = y * width + x;
         const pixelIndex = position * 4;
         if (data[pixelIndex + 3] === 0 || !hasTransparentNeighbor(x, y)) continue;
+        if (distanceFromBackground(pixelIndex) <= haloTolerance) remove[position] = 1;
+      }
+    }
+    for (let position = 0; position < pixelCount; position++) {
+      if (remove[position]) data[position * 4 + 3] = 0;
+    }
+  }
 
-        const channelSpread = Math.max(data[pixelIndex], data[pixelIndex + 1], data[pixelIndex + 2])
-          - Math.min(data[pixelIndex], data[pixelIndex + 1], data[pixelIndex + 2]);
-        const distance = distanceFromBackground(pixelIndex);
-        if (channelSpread <= 32 && distance < 405) {
-          const alpha = Math.max(70, Math.min(255, Math.round(((distance - haloTolerance) / (405 - haloTolerance)) * 255)));
-          data[pixelIndex] = 255;
-          data[pixelIndex + 1] = 255;
-          data[pixelIndex + 2] = 255;
-          data[pixelIndex + 3] = Math.min(data[pixelIndex + 3], alpha);
-        }
+  // Reconstruct a short anti-aliased white cutline instead of keeping a dirty
+  // gray fringe that was blended against Seedream's black matte.
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const position = y * width + x;
+      const pixelIndex = position * 4;
+      if (data[pixelIndex + 3] === 0 || !hasTransparentNeighbor(x, y)) continue;
+
+      if (
+        backgroundInspection.hasStableReservedMatte
+        && reconstructReservedMatteWhitePixel(data, pixelIndex, background)
+      ) {
+        continue;
+      }
+
+      const channelSpread = Math.max(data[pixelIndex], data[pixelIndex + 1], data[pixelIndex + 2])
+        - Math.min(data[pixelIndex], data[pixelIndex + 1], data[pixelIndex + 2]);
+      const distance = distanceFromBackground(pixelIndex);
+      if (channelSpread <= 32 && distance < 405) {
+        const alpha = Math.max(70, Math.min(255, Math.round(((distance - haloTolerance) / (405 - haloTolerance)) * 255)));
+        data[pixelIndex] = 255;
+        data[pixelIndex + 1] = 255;
+        data[pixelIndex + 2] = 255;
+        data[pixelIndex + 3] = Math.min(data[pixelIndex + 3], alpha);
       }
     }
   }
@@ -324,11 +327,7 @@ export const processStickerImage = async (
     drawWidth,
     drawHeight
   );
-  // The verified trimap already owns edge antialiasing. Blurring it again can
-  // resurrect matte-colored RGB inside enclosed openings.
-  if (!backgroundInspection.hasStableReservedMatte) {
-    softenFinalAlphaEdge(outputContext, outputSize, outputSize);
-  }
+  softenFinalAlphaEdge(outputContext, outputSize, outputSize);
   const finalizedPixels = outputContext.getImageData(0, 0, outputSize, outputSize);
   neutralizeTransparentWhiteCutline(finalizedPixels.data, outputSize, outputSize);
   outputContext.putImageData(finalizedPixels, 0, 0);

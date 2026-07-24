@@ -4,6 +4,7 @@ export const MAX_AUTOMATIC_REPLACEMENTS_PER_STICKER = 2;
 
 const NEEDS_NEW_ARTWORK = [
   /near-exact duplicate|verified reserved matte key|sticker cleanup removed the entire image|failed to load image for sticker processing/i,
+  /reserved matte edge contamination remained after local repair/i,
   /transparent background is missing|artwork occupies too little|artwork fills almost the entire canvas|extreme semi-transparent edge coverage/i,
   /large solid-black interior region|large unintended transparent hole|subject center is mostly transparent|sticker silhouette is abnormally hollow/i,
   /artwork is fragmented|artwork touches the canvas edge|below the minimum safe pixel dimension|final sticker file is not a PNG/i
@@ -12,6 +13,12 @@ const NEEDS_NEW_ARTWORK = [
 /**
  * These failures originate in the generated pixels and cannot be repaired by
  * rerunning the same local mask. A new Seedream source is the correct recovery.
+ *
+ * The final reserved-matte postcondition belongs in this group as well. When
+ * that postcondition still fails after every bounded local repair, preserving
+ * the paid source is useful for diagnosis, but waiting for manual interaction
+ * must not stall the whole production run. The normal replacement loop should
+ * move that one slot to a fresh source while the rest of the catalog continues.
  */
 export const requiresNewArtwork = (sticker: Pick<Sticker, 'qaIssues'>) =>
   (sticker.qaIssues || []).some(issue => NEEDS_NEW_ARTWORK.some(pattern => pattern.test(issue)));

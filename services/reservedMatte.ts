@@ -382,6 +382,124 @@ export const countReservedMatteEdgeContamination = (
 ) => findReservedMatteEdgeContamination(data, width, height, background).length;
 
 /**
+ * Removes the signed chroma remainder that can survive around a transparent
+ * opening even when no pixel is still close to the matte itself.
+ *
+ * Matte subtraction can miss in both directions: a pixel can retain the key
+ * color, or over-correct toward its complementary color. Both lie on the same
+ * chroma axis. A boundary pixel is neutralized only when at least two nearby
+ * opaque, near-white pixels prove that this local edge is the sticker cutline.
+ * RGB is copied from that cutline while alpha remains byte-for-byte unchanged.
+ */
+export const neutralizeVerifiedWhiteCutlineChroma = (
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  background: RgbColor
+) => {
+  const source = new Uint8ClampedArray(data);
+  const matteMean = (background.r + background.g + background.b) / 3;
+  const matteChroma = [
+    background.r - matteMean,
+    background.g - matteMean,
+    background.b - matteMean
+  ];
+  const matteChromaLength = Math.hypot(...matteChroma);
+  if (matteChromaLength < 32) return 0;
+
+  const touchesTransparency = (x: number, y: number) => {
+    for (let offsetY = -1; offsetY <= 1; offsetY++) {
+      const nextY = y + offsetY;
+      if (nextY < 0 || nextY >= height) continue;
+      for (let offsetX = -1; offsetX <= 1; offsetX++) {
+        if (!offsetX && !offsetY) continue;
+        const nextX = x + offsetX;
+        if (nextX < 0 || nextX >= width) continue;
+        if (source[(nextY * width + nextX) * 4 + 3] <= 8) return true;
+      }
+    }
+    return false;
+  };
+
+  let repairedPixels = 0;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const pixelIndex = (y * width + x) * 4;
+      const alpha = source[pixelIndex + 3];
+      if (alpha <= 8 || alpha >= 250 || !touchesTransparency(x, y)) continue;
+
+      const mean = (
+        source[pixelIndex]
+        + source[pixelIndex + 1]
+        + source[pixelIndex + 2]
+      ) / 3;
+      const chroma = [
+        source[pixelIndex] - mean,
+        source[pixelIndex + 1] - mean,
+        source[pixelIndex + 2] - mean
+      ];
+      const chromaLength = Math.hypot(...chroma);
+      if (chromaLength < 12) continue;
+      const alignment = Math.abs(
+        chroma.reduce((sum, value, channel) => sum + value * matteChroma[channel], 0)
+        / (chromaLength * matteChromaLength)
+      );
+      if (alignment < 0.82) continue;
+
+      const whiteSamples: Array<{ index: number; distance: number; alpha: number }> = [];
+      for (let radius = 1; radius <= 4; radius++) {
+        for (let offsetY = -radius; offsetY <= radius; offsetY++) {
+          const sampleY = y + offsetY;
+          if (sampleY < 0 || sampleY >= height) continue;
+          for (let offsetX = -radius; offsetX <= radius; offsetX++) {
+            if (Math.max(Math.abs(offsetX), Math.abs(offsetY)) !== radius) continue;
+            const sampleX = x + offsetX;
+            if (sampleX < 0 || sampleX >= width) continue;
+            const sampleIndex = (sampleY * width + sampleX) * 4;
+            const sampleAlpha = source[sampleIndex + 3];
+            const minimumChannel = Math.min(
+              source[sampleIndex],
+              source[sampleIndex + 1],
+              source[sampleIndex + 2]
+            );
+            const channelSpread = Math.max(
+              source[sampleIndex],
+              source[sampleIndex + 1],
+              source[sampleIndex + 2]
+            ) - minimumChannel;
+            if (
+              sampleAlpha < alpha
+              || minimumChannel < 210
+              || channelSpread > 24
+            ) {
+              continue;
+            }
+            whiteSamples.push({
+              index: sampleIndex,
+              distance: offsetX * offsetX + offsetY * offsetY,
+              alpha: sampleAlpha
+            });
+          }
+        }
+        if (whiteSamples.length >= 2) break;
+      }
+      if (whiteSamples.length < 2) continue;
+
+      whiteSamples.sort((left, right) =>
+        left.distance - right.distance || right.alpha - left.alpha
+      );
+      const sampleIndex = whiteSamples[0].index;
+      data[pixelIndex] = source[sampleIndex];
+      data[pixelIndex + 1] = source[sampleIndex + 1];
+      data[pixelIndex + 2] = source[sampleIndex + 2];
+      repairedPixels++;
+    }
+  }
+
+  return repairedPixels;
+};
+
+/**
  * Repairs only a tiny post-resize remainder of the already verified matte.
  *
  * Resampling can leave a handful of visible RGB pixels next to transparency

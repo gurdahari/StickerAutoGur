@@ -17,7 +17,7 @@ interface WhiteSample {
 
 interface ResidualCandidate {
   position: number;
-  replacementIndex: number;
+  replacementValue: number;
 }
 
 const buildExteriorTransparency = (
@@ -213,10 +213,14 @@ const findEnclosedMatteAxisResiduals = (
       const whiteSamples = collectWhiteSamples(source, width, height, x, y, alpha);
       if (!hasWhiteCutlineProof(whiteSamples, alpha)) continue;
 
-      candidates.push({
-        position,
-        replacementIndex: whiteSamples[0].index
-      });
+      const sampleIndex = whiteSamples[0].index;
+      const replacementValue = Math.max(
+        225,
+        source[sampleIndex],
+        source[sampleIndex + 1],
+        source[sampleIndex + 2]
+      );
+      candidates.push({ position, replacementValue });
     }
   }
 
@@ -237,8 +241,10 @@ export const countEnclosedReservedMatteAxisContamination = (
 
 /**
  * Repairs the broader signed matte-axis remainder left by canvas resampling.
- * Only RGB is replaced from the nearest trusted white cutline sample; alpha is
- * preserved byte-for-byte so the hole geometry and edge smoothness do not move.
+ * The trusted cutline sample supplies brightness, but its channels are made
+ * exactly neutral before writing. Copying the sample RGB verbatim can copy a
+ * smaller matte tint back onto the repaired pixel and make the postcondition
+ * fail again. Alpha is preserved byte-for-byte, so geometry never changes.
  */
 export const repairEnclosedReservedMatteAxisContamination = (
   data: Uint8ClampedArray,
@@ -246,14 +252,13 @@ export const repairEnclosedReservedMatteAxisContamination = (
   height: number,
   background: RgbColor
 ) => {
-  const source = new Uint8ClampedArray(data);
-  const candidates = findEnclosedMatteAxisResiduals(source, width, height, background);
+  const candidates = findEnclosedMatteAxisResiduals(data, width, height, background);
 
   for (const candidate of candidates) {
     const pixelIndex = candidate.position * 4;
-    data[pixelIndex] = source[candidate.replacementIndex];
-    data[pixelIndex + 1] = source[candidate.replacementIndex + 1];
-    data[pixelIndex + 2] = source[candidate.replacementIndex + 2];
+    data[pixelIndex] = candidate.replacementValue;
+    data[pixelIndex + 1] = candidate.replacementValue;
+    data[pixelIndex + 2] = candidate.replacementValue;
   }
 
   return {

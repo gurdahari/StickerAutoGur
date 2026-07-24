@@ -1611,6 +1611,83 @@ export const generateStickerPrompts = async (niche: string, style: StylePreset, 
       `;
   }
 
+  const enforcePrimarySubjectScope = async (candidates: string[]): Promise<string[]> => {
+    if (!scope || !candidates.length) return candidates;
+
+    try {
+      const candidateList = candidates
+        .map((candidate, index) => `${index}: ${candidate}`)
+        .join('\n');
+      const audit = await generateBrainText({
+        tier: 'light',
+        prompt: `Audit these proposed sticker concepts against one strict scope rule.
+
+REQUIRED PRIMARY SUBJECT: ${scope.primarySubject}
+Every valid concept must visibly make that subject the main, largest visual subject. Props, food, habitat, tools, places and decorations are valid only when they visibly interact with that subject. Do not reject a valid subject just because it includes supporting details.
+
+Return only the zero-based indexes that are invalid because they would generate a standalone supporting object, a setting, a prop, food, decoration or another off-scope primary subject.
+
+CONCEPTS:
+${candidateList}`,
+        schemaName: 'primary_subject_scope_audit',
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            invalidIndexes: {
+              type: 'array',
+              items: { type: 'integer', minimum: 0, maximum: candidates.length - 1 },
+              maxItems: candidates.length
+            }
+          },
+          required: ['invalidIndexes']
+        }
+      });
+      const parsed = JSON.parse(audit.text) as { invalidIndexes: number[] };
+      const invalidIndexes = [...new Set(parsed.invalidIndexes)]
+        .filter(index => Number.isInteger(index) && index >= 0 && index < candidates.length);
+      if (!invalidIndexes.length) return candidates;
+
+      const validConcepts = candidates.filter((_, index) => !invalidIndexes.includes(index)).join('\n');
+      const repair = await generateBrainText({
+        tier: 'light',
+        prompt: `Generate exactly ${invalidIndexes.length} replacement sticker concepts.
+
+NON-NEGOTIABLE PRIMARY SUBJECT: ${scope.primarySubject}. Every replacement must make that subject the main, largest visual subject. Supporting props, food, habitat, tools, places or decoration may appear only in a visible interaction with the primary subject. Never return a standalone prop, food, place or decorative object.
+
+Keep the same style and broader niche context. Do not duplicate these already valid concepts:
+${validConcepts}`,
+        schemaName: 'primary_subject_scope_repairs',
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            prompts: {
+              type: 'array',
+              minItems: invalidIndexes.length,
+              maxItems: invalidIndexes.length,
+              items: { type: 'string' }
+            }
+          },
+          required: ['prompts']
+        }
+      });
+      const replacements = (JSON.parse(repair.text) as { prompts: string[] }).prompts;
+      const repaired = [...candidates];
+      invalidIndexes.forEach((index, replacementIndex) => {
+        const replacement = replacements[replacementIndex]?.trim();
+        if (replacement) repaired[index] = replacement;
+      });
+      return repaired;
+    } catch (error) {
+      // The scope instruction and deterministic fallback still apply if the
+      // inexpensive text audit is temporarily unavailable. Never block a run
+      // or spend image credits on an unbounded retry loop here.
+      console.warn('Primary-subject concept audit unavailable; using scoped prompt rules only.', error);
+      return candidates;
+    }
+  };
+
   // MASTER PROMPT: DYNAMIC "BEST SELLER" LOGIC
   const prompt = `
     ACT AS A SENIOR ART DIRECTOR.
@@ -1687,13 +1764,13 @@ export const generateStickerPrompts = async (niche: string, style: StylePreset, 
         const family = fallbackFamilies[(variation - 1) % fallbackFamilies.length] || 'thematic object';
         uniquePrompts.push(`TYPE: Object-Only | SUBJECT: A distinct ${family} concept from ${themeUniverse}, variation ${variation}, with a primary subject not used elsewhere | COMPOSITION: Centered isolated design | TEXT: NONE`);
       }
-      return uniquePrompts.slice(0, COUNT);
+      return enforcePrimarySubjectScope(uniquePrompts.slice(0, COUNT));
   } catch (e) {
       console.warn(`OpenAI concept generation unavailable; using deterministic local concepts.`, e);
-      return Array.from({ length: COUNT }, (_, index) => {
+      return enforcePrimarySubjectScope(Array.from({ length: COUNT }, (_, index) => {
         const family = fallbackFamilies[index % fallbackFamilies.length] || 'thematic object';
         return `TYPE: Object-Only | SUBJECT: A distinct ${family} concept from ${themeUniverse}, variation ${index + 1} | COMPOSITION: Centered isolated design | TEXT: NONE`;
-      });
+      }));
   }
 };
 

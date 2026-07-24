@@ -4,6 +4,7 @@ import { AutopilotState, NicheIdea, StylePreset, Sticker, MarketingAsset, TrendR
 import { NICHE_IDEAS, STYLE_PRESETS } from '../data/presets';
 import { ensureProvidersConfigured, generateStickerPrompts, generateAutopilotSticker, generateAutopilotListing, generateSeedreamMockup, findViralNiche, getTrendAnalysis, discoverTopTrends, analyzeNicheVisuals, selectCoverStickerIds, assessNicheForProduction, generateReplacementStickerPrompts, createListingPreviewVideo, setAiUsageStage, subscribeAiUsage } from '../services/aiService';
 import { processStickerImage } from '../services/stickerProcessing';
+import { neutralizeTransparentWhiteCutline } from '../services/stickerEdgeFinalization';
 import { imageSourceToBlob } from '../services/stickerSource';
 import { findVisualDuplicateGroups, inspectStickerLocally } from '../services/qualityControl';
 import {
@@ -157,6 +158,9 @@ const resizePngBlob = async (blob: Blob, scale: number): Promise<Blob> => {
   context.imageSmoothingQuality = 'high';
   context.clearRect(0, 0, canvas.width, canvas.height);
   context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  const resizedPixels = context.getImageData(0, 0, canvas.width, canvas.height);
+  neutralizeTransparentWhiteCutline(resizedPixels.data, canvas.width, canvas.height);
+  context.putImageData(resizedPixels, 0, 0);
 
   return new Promise((resolve, reject) => {
     canvas.toBlob(result => {

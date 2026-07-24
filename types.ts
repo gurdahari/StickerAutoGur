@@ -211,6 +211,10 @@ export interface NicheVisualAnalysis {
   safeGenerics: string;
   themeUniverse?: string;
   subthemes?: string;
+  collectionPromise?: string;
+  membershipRule?: string;
+  allowedPrimarySubjects?: string;
+  supportingOnlySubjects?: string;
   intentAndUse?: string;
   customerSearchBehavior?: string;
 }

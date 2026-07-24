@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   countEnclosedReservedMatteAxisContamination,
+  isMinorEnclosedReservedMatteAxisContamination,
+  measureEnclosedReservedMatteAxisContamination,
   repairEnclosedReservedMatteAxisContamination
 } from '../services/reservedMattePostResize';
 
@@ -21,19 +23,17 @@ test('repairs green matte-axis pixels in a narrow enclosed hole without changing
     data.set(artwork, position * 4);
   }
 
-  // One-pixel enclosed opening with a narrow white proof sample. The residual
-  // is far from the exact green key, so the old distance-only guard misses it.
   data.set([255, 255, 255, 0], (6 * width + 6) * 4);
   data.set(residual, (6 * width + 5) * 4);
   data.set(white, (5 * width + 5) * 4);
   const alphaBefore = pixel(data, width, 5, 6)[3];
 
-  assert.equal(countEnclosedReservedMatteAxisContamination(data, width, height, matte), 1);
+  assert.equal(measureEnclosedReservedMatteAxisContamination(data, width, height, matte).pixelCount, 1);
   const result = repairEnclosedReservedMatteAxisContamination(data, width, height, matte);
 
   assert.deepEqual(result, { detectedPixels: 1, repairedPixels: 1 });
   assert.equal(countEnclosedReservedMatteAxisContamination(data, width, height, matte), 0);
-  assert.deepEqual(pixel(data, width, 5, 6).slice(0, 3), white.slice(0, 3));
+  assert.deepEqual(pixel(data, width, 5, 6).slice(0, 3), [248, 248, 248]);
   assert.equal(pixel(data, width, 5, 6)[3], alphaBefore);
 });
 
@@ -57,12 +57,60 @@ test('repairs a train-window residual after resampling drifts off the strict mat
   data.set([248, 247, 246, 80], (8 * width + 5) * 4);
   const alphaBefore = pixel(data, width, 5, 7)[3];
 
-  assert.equal(countEnclosedReservedMatteAxisContamination(data, width, height, matte), 1);
+  assert.equal(measureEnclosedReservedMatteAxisContamination(data, width, height, matte).pixelCount, 1);
   repairEnclosedReservedMatteAxisContamination(data, width, height, matte);
 
   assert.equal(countEnclosedReservedMatteAxisContamination(data, width, height, matte), 0);
   assert.ok(pixel(data, width, 5, 7).slice(0, 3).every(channel => channel >= 248));
   assert.equal(pixel(data, width, 5, 7)[3], alphaBefore);
+});
+
+test('does not copy a smaller matte tint from accepted white proof pixels', () => {
+  const width = 15;
+  const height = 15;
+  const matte = { r: 0, g: 255, b: 59 };
+  const data = new Uint8ClampedArray(width * height * 4);
+  const residual = [99, 156, 68, 180];
+  const tintedWhite = [225, 248, 226, 210];
+
+  for (let position = 0; position < width * height; position++) {
+    data.set([92, 63, 118, 255], position * 4);
+  }
+  data.set([255, 255, 255, 0], (7 * width + 7) * 4);
+  data.set(residual, (7 * width + 6) * 4);
+  data.set(tintedWhite, (6 * width + 4) * 4);
+  data.set(tintedWhite, (8 * width + 4) * 4);
+  const alphaBefore = pixel(data, width, 6, 7)[3];
+
+  assert.equal(measureEnclosedReservedMatteAxisContamination(data, width, height, matte).pixelCount, 1);
+  repairEnclosedReservedMatteAxisContamination(data, width, height, matte);
+
+  assert.equal(countEnclosedReservedMatteAxisContamination(data, width, height, matte), 0);
+  assert.deepEqual(pixel(data, width, 6, 7).slice(0, 3), [248, 248, 248]);
+  assert.equal(pixel(data, width, 6, 7)[3], alphaBefore);
+});
+
+test('minor matte-axis residue is a warning rather than a paid-replacement failure', () => {
+  assert.equal(isMinorEnclosedReservedMatteAxisContamination({
+    pixelCount: 34,
+    effectivePixels: 24,
+    maxAlpha: 180
+  }), true);
+  assert.equal(isMinorEnclosedReservedMatteAxisContamination({
+    pixelCount: 49,
+    effectivePixels: 24,
+    maxAlpha: 180
+  }), false);
+  assert.equal(isMinorEnclosedReservedMatteAxisContamination({
+    pixelCount: 34,
+    effectivePixels: 33,
+    maxAlpha: 180
+  }), false);
+  assert.equal(isMinorEnclosedReservedMatteAxisContamination({
+    pixelCount: 1,
+    effectivePixels: 0.95,
+    maxAlpha: 242
+  }), false);
 });
 
 test('does not alter matte-aligned colored artwork on exterior transparency', () => {

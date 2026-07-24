@@ -91,11 +91,13 @@ test('does not copy a smaller matte tint from accepted white proof pixels', () =
 });
 
 test('minor matte-axis residue is a warning rather than a paid-replacement failure', () => {
-  assert.equal(isMinorEnclosedReservedMatteAxisContamination({
+  const minor = {
     pixelCount: 34,
     effectivePixels: 24,
     maxAlpha: 180
-  }), true);
+  };
+  assert.equal(isMinorEnclosedReservedMatteAxisContamination(minor), true);
+
   assert.equal(isMinorEnclosedReservedMatteAxisContamination({
     pixelCount: 49,
     effectivePixels: 24,

@@ -6,6 +6,10 @@ import {
   repairSmallReservedMatteEdgeResiduals
 } from './reservedMatte';
 import {
+  countEnclosedReservedMatteAxisContamination,
+  repairEnclosedReservedMatteAxisContamination
+} from './reservedMattePostResize';
+import {
   expectsEnclosedOpening,
   removeVerifiedEnclosedBlackOpenings
 } from './enclosedBlackOpening';
@@ -327,16 +331,13 @@ export const processStickerImage = async (
   const finalizedPixels = outputContext.getImageData(0, 0, outputSize, outputSize);
   if (backgroundInspection.hasStableReservedMatte) {
     // Resize is the last operation capable of creating new mixed edge pixels.
-    // Remove both matte-colored and complementary chroma from a locally proven
-    // white cutline before checking for any exact-key remainder.
+    // First remove the strict signed chroma case, then repair exact-key remnants.
     neutralizeVerifiedWhiteCutlineChroma(
       finalizedPixels.data,
       outputSize,
       outputSize,
       background
     );
-    // Repair only a tiny RGB remainder without changing alpha or re-running the
-    // full topology pass on an already clean, normalized sticker.
     let remainingContamination = countReservedMatteEdgeContamination(
       finalizedPixels.data,
       outputSize,
@@ -350,16 +351,34 @@ export const processStickerImage = async (
         outputSize,
         background
       );
-      remainingContamination = countReservedMatteEdgeContamination(
-        finalizedPixels.data,
-        outputSize,
-        outputSize,
-        background
-      );
     }
-    if (remainingContamination) {
+
+    // Canvas resampling can move the visible fringe far from the exact RGB key.
+    // Repair the broader matte-axis remainder only around enclosed transparent
+    // holes with local white-cutline proof, while preserving alpha exactly.
+    repairEnclosedReservedMatteAxisContamination(
+      finalizedPixels.data,
+      outputSize,
+      outputSize,
+      background
+    );
+
+    remainingContamination = countReservedMatteEdgeContamination(
+      finalizedPixels.data,
+      outputSize,
+      outputSize,
+      background
+    );
+    const remainingAxisContamination = countEnclosedReservedMatteAxisContamination(
+      finalizedPixels.data,
+      outputSize,
+      outputSize,
+      background
+    );
+    if (remainingContamination || remainingAxisContamination) {
       throw new Error(
-        `Reserved matte edge contamination remained after local repair (${remainingContamination} pixels).`
+        `Reserved matte edge contamination remained after local repair `
+        + `(${remainingContamination} exact-key, ${remainingAxisContamination} matte-axis pixels).`
       );
     }
   } else {

@@ -1,24 +1,59 @@
-export interface NichePromptScope {
-  primarySubject: string;
+export interface NicheConceptScope {
+  collectionPromise: string;
+  membershipRule: string;
+  allowedPrimarySubjects: string;
+  supportingOnlySubjects: string;
 }
 
-const PRIMARY_SUBJECT_MARKER = 'NON-NEGOTIABLE PRIMARY SUBJECT:';
+export interface NicheScopeAnalysis {
+  themeUniverse?: string;
+  subthemes?: string;
+  collectionPromise?: string;
+  membershipRule?: string;
+  allowedPrimarySubjects?: string;
+  supportingOnlySubjects?: string;
+}
+
+const clean = (value?: string) => value?.replace(/\s+/g, ' ').trim() || '';
 
 /**
- * A preset can mark a category whose supporting objects are never valid on
- * their own. The marker travels inside the existing generation brief, so old
- * saved runs remain compatible and no UI-specific branching is needed.
+ * Builds one collection contract for every niche. Model-produced boundaries
+ * are preferred, while the conservative fallback keeps older saved analyses
+ * and non-Autopilot callers fail-safe without category-specific exceptions.
  */
-export const getNichePromptScope = (niche: string): NichePromptScope | null => {
-  const match = niche.match(new RegExp(`${PRIMARY_SUBJECT_MARKER}\\s*([^\\n.]+)`, 'i'));
-  const primarySubject = match?.[1]?.trim();
-  return primarySubject ? { primarySubject } : null;
+export const createNicheConceptScope = (
+  niche: string,
+  analysis?: NicheScopeAnalysis
+): NicheConceptScope => {
+  const themeUniverse = clean(analysis?.themeUniverse) || clean(niche) || 'the submitted niche';
+  const collectionPromise = clean(analysis?.collectionPromise)
+    || `A coherent sticker collection whose visual subjects directly represent ${themeUniverse}`;
+  const membershipRule = clean(analysis?.membershipRule)
+    || `A concept is valid only when its primary visual subject directly and unmistakably represents ${themeUniverse}; association through style, mood, color, setting or an adjacent prop alone is not sufficient.`;
+  const allowedPrimarySubjects = clean(analysis?.allowedPrimarySubjects)
+    || clean(analysis?.subthemes)
+    || `Direct visual subjects from ${themeUniverse}`;
+  const supportingOnlySubjects = clean(analysis?.supportingOnlySubjects)
+    || 'Any adjacent element that does not independently pass the membership rule';
+
+  return {
+    collectionPromise,
+    membershipRule,
+    allowedPrimarySubjects,
+    supportingOnlySubjects
+  };
 };
 
-export const getPrimarySubjectScopeInstruction = (scope: NichePromptScope | null) => scope
-  ? `NON-NEGOTIABLE SCOPE (HIGHEST PRIORITY): Every concept must show ${scope.primarySubject} as the main, largest, visually dominant subject. Props, food, habitat, weather, tools, places and decorations are allowed only when they are visibly attached to, used by, or interacting with that primary subject. A standalone supporting object is out of scope and invalid.`
-  : '';
+export const getCollectionContractInstruction = (scope: NicheConceptScope) => `
+COLLECTION CONTRACT (HIGHEST PRIORITY):
+- Product promise: ${scope.collectionPromise}
+- Binary membership test: ${scope.membershipRule}
+- Valid primary-subject space: ${scope.allowedPrimarySubjects}
+- Supporting-only space: ${scope.supportingOnlySubjects}
+Every concept must pass the binary membership test based on what will be visibly dominant in the final image. A related vibe is not membership. Variety, style and count never override this contract.
+`.trim();
 
-export const getScopedFallbackFamily = (scope: NichePromptScope | null) => scope
-  ? `${scope.primarySubject} as the main subject, with a distinct pose, species, action or interaction`
-  : null;
+export const getContractBoundFallbackFamily = (
+  scope: NicheConceptScope,
+  family?: string
+) => `${clean(family) || scope.allowedPrimarySubjects}; the visibly dominant subject must pass this membership test: ${scope.membershipRule}`;

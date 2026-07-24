@@ -1,7 +1,7 @@
 import {
-  inspectStickerBackground,
-  reconstructReservedMatteWhitePixel,
-  removeEnclosedReservedMatte
+  countReservedMatteEdgeContamination,
+  extractVerifiedReservedMatte,
+  inspectStickerBackground
 } from './reservedMatte';
 import {
   expectsEnclosedOpening,
@@ -179,44 +179,46 @@ export const processStickerImage = async (
     return Math.sqrt(red * red + green * green + blue * blue);
   };
 
-  const visited = new Uint8Array(pixelCount);
-  const queue = new Int32Array(pixelCount);
-  let queueStart = 0;
-  let queueEnd = 0;
-
-  const tryQueue = (x: number, y: number) => {
-    const position = y * width + x;
-    if (visited[position]) return;
-    const pixelIndex = position * 4;
-    if (data[pixelIndex + 3] === 0 || distanceFromBackground(pixelIndex) <= floodTolerance) {
-      visited[position] = 1;
-      queue[queueEnd++] = position;
-    }
-  };
-
-  for (let x = 0; x < width; x++) {
-    tryQueue(x, 0);
-    tryQueue(x, height - 1);
-  }
-  for (let y = 0; y < height; y++) {
-    tryQueue(0, y);
-    tryQueue(width - 1, y);
-  }
-
-  while (queueStart < queueEnd) {
-    const position = queue[queueStart++];
-    const x = position % width;
-    const y = Math.floor(position / width);
-    data[position * 4 + 3] = 0;
-
-    if (x > 0) tryQueue(x - 1, y);
-    if (x + 1 < width) tryQueue(x + 1, y);
-    if (y > 0) tryQueue(x, y - 1);
-    if (y + 1 < height) tryQueue(x, y + 1);
-  }
-
   if (backgroundInspection.hasStableReservedMatte) {
-    removeEnclosedReservedMatte(data, width, height, distanceFromBackground);
+    extractVerifiedReservedMatte(data, width, height, background);
+  } else {
+    // Manual repair remains conservative for old sources without a verified
+    // technical matte. It never runs for the normal reserved-matte path.
+    const visited = new Uint8Array(pixelCount);
+    const queue = new Int32Array(pixelCount);
+    let queueStart = 0;
+    let queueEnd = 0;
+
+    const tryQueue = (x: number, y: number) => {
+      const position = y * width + x;
+      if (visited[position]) return;
+      const pixelIndex = position * 4;
+      if (data[pixelIndex + 3] === 0 || distanceFromBackground(pixelIndex) <= floodTolerance) {
+        visited[position] = 1;
+        queue[queueEnd++] = position;
+      }
+    };
+
+    for (let x = 0; x < width; x++) {
+      tryQueue(x, 0);
+      tryQueue(x, height - 1);
+    }
+    for (let y = 0; y < height; y++) {
+      tryQueue(0, y);
+      tryQueue(width - 1, y);
+    }
+
+    while (queueStart < queueEnd) {
+      const position = queue[queueStart++];
+      const x = position % width;
+      const y = Math.floor(position / width);
+      data[position * 4 + 3] = 0;
+
+      if (x > 0) tryQueue(x - 1, y);
+      if (x + 1 < width) tryQueue(x + 1, y);
+      if (y > 0) tryQueue(x, y - 1);
+      if (y + 1 < height) tryQueue(x, y + 1);
+    }
   }
   if (backgroundInspection.hasStableReservedMatte || forceOpeningRepair) {
     removeVerifiedEnclosedBlackOpenings(data, width, height, _itemPrompt, forceOpeningRepair);
@@ -230,47 +232,39 @@ export const processStickerImage = async (
       || data[(((y + 1) * width + x) * 4) + 3] === 0;
   };
 
-  // Peel two contamination layers around the exterior and any verified reserved
-  // matte openings. No generic black/dark-pixel cleanup runs here.
-  for (let pass = 0; pass < 2; pass++) {
-    const remove = new Uint8Array(pixelCount);
+  if (!backgroundInspection.hasStableReservedMatte) {
+    // Legacy/manual fallback for sources that do not contain a verified key.
+    for (let pass = 0; pass < 2; pass++) {
+      const remove = new Uint8Array(pixelCount);
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const position = y * width + x;
+          const pixelIndex = position * 4;
+          if (data[pixelIndex + 3] === 0 || !hasTransparentNeighbor(x, y)) continue;
+          if (distanceFromBackground(pixelIndex) <= haloTolerance) remove[position] = 1;
+        }
+      }
+      for (let position = 0; position < pixelCount; position++) {
+        if (remove[position]) data[position * 4 + 3] = 0;
+      }
+    }
+
+    // Reconstruct only neutral cutline pixels on the legacy/manual path.
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
         const position = y * width + x;
         const pixelIndex = position * 4;
         if (data[pixelIndex + 3] === 0 || !hasTransparentNeighbor(x, y)) continue;
-        if (distanceFromBackground(pixelIndex) <= haloTolerance) remove[position] = 1;
-      }
-    }
-    for (let position = 0; position < pixelCount; position++) {
-      if (remove[position]) data[position * 4 + 3] = 0;
-    }
-  }
-
-  // Reconstruct a short anti-aliased white cutline instead of keeping a dirty
-  // gray fringe that was blended against Seedream's black matte.
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const position = y * width + x;
-      const pixelIndex = position * 4;
-      if (data[pixelIndex + 3] === 0 || !hasTransparentNeighbor(x, y)) continue;
-
-      if (
-        backgroundInspection.hasStableReservedMatte
-        && reconstructReservedMatteWhitePixel(data, pixelIndex, background)
-      ) {
-        continue;
-      }
-
-      const channelSpread = Math.max(data[pixelIndex], data[pixelIndex + 1], data[pixelIndex + 2])
-        - Math.min(data[pixelIndex], data[pixelIndex + 1], data[pixelIndex + 2]);
-      const distance = distanceFromBackground(pixelIndex);
-      if (channelSpread <= 32 && distance < 405) {
-        const alpha = Math.max(70, Math.min(255, Math.round(((distance - haloTolerance) / (405 - haloTolerance)) * 255)));
-        data[pixelIndex] = 255;
-        data[pixelIndex + 1] = 255;
-        data[pixelIndex + 2] = 255;
-        data[pixelIndex + 3] = Math.min(data[pixelIndex + 3], alpha);
+        const channelSpread = Math.max(data[pixelIndex], data[pixelIndex + 1], data[pixelIndex + 2])
+          - Math.min(data[pixelIndex], data[pixelIndex + 1], data[pixelIndex + 2]);
+        const distance = distanceFromBackground(pixelIndex);
+        if (channelSpread <= 32 && distance < 405) {
+          const alpha = Math.max(70, Math.min(255, Math.round(((distance - haloTolerance) / (405 - haloTolerance)) * 255)));
+          data[pixelIndex] = 255;
+          data[pixelIndex + 1] = 255;
+          data[pixelIndex + 2] = 255;
+          data[pixelIndex + 3] = Math.min(data[pixelIndex + 3], alpha);
+        }
       }
     }
   }
@@ -329,7 +323,33 @@ export const processStickerImage = async (
   );
   softenFinalAlphaEdge(outputContext, outputSize, outputSize);
   const finalizedPixels = outputContext.getImageData(0, 0, outputSize, outputSize);
-  neutralizeTransparentWhiteCutline(finalizedPixels.data, outputSize, outputSize);
+  if (backgroundInspection.hasStableReservedMatte) {
+    // Resize is the last operation capable of creating new mixed edge pixels.
+    // Re-run the idempotent decomposition only if the exact-key guard sees a
+    // new leak, then refuse to export if the invariant is still violated.
+    let remainingContamination = countReservedMatteEdgeContamination(
+      finalizedPixels.data,
+      outputSize,
+      outputSize,
+      background
+    );
+    if (remainingContamination) {
+      extractVerifiedReservedMatte(finalizedPixels.data, outputSize, outputSize, background);
+      remainingContamination = countReservedMatteEdgeContamination(
+        finalizedPixels.data,
+        outputSize,
+        outputSize,
+        background
+      );
+    }
+    if (remainingContamination) {
+      throw new Error(
+        `Reserved matte edge contamination remained after local repair (${remainingContamination} pixels).`
+      );
+    }
+  } else {
+    neutralizeTransparentWhiteCutline(finalizedPixels.data, outputSize, outputSize);
+  }
   outputContext.putImageData(finalizedPixels, 0, 0);
 
   return canvasToBlob(outputCanvas);

@@ -147,11 +147,11 @@ const loadBlobImage = (blob: Blob): Promise<HTMLImageElement> => new Promise((re
 });
 
 const resizePngBlob = async (blob: Blob, scale: number): Promise<Blob> => {
-  if (scale >= 0.995) return blob;
   const image = await loadBlobImage(blob);
   const canvas = document.createElement('canvas');
-  canvas.width = Math.max(1, Math.round(image.width * scale));
-  canvas.height = Math.max(1, Math.round(image.height * scale));
+  const safeScale = scale >= 0.995 ? 1 : scale;
+  canvas.width = Math.max(1, Math.round(image.width * safeScale));
+  canvas.height = Math.max(1, Math.round(image.height * safeScale));
   const context = canvas.getContext('2d');
   if (!context) throw new Error('Canvas is unavailable for Etsy ZIP optimization.');
   context.imageSmoothingEnabled = true;
@@ -254,7 +254,9 @@ const buildEtsySizedStickerZip = async (
   startIndex: number,
   productCount: number
 ): Promise<{ blob: Blob; scale: number }> => {
-  const originals = batch.map(sticker => sticker.blob!);
+  // Finalize every persisted PNG before packaging, including old checkpoints
+  // and volumes that already fit below Etsy's limit without a resize.
+  const originals = await Promise.all(batch.map(sticker => resizePngBlob(sticker.blob!, 1)));
   const volume = Math.floor(startIndex / 20) + 1;
   const originalZip = await buildStickerZip(batch, originals, nicheName, startIndex, volume, productCount);
   if (originalZip.size <= ETSY_ZIP_MAX_BYTES) return { blob: originalZip, scale: 1 };

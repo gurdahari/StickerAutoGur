@@ -1,5 +1,45 @@
 const DEFAULT_EDGE_DEPTH = 4;
 const EXTERIOR_ALPHA_THRESHOLD = 8;
+const ENCLOSED_FRINGE_ALPHA_LIMIT = 160;
+const ENCLOSED_FRINGE_DEPTH = 2;
+const RESERVED_MATTE_KEYS = [
+  { r: 0, g: 255, b: 59 },
+  { r: 255, g: 0, b: 212 },
+  { r: 0, g: 229, b: 255 },
+  { r: 255, g: 90, b: 0 }
+] as const;
+
+const isReservedMatteWhiteBlend = (data: Uint8ClampedArray, index: number) => {
+  const alpha = data[index + 3];
+  if (alpha <= EXTERIOR_ALPHA_THRESHOLD || alpha >= ENCLOSED_FRINGE_ALPHA_LIMIT) return false;
+
+  return RESERVED_MATTE_KEYS.some(matte => {
+    const whiteRed = 255 - matte.r;
+    const whiteGreen = 255 - matte.g;
+    const whiteBlue = 255 - matte.b;
+    const vectorLengthSquared = whiteRed * whiteRed
+      + whiteGreen * whiteGreen
+      + whiteBlue * whiteBlue;
+    const observedRed = data[index] - matte.r;
+    const observedGreen = data[index + 1] - matte.g;
+    const observedBlue = data[index + 2] - matte.b;
+    const whiteCoverage = Math.max(0, Math.min(1, (
+      observedRed * whiteRed
+      + observedGreen * whiteGreen
+      + observedBlue * whiteBlue
+    ) / Math.max(1, vectorLengthSquared)));
+    if (whiteCoverage < 0.04 || whiteCoverage > 0.96) return false;
+
+    const expectedRed = matte.r + whiteCoverage * whiteRed;
+    const expectedGreen = matte.g + whiteCoverage * whiteGreen;
+    const expectedBlue = matte.b + whiteCoverage * whiteBlue;
+    return Math.hypot(
+      data[index] - expectedRed,
+      data[index + 1] - expectedGreen,
+      data[index + 2] - expectedBlue
+    ) <= 32;
+  });
+};
 
 /**
  * Makes a transparent white-cutline PNG safe for every later resize.
@@ -117,6 +157,82 @@ export const neutralizeTransparentWhiteCutline = (
         if (exterior[next] || edgeDistance[next] || data[next * 4 + 3] === 0) continue;
         edgeDistance[next] = currentDistance + 1;
         edgeQueue[edgeEnd++] = next;
+        whiten(next);
+      }
+    }
+  }
+
+  // Enclosed transparent openings cannot be reached by the exterior flood.
+  // Their hidden RGB is still neutralized, but visible pixels are changed only
+  // when they match the measured line between a reserved matte key and white.
+  // This removes key spill from handles, rings and punched holes without using
+  // a broad green/cyan detector that could damage real colored artwork.
+  const enclosedTransparency = new Uint8Array(pixelCount);
+  for (let position = 0; position < pixelCount; position++) {
+    if (exterior[position] || data[position * 4 + 3] > EXTERIOR_ALPHA_THRESHOLD) continue;
+    enclosedTransparency[position] = 1;
+    whiten(position);
+  }
+
+  const enclosedDistance = new Uint8Array(pixelCount);
+  const enclosedQueue = new Int32Array(pixelCount);
+  let enclosedStart = 0;
+  let enclosedEnd = 0;
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const position = y * width + x;
+      const index = position * 4;
+      if (!isReservedMatteWhiteBlend(data, index)) continue;
+
+      let adjacentToOpening = false;
+      for (let offsetY = -1; offsetY <= 1 && !adjacentToOpening; offsetY++) {
+        const nextY = y + offsetY;
+        if (nextY < 0 || nextY >= height) continue;
+        for (let offsetX = -1; offsetX <= 1; offsetX++) {
+          if (!offsetX && !offsetY) continue;
+          const nextX = x + offsetX;
+          if (nextX < 0 || nextX >= width) continue;
+          if (enclosedTransparency[nextY * width + nextX]) {
+            adjacentToOpening = true;
+            break;
+          }
+        }
+      }
+
+      if (!adjacentToOpening) continue;
+      enclosedDistance[position] = 1;
+      enclosedQueue[enclosedEnd++] = position;
+      whiten(position);
+    }
+  }
+
+  while (enclosedStart < enclosedEnd) {
+    const position = enclosedQueue[enclosedStart++];
+    const currentDistance = enclosedDistance[position];
+    if (currentDistance >= ENCLOSED_FRINGE_DEPTH) continue;
+    const x = position % width;
+    const y = Math.floor(position / width);
+
+    for (let offsetY = -1; offsetY <= 1; offsetY++) {
+      const nextY = y + offsetY;
+      if (nextY < 0 || nextY >= height) continue;
+      for (let offsetX = -1; offsetX <= 1; offsetX++) {
+        if (!offsetX && !offsetY) continue;
+        const nextX = x + offsetX;
+        if (nextX < 0 || nextX >= width) continue;
+        const next = nextY * width + nextX;
+        const nextIndex = next * 4;
+        if (
+          exterior[next]
+          || enclosedTransparency[next]
+          || enclosedDistance[next]
+          || !isReservedMatteWhiteBlend(data, nextIndex)
+        ) {
+          continue;
+        }
+        enclosedDistance[next] = currentDistance + 1;
+        enclosedQueue[enclosedEnd++] = next;
         whiten(next);
       }
     }

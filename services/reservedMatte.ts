@@ -235,10 +235,14 @@ export const removeReservedMatteWithLocalForeground = (
 
         if (
           !best
-          || residual < best.residual - 1
+          // A matte-blended neighbor can fit the same line perfectly, but it is
+          // only another midpoint—not the real foreground endpoint. Prefer the
+          // accepted sample farthest from the matte, then use residual as the
+          // tie-breaker.
+          || foregroundDistance > best.foregroundDistance + 1
           || (
-            Math.abs(residual - best.residual) <= 1
-            && foregroundDistance > best.foregroundDistance
+            Math.abs(foregroundDistance - best.foregroundDistance) <= 1
+            && residual < best.residual
           )
         ) {
           best = {

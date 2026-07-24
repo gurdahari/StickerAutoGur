@@ -1,6 +1,6 @@
 import {
   inspectStickerBackground,
-  removeReservedMatteWithLocalForeground
+  removeReservedMatteWithTrimap
 } from './reservedMatte';
 import {
   expectsEnclosedOpening,
@@ -160,7 +160,7 @@ export const processStickerImage = async (
     throw new Error('The generated source did not contain one verified reserved matte key in all four corners.');
   }
   if (backgroundInspection.hasStableReservedMatte) {
-    removeReservedMatteWithLocalForeground(data, width, height, background);
+    removeReservedMatteWithTrimap(data, width, height, background);
   }
   const backgroundLuma = 0.2126 * background.r + 0.7152 * background.g + 0.0722 * background.b;
   const floodTolerance = backgroundInspection.hasStableReservedMatte
@@ -324,7 +324,11 @@ export const processStickerImage = async (
     drawWidth,
     drawHeight
   );
-  softenFinalAlphaEdge(outputContext, outputSize, outputSize);
+  // The verified trimap already owns edge antialiasing. Blurring it again can
+  // resurrect matte-colored RGB inside enclosed openings.
+  if (!backgroundInspection.hasStableReservedMatte) {
+    softenFinalAlphaEdge(outputContext, outputSize, outputSize);
+  }
   const finalizedPixels = outputContext.getImageData(0, 0, outputSize, outputSize);
   neutralizeTransparentWhiteCutline(finalizedPixels.data, outputSize, outputSize);
   outputContext.putImageData(finalizedPixels, 0, 0);

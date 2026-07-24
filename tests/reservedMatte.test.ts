@@ -76,6 +76,23 @@ test('removes the same matte inside a closed opening', () => {
   assert.deepEqual(Array.from(data.slice(pixel(7, 7), pixel(7, 7) + 4)), [22, 22, 22, 255]);
 });
 
+test('never uses another matte-blended edge pixel as foreground', () => {
+  const data = new Uint8ClampedArray(width * height * 4);
+  paint(data, 0, 0, width - 1, height - 1, [255, 255, 255, 255]);
+  const foreground: [number, number, number] = [190, 150, 120];
+  paint(data, 3, 4, 8, 11, [matte.r, matte.g, matte.b, 255]);
+  paint(data, 9, 4, 9, 11, blend([210, 160, 110], 0.30));
+  paint(data, 10, 4, 10, 11, blend([210, 160, 110], 0.60));
+  paint(data, 11, 4, 11, 11, blend([210, 160, 110], 0.76));
+  paint(data, 12, 4, 12, 11, blend([210, 160, 110], 0.90));
+  paint(data, 13, 4, 18, 11, [...foreground, 255]);
+
+  removeReservedMatteWithLocalForeground(data, width, height, matte);
+
+  assert.deepEqual(Array.from(data.slice(pixel(9, 7), pixel(9, 7) + 3)), foreground);
+  assert.ok(Math.abs(data[pixel(9, 7) + 3] - 80) <= 2);
+});
+
 test('does not recolor unrelated artwork outside the matte boundary band', () => {
   const data = new Uint8ClampedArray(width * height * 4);
   paint(data, 0, 0, width - 1, height - 1, [255, 255, 255, 255]);

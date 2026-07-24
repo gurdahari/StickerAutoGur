@@ -7,6 +7,7 @@ import {
   expectsEnclosedOpening,
   removeVerifiedEnclosedBlackOpenings
 } from './enclosedBlackOpening';
+import { neutralizeTransparentWhiteCutline } from './stickerEdgeFinalization';
 
 const loadImage = (source: string | Blob): Promise<HTMLImageElement> => new Promise((resolve, reject) => {
   const image = new Image();
@@ -327,6 +328,9 @@ export const processStickerImage = async (
     drawHeight
   );
   softenFinalAlphaEdge(outputContext, outputSize, outputSize);
+  const finalizedPixels = outputContext.getImageData(0, 0, outputSize, outputSize);
+  neutralizeTransparentWhiteCutline(finalizedPixels.data, outputSize, outputSize);
+  outputContext.putImageData(finalizedPixels, 0, 0);
 
   return canvasToBlob(outputCanvas);
 };

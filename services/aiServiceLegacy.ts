@@ -1,4 +1,5 @@
 import type { GeneratedListing, ImageSize, TrendResult, StylePreset, DiscoveredTrend, NicheVisualAnalysis, NicheType, NichePreflight } from "../types";
+import { getNichePromptScope, getPrimarySubjectScopeInstruction, getScopedFallbackFamily } from './nichePromptScope';
 
 type JsonSchema = Record<string, unknown>;
 
@@ -1587,8 +1588,10 @@ export const analyzeNicheVisuals = async (nicheName: string): Promise<NicheVisua
 
 export const generateStickerPrompts = async (niche: string, style: StylePreset, count: number = 30, analysis?: NicheVisualAnalysis): Promise<string[]> => {
   const COUNT = count;
+  const scope = getNichePromptScope(niche);
   const themeUniverse = analysis?.themeUniverse?.trim() || niche;
-  const fallbackFamilies = (analysis?.subthemes || analysis?.safeGenerics || 'core objects, tools, accessories, symbols, environments, functional elements')
+  const scopedFallbackFamily = getScopedFallbackFamily(scope);
+  const fallbackFamilies = (scopedFallbackFamily || analysis?.subthemes || analysis?.safeGenerics || 'core objects, tools, accessories, symbols, environments, functional elements')
     .split(',')
     .map(value => value.trim())
     .filter(Boolean);
@@ -1617,12 +1620,14 @@ export const generateStickerPrompts = async (niche: string, style: StylePreset, 
     
     ${analysisContext}
 
+    ${getPrimarySubjectScopeInstruction(scope)}
+
     CRITICAL RULES:
     1. **ONE PRIMARY CONCEPT**: Describe one clear standalone sticker design. A primary subject may have small supporting details, but never create a sheet or collection inside one image.
     2. **NO COLLECTIONS**: Do NOT write prompts for "sticker sheets", "sets", "packs", or "collections".
     3. **BE SPECIFIC**: Instead of "medical equipment", say "A blue stethoscope".
-    4. **UMBRELLA INTERPRETATION**: The input phrase is a creative doorway into its larger world. Do not turn every design into a literal illustration of the phrase.
-    5. **DIRECT MOTIF CAP**: At most 15% of concepts may use the most literal motif or wording from "${niche}". The remaining concepts must explore the broader theme universe and its adjacent features.
+    4. **UMBRELLA INTERPRETATION**: Explore the larger world only within the supplied scope. A merely related vibe is not enough; never turn a support object, setting, food, tool or decoration into a standalone sticker when the scope requires a primary subject.
+    5. **DIRECT MOTIF CAP**: At most 15% of concepts may use the exact submitted wording. This does not relax a non-negotiable primary-subject rule.
     
     GOAL: Create a high-value sticker pack that EXACTLY matches the target aesthetic AND the customer's intent. 
     If the style is "Analog Film", generate film strips, cameras, light leaks.
@@ -1631,16 +1636,16 @@ export const generateStickerPrompts = async (niche: string, style: StylePreset, 
     
     SUBJECT DISTRIBUTION ACROSS THE WHOLE PACK:
     - 15% DIRECT/LITERAL MOTIFS from the submitted phrase
-    - 25% CORE OBJECTS AND ICONS from the broader theme universe
-    - 20% TOOLS, ACTIONS, WORKFLOWS, AND SYSTEM FEATURES
-    - 15% HARDWARE, ACCESSORIES, PLACES, OR SUPPORTING ENVIRONMENT
-    - 15% FUNCTIONAL AND DECORATIVE ELEMENTS that fit the theme
+    - 25% CORE OBJECTS, CHARACTERS OR ICONS from the broader theme universe
+    - 20% ACTIONS, INTERACTIONS, WORKFLOWS OR SYSTEM FEATURES
+    - 15% ACCESSORIES, PLACES OR SUPPORTING ENVIRONMENT, but only as part of a valid primary subject
+    - 15% FUNCTIONAL OR DECORATIVE ELEMENTS, but never as off-theme standalone filler
     - 10% EMOTIONAL OR TEXT-BASED DESIGNS; use TEXT: NONE for everything else
 
     For a 100-design pack, cover at least 10 distinct subject families and do not let any family exceed 15 designs.
 
     DESIGN RULES:
-    1. RELEVANCE: Every item must belong to the broader theme universe, even when it is not a literal rendering of "${niche}".
+    1. RELEVANCE: Every item must belong to the broader theme universe and obey its non-negotiable scope. Related props alone do not qualify.
     2. VARIETY: Every concept must have a different primary subject. Do not repeat the same object, character, quote, pose, or composition.
     3. SEMANTIC UNIQUENESS: Rewording an existing idea does not make it new. Each design must be visibly distinguishable at thumbnail size.
     4. STYLE LOCK: Subjects and compositions must vary, but visual medium, line treatment, palette logic, shading, texture, border treatment, and overall art direction must remain consistent across the entire pack. Never introduce a different art style as a way to create variety.

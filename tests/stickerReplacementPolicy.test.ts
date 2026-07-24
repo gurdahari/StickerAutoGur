@@ -3,8 +3,10 @@ import test from 'node:test';
 import type { Sticker } from '../types';
 import {
   assertCompleteApprovedInventory,
+  canAutomaticallyRegenerate,
   countApprovedInventory,
-  getRemainingReplacementBudget
+  getRemainingReplacementBudget,
+  requiresNewArtwork
 } from '../services/stickerReplacementPolicy';
 
 const approvedSticker = (id: number): Sticker => ({
@@ -41,4 +43,38 @@ test('packaging gate rejects 99 of 100 approved stickers', () => {
 test('packaging gate accepts a complete approved inventory', () => {
   const stickers = Array.from({ length: 100 }, (_, index) => approvedSticker(index + 1));
   assert.doesNotThrow(() => assertCompleteApprovedInventory(stickers, 100));
+});
+
+test('failed matte postcondition enters automatic replacement even with a preserved source', () => {
+  const failed: Sticker = {
+    id: 1,
+    prompt: 'Sticker 1',
+    url: null,
+    sourceBlob: new Blob(['paid source'], { type: 'image/png' }),
+    status: 'error',
+    qaStatus: 'rejected',
+    qaIssues: [
+      'Local processing failed; paid source preserved: Reserved matte edge contamination remained after local repair (0 exact-key, 34 matte-axis pixels).'
+    ],
+    replacementCount: 0
+  };
+
+  assert.equal(requiresNewArtwork(failed), true);
+  assert.equal(canAutomaticallyRegenerate(failed), true);
+});
+
+test('generic local browser failure still does not spend a paid replacement', () => {
+  const failed: Sticker = {
+    id: 2,
+    prompt: 'Sticker 2',
+    url: null,
+    sourceBlob: new Blob(['paid source'], { type: 'image/png' }),
+    status: 'error',
+    qaStatus: 'rejected',
+    qaIssues: ['Local processing failed; paid source preserved: Canvas is unavailable for sticker processing.'],
+    replacementCount: 0
+  };
+
+  assert.equal(requiresNewArtwork(failed), false);
+  assert.equal(canAutomaticallyRegenerate(failed), false);
 });

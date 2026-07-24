@@ -11,6 +11,10 @@ const RESERVED_MATTE_KEYS: RgbColor[] = [
   { r: 255, g: 90, b: 0 }
 ];
 
+const STRICT_MATTE_DISTANCE = 48;
+const EXTERIOR_MATTE_DISTANCE = 88;
+const EDGE_DEPTH = 3;
+
 const median = (values: number[]) => {
   values.sort((a, b) => a - b);
   return values[Math.floor(values.length / 2)] || 0;
@@ -78,81 +82,293 @@ export const inspectStickerBackground = (data: Uint8ClampedArray, width: number,
 };
 
 /**
- * Removes even tiny enclosed regions that match the verified background key.
- * It deliberately has no black/dark-color heuristic.
+ * Converts a verified technical matte into transparency before any resize.
+ *
+ * The edge color generated against a solid matte is a composite:
+ *
+ *   observed = foreground × coverage + matte × (1 − coverage)
+ *
+ * A clean foreground core is selected only beyond the transition band, then
+ * the equation is solved against that verified endpoint. If a thin feature has
+ * no safe core, deterministic color-to-alpha is used as a no-chroma fallback.
  */
-export const removeEnclosedReservedMatte = (
+export const extractVerifiedReservedMatte = (
   data: Uint8ClampedArray,
   width: number,
   height: number,
-  distanceFromBackground: (pixelIndex: number) => number
+  background: RgbColor
 ) => {
   const pixelCount = width * height;
-  const remove = new Uint8Array(pixelCount);
-  let removalCount = 0;
+  if (!pixelCount || data.length < pixelCount * 4) {
+    return { removedPixels: 0, correctedEdgePixels: 0 };
+  }
 
-  for (let position = 0; position < pixelCount; position++) {
+  const source = new Uint8ClampedArray(data);
+  const matte = new Uint8Array(pixelCount);
+  const queue = new Int32Array(pixelCount);
+  let queueStart = 0;
+  let queueEnd = 0;
+
+  const distanceFromMatte = (pixelIndex: number) => Math.hypot(
+    source[pixelIndex] - background.r,
+    source[pixelIndex + 1] - background.g,
+    source[pixelIndex + 2] - background.b
+  );
+
+  const enqueueExterior = (position: number) => {
+    if (position < 0 || position >= pixelCount || matte[position]) return;
     const pixelIndex = position * 4;
-    if (data[pixelIndex + 3] <= 8 || distanceFromBackground(pixelIndex) > 48) continue;
-    remove[position] = 1;
-    removalCount++;
+    if (
+      source[pixelIndex + 3] > 8
+      && distanceFromMatte(pixelIndex) > EXTERIOR_MATTE_DISTANCE
+    ) {
+      return;
+    }
+    matte[position] = 1;
+    queue[queueEnd++] = position;
+  };
+
+  for (let x = 0; x < width; x++) {
+    enqueueExterior(x);
+    enqueueExterior((height - 1) * width + x);
+  }
+  for (let y = 1; y < height - 1; y++) {
+    enqueueExterior(y * width);
+    enqueueExterior(y * width + width - 1);
   }
 
-  // A valid opening may be large, but a key-colored region covering most of the
-  // image means the provider did not honor the sticker contract. Fail closed.
-  if (!removalCount || removalCount > pixelCount * 0.35) return 0;
+  while (queueStart < queueEnd) {
+    const position = queue[queueStart++];
+    const x = position % width;
+    const y = Math.floor(position / width);
+    if (x > 0) enqueueExterior(position - 1);
+    if (x + 1 < width) enqueueExterior(position + 1);
+    if (y > 0) enqueueExterior(position - width);
+    if (y + 1 < height) enqueueExterior(position + width);
+  }
+
+  // Exact-key components that are not connected to the canvas edge are real
+  // enclosed openings. A very large second matte region is treated as a failed
+  // provider result instead of being removed speculatively.
+  const enclosed: number[] = [];
+  for (let position = 0; position < pixelCount; position++) {
+    if (matte[position]) continue;
+    const pixelIndex = position * 4;
+    if (
+      source[pixelIndex + 3] > 8
+      && distanceFromMatte(pixelIndex) <= STRICT_MATTE_DISTANCE
+    ) {
+      enclosed.push(position);
+    }
+  }
+  if (enclosed.length <= pixelCount * 0.35) {
+    for (const position of enclosed) matte[position] = 1;
+  }
+
+  let removedPixels = 0;
+  for (let position = 0; position < pixelCount; position++) {
+    if (!matte[position]) continue;
+    const pixelIndex = position * 4;
+    data[pixelIndex] = 255;
+    data[pixelIndex + 1] = 255;
+    data[pixelIndex + 2] = 255;
+    if (data[pixelIndex + 3] > 0) removedPixels++;
+    data[pixelIndex + 3] = 0;
+  }
+
+  // Build a short spatial transition around exterior and enclosed matte using
+  // the original, unmodified source. Strong contamination is allowed farther
+  // into the edge; clean foreground is left untouched.
+  const edgeDistance = new Uint8Array(pixelCount);
+  queueStart = 0;
+  queueEnd = 0;
+  for (let position = 0; position < pixelCount; position++) {
+    if (matte[position]) queue[queueEnd++] = position;
+  }
+  while (queueStart < queueEnd) {
+    const position = queue[queueStart++];
+    const currentDistance = edgeDistance[position];
+    if (currentDistance >= EDGE_DEPTH) continue;
+    const x = position % width;
+    const y = Math.floor(position / width);
+
+    for (let offsetY = -1; offsetY <= 1; offsetY++) {
+      const nextY = y + offsetY;
+      if (nextY < 0 || nextY >= height) continue;
+      for (let offsetX = -1; offsetX <= 1; offsetX++) {
+        if (!offsetX && !offsetY) continue;
+        const nextX = x + offsetX;
+        if (nextX < 0 || nextX >= width) continue;
+        const next = nextY * width + nextX;
+        if (matte[next] || edgeDistance[next]) continue;
+        edgeDistance[next] = currentDistance + 1;
+        queue[queueEnd++] = next;
+      }
+    }
+  }
+
+  const matteChannels = [background.r, background.g, background.b].map(channel => channel / 255);
+  const maxCoverageByDepth = [0, 0.999, 0.96, 0.82];
+  let correctedEdgePixels = 0;
 
   for (let position = 0; position < pixelCount; position++) {
-    if (remove[position]) data[position * 4 + 3] = 0;
+    const depth = edgeDistance[position];
+    if (!depth || depth > EDGE_DEPTH) continue;
+    const pixelIndex = position * 4;
+    if (source[pixelIndex + 3] <= 8) continue;
+
+    const observed = [
+      source[pixelIndex] / 255,
+      source[pixelIndex + 1] / 255,
+      source[pixelIndex + 2] / 255
+    ];
+    let coverage = 0;
+    for (let channel = 0; channel < 3; channel++) {
+      const value = observed[channel];
+      const matteValue = matteChannels[channel];
+      const requiredCoverage = value > matteValue
+        ? (value - matteValue) / Math.max(1 / 255, 1 - matteValue)
+        : (matteValue - value) / Math.max(1 / 255, matteValue);
+      coverage = Math.max(coverage, requiredCoverage);
+    }
+    coverage = Math.max(0, Math.min(1, coverage));
+
+    // Resolve the otherwise underdetermined foreground from pixels that are
+    // spatially beyond the whole matte transition. A contaminated midpoint can
+    // never become a sample, which was the failure mode of the old local picker.
+    const x = position % width;
+    const y = Math.floor(position / width);
+    let bestForeground: [number, number, number] | null = null;
+    let bestCoverage = coverage;
+    let bestResidual = Number.POSITIVE_INFINITY;
+    let bestDistance = Number.POSITIVE_INFINITY;
+
+    for (let radius = 1; radius <= 10; radius++) {
+      for (let offsetY = -radius; offsetY <= radius; offsetY++) {
+        const sampleY = y + offsetY;
+        if (sampleY < 0 || sampleY >= height) continue;
+        for (let offsetX = -radius; offsetX <= radius; offsetX++) {
+          if (Math.max(Math.abs(offsetX), Math.abs(offsetY)) !== radius) continue;
+          const sampleX = x + offsetX;
+          if (sampleX < 0 || sampleX >= width) continue;
+          const samplePosition = sampleY * width + sampleX;
+          if (matte[samplePosition] || edgeDistance[samplePosition]) continue;
+          const sampleIndex = samplePosition * 4;
+          if (
+            source[sampleIndex + 3] <= 8
+            || distanceFromMatte(sampleIndex) <= EXTERIOR_MATTE_DISTANCE
+          ) {
+            continue;
+          }
+
+          const foreground: [number, number, number] = [
+            source[sampleIndex] / 255,
+            source[sampleIndex + 1] / 255,
+            source[sampleIndex + 2] / 255
+          ];
+          const vector = foreground.map((value, channel) => value - matteChannels[channel]);
+          const vectorLengthSquared = vector.reduce((sum, value) => sum + value * value, 0);
+          if (vectorLengthSquared < 0.02) continue;
+
+          const observedVector = observed.map((value, channel) => value - matteChannels[channel]);
+          const projectedCoverage = observedVector.reduce(
+            (sum, value, channel) => sum + value * vector[channel],
+            0
+          ) / vectorLengthSquared;
+          if (projectedCoverage < 0.01 || projectedCoverage > 1.01) continue;
+          const candidateCoverage = Math.max(0, Math.min(1, projectedCoverage));
+          const residual = Math.hypot(...observed.map((value, channel) => (
+            value
+            - (
+              matteChannels[channel] * (1 - candidateCoverage)
+              + foreground[channel] * candidateCoverage
+            )
+          ) * 255));
+          const spatialDistance = offsetX * offsetX + offsetY * offsetY;
+
+          if (
+            residual < bestResidual - 0.5
+            || (Math.abs(residual - bestResidual) <= 0.5 && spatialDistance < bestDistance)
+          ) {
+            bestForeground = foreground;
+            bestCoverage = candidateCoverage;
+            bestResidual = residual;
+            bestDistance = spatialDistance;
+          }
+        }
+      }
+      if (bestForeground && bestResidual <= 24) break;
+    }
+
+    if (bestForeground && bestResidual <= 24) coverage = bestCoverage;
+    if (coverage >= maxCoverageByDepth[depth]) continue;
+
+    if (coverage <= 1 / 255) {
+      data[pixelIndex] = 255;
+      data[pixelIndex + 1] = 255;
+      data[pixelIndex + 2] = 255;
+      data[pixelIndex + 3] = 0;
+      correctedEdgePixels++;
+      continue;
+    }
+
+    for (let channel = 0; channel < 3; channel++) {
+      const recovered = bestForeground && bestResidual <= 24
+        ? bestForeground[channel]
+        : (
+          observed[channel]
+          - (1 - coverage) * matteChannels[channel]
+        ) / coverage;
+      data[pixelIndex + channel] = Math.round(Math.max(0, Math.min(1, recovered)) * 255);
+    }
+    data[pixelIndex + 3] = Math.round(source[pixelIndex + 3] * coverage);
+    correctedEdgePixels++;
   }
 
-  return removalCount;
+  return { removedPixels, correctedEdgePixels };
 };
 
 /**
- * Solves the one-dimensional matte-to-white blend at the die-cut boundary,
- * replacing a colored fringe with the equivalent white alpha pixel.
+ * Final deterministic guard for the verified key only. This is intentionally
+ * not a generic green/cyan scan: it checks the measured matte color and only
+ * on visible pixels touching transparency after normalization.
  */
-export const reconstructReservedMatteWhitePixel = (
+export const countReservedMatteEdgeContamination = (
   data: Uint8ClampedArray,
-  pixelIndex: number,
+  width: number,
+  height: number,
   background: RgbColor
 ) => {
-  const whiteVector = {
-    r: 255 - background.r,
-    g: 255 - background.g,
-    b: 255 - background.b
-  };
-  const vectorLengthSquared = whiteVector.r * whiteVector.r
-    + whiteVector.g * whiteVector.g
-    + whiteVector.b * whiteVector.b;
-  if (vectorLengthSquared < 1) return false;
+  let contaminatedPixels = 0;
 
-  const observed = {
-    r: data[pixelIndex] - background.r,
-    g: data[pixelIndex + 1] - background.g,
-    b: data[pixelIndex + 2] - background.b
-  };
-  const alpha = Math.max(0, Math.min(1, (
-    observed.r * whiteVector.r
-    + observed.g * whiteVector.g
-    + observed.b * whiteVector.b
-  ) / vectorLengthSquared));
-  const expected = {
-    r: background.r + alpha * whiteVector.r,
-    g: background.g + alpha * whiteVector.g,
-    b: background.b + alpha * whiteVector.b
-  };
-  const residual = Math.hypot(
-    data[pixelIndex] - expected.r,
-    data[pixelIndex + 1] - expected.g,
-    data[pixelIndex + 2] - expected.b
-  );
-  if (alpha < 0.18 || residual > 30) return false;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const pixelIndex = (y * width + x) * 4;
+      if (data[pixelIndex + 3] <= 8) continue;
+      const distance = Math.hypot(
+        data[pixelIndex] - background.r,
+        data[pixelIndex + 1] - background.g,
+        data[pixelIndex + 2] - background.b
+      );
+      if (distance > 80) continue;
 
-  data[pixelIndex] = 255;
-  data[pixelIndex + 1] = 255;
-  data[pixelIndex + 2] = 255;
-  data[pixelIndex + 3] = Math.min(data[pixelIndex + 3], Math.round(alpha * 255));
-  return true;
+      let touchesTransparency = false;
+      for (let offsetY = -1; offsetY <= 1 && !touchesTransparency; offsetY++) {
+        const nextY = y + offsetY;
+        if (nextY < 0 || nextY >= height) continue;
+        for (let offsetX = -1; offsetX <= 1; offsetX++) {
+          if (!offsetX && !offsetY) continue;
+          const nextX = x + offsetX;
+          if (nextX < 0 || nextX >= width) continue;
+          if (data[(nextY * width + nextX) * 4 + 3] <= 8) {
+            touchesTransparency = true;
+            break;
+          }
+        }
+      }
+      if (touchesTransparency) contaminatedPixels++;
+    }
+  }
+
+  return contaminatedPixels;
 };

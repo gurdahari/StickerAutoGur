@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   countReservedMatteEdgeContamination,
   extractVerifiedReservedMatte,
+  neutralizeVerifiedWhiteCutlineChroma,
   repairSmallReservedMatteEdgeResiduals,
   type RgbColor
 } from '../services/reservedMatte';
@@ -179,5 +180,69 @@ test('does not hide a large post-resize extraction failure', () => {
 
   assert.ok(result.detectedPixels > 8);
   assert.equal(result.repairedPixels, 0);
+  assert.deepEqual(data, before);
+});
+
+test('neutralizes both signed chroma directions for every reserved matte key', () => {
+  const matteKeys = [
+    { r: 0, g: 255, b: 59 },
+    { r: 255, g: 0, b: 212 },
+    { r: 0, g: 229, b: 255 },
+    { r: 255, g: 90, b: 0 }
+  ];
+
+  for (const matte of matteKeys) {
+    const width = 11;
+    const height = 11;
+    const white = [250, 249, 248, 255];
+    const data = new Uint8ClampedArray(width * height * 4);
+
+    for (let y = 3; y <= 7; y++) {
+      for (let x = 3; x <= 7; x++) {
+        data.set(white, (y * width + x) * 4);
+      }
+    }
+
+    const matteMean = (matte.r + matte.g + matte.b) / 3;
+    const signedTint = (direction: number, alpha: number) => [
+      ...[matte.r, matte.g, matte.b].map(channel =>
+        Math.round(Math.max(0, Math.min(255, 205 + direction * 0.35 * (channel - matteMean))))
+      ),
+      alpha
+    ];
+
+    // One pixel retains key chroma and the other overshoots toward the
+    // complementary direction. Both border transparent pixels.
+    data.set(signedTint(1, 160), (5 * width + 3) * 4);
+    data.set(signedTint(-1, 120), (5 * width + 7) * 4);
+    const alphasBefore = [pixel(data, width, 3, 5)[3], pixel(data, width, 7, 5)[3]];
+
+    const repaired = neutralizeVerifiedWhiteCutlineChroma(data, width, height, matte);
+
+    assert.equal(repaired, 2);
+    assert.deepEqual(pixel(data, width, 3, 5).slice(0, 3), white.slice(0, 3));
+    assert.deepEqual(pixel(data, width, 7, 5).slice(0, 3), white.slice(0, 3));
+    assert.deepEqual(
+      [pixel(data, width, 3, 5)[3], pixel(data, width, 7, 5)[3]],
+      alphasBefore
+    );
+  }
+});
+
+test('does not neutralize colored artwork without local white-cutline proof', () => {
+  const width = 9;
+  const height = 9;
+  const matte = { r: 0, g: 255, b: 59 };
+  const artwork = [245, 155, 210, 150];
+  const data = new Uint8ClampedArray(width * height * 4);
+
+  for (let y = 3; y <= 5; y++) {
+    for (let x = 3; x <= 5; x++) {
+      data.set(artwork, (y * width + x) * 4);
+    }
+  }
+  const before = new Uint8ClampedArray(data);
+
+  assert.equal(neutralizeVerifiedWhiteCutlineChroma(data, width, height, matte), 0);
   assert.deepEqual(data, before);
 });

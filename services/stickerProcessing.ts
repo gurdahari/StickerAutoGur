@@ -2,6 +2,7 @@ import {
   countReservedMatteEdgeContamination,
   extractVerifiedReservedMatte,
   inspectStickerBackground,
+  neutralizeVerifiedWhiteCutlineChroma,
   repairSmallReservedMatteEdgeResiduals
 } from './reservedMatte';
 import {
@@ -326,6 +327,14 @@ export const processStickerImage = async (
   const finalizedPixels = outputContext.getImageData(0, 0, outputSize, outputSize);
   if (backgroundInspection.hasStableReservedMatte) {
     // Resize is the last operation capable of creating new mixed edge pixels.
+    // Remove both matte-colored and complementary chroma from a locally proven
+    // white cutline before checking for any exact-key remainder.
+    neutralizeVerifiedWhiteCutlineChroma(
+      finalizedPixels.data,
+      outputSize,
+      outputSize,
+      background
+    );
     // Repair only a tiny RGB remainder without changing alpha or re-running the
     // full topology pass on an already clean, normalized sticker.
     let remainingContamination = countReservedMatteEdgeContamination(

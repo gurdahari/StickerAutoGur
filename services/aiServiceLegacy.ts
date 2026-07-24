@@ -1,5 +1,9 @@
 import type { GeneratedListing, ImageSize, TrendResult, StylePreset, DiscoveredTrend, NicheVisualAnalysis, NicheType, NichePreflight } from "../types";
-import { getNichePromptScope, getPrimarySubjectScopeInstruction, getScopedFallbackFamily } from './nichePromptScope';
+import {
+  createNicheConceptScope,
+  getCollectionContractInstruction,
+  getContractBoundFallbackFamily
+} from './nichePromptScope';
 
 type JsonSchema = Record<string, unknown>;
 
@@ -1526,7 +1530,16 @@ export const analyzeNicheVisuals = async (nicheName: string): Promise<NicheVisua
   
   OBJECTIVE: Determine the EXACT visual aesthetic that real buyers in this niche want.
   ALSO: Understand deeply what customers search for in this niche, and the different intents and uses of the stickers (not just visual).
-  IMPORTANT: Interpret the submitted niche as an entry point into a broader visual universe, not as the only object to repeat.
+  IMPORTANT: Interpret the submitted niche as a product promise. Broaden the
+  visual universe only inside that promise. Related mood, color, scenery or
+  props do not automatically qualify as standalone primary subjects.
+
+  Before choosing variety, define a binary collection-membership test:
+  - It must decide whether a proposed sticker visibly belongs in the product.
+  - It must evaluate the dominant visual subject, not hidden intent or style.
+  - It must distinguish valid standalone primary subjects from elements that
+    are relevant only as support.
+  - It must work for the entire niche, not a hand-written example.
   
   SCENARIO EXAMPLES:
   - If niche is "Kodak Portra" -> Aesthetic is "Analog Film, Grainy, Retro, Realistic, Muted". NOT Kawaii.
@@ -1542,7 +1555,11 @@ export const analyzeNicheVisuals = async (nicheName: string): Promise<NicheVisua
     "negativeKeywords": "What to AVOID? (e.g. 'vector, cartoon, flat' if analog, or 'realistic, dark' if kawaii)",
     "safeGenerics": "5 generic items that fit this theme",
     "themeUniverse": "The broad parent world behind the submitted niche. Do not simply repeat the niche wording.",
-    "subthemes": "10-12 comma-separated, visually distinct subject families that belong to that broader world",
+    "subthemes": "10-12 comma-separated, visually distinct subject families that independently pass the membership rule",
+    "collectionPromise": "One sentence defining what buyers are purchasing and what visually unifies every sticker",
+    "membershipRule": "One operational yes/no sentence. A concept is valid only when its visibly dominant primary subject satisfies this rule",
+    "allowedPrimarySubjects": "Comma-separated primary-subject families that are valid as standalone stickers",
+    "supportingOnlySubjects": "Comma-separated nearby elements that may support a valid primary subject but do not independently satisfy the product promise",
     "intentAndUse": "Describe the different intents and practical uses for these stickers (e.g., planner decoration, laptop decals, functional tracking, emotional expression).",
     "customerSearchBehavior": "What specific terms and concepts do customers search for when looking for this?"
   }
@@ -1563,10 +1580,28 @@ export const analyzeNicheVisuals = async (nicheName: string): Promise<NicheVisua
             safeGenerics: { type: 'string' },
             themeUniverse: { type: 'string' },
             subthemes: { type: 'string' },
+            collectionPromise: { type: 'string' },
+            membershipRule: { type: 'string' },
+            allowedPrimarySubjects: { type: 'string' },
+            supportingOnlySubjects: { type: 'string' },
             intentAndUse: { type: 'string' },
             customerSearchBehavior: { type: 'string' }
           },
-          required: ['archetype', 'visualStyle', 'keywords', 'negativeKeywords', 'safeGenerics', 'themeUniverse', 'subthemes', 'intentAndUse', 'customerSearchBehavior']
+          required: [
+            'archetype',
+            'visualStyle',
+            'keywords',
+            'negativeKeywords',
+            'safeGenerics',
+            'themeUniverse',
+            'subthemes',
+            'collectionPromise',
+            'membershipRule',
+            'allowedPrimarySubjects',
+            'supportingOnlySubjects',
+            'intentAndUse',
+            'customerSearchBehavior'
+          ]
         }
       });
       return JSON.parse(response.text.trim());
@@ -1580,6 +1615,10 @@ export const analyzeNicheVisuals = async (nicheName: string): Promise<NicheVisua
           visualStyle: 'Cohesive commercial sticker illustration',
           themeUniverse: nicheName,
           subthemes: 'core objects, tools, accessories, symbols, environments, functional elements, actions, places, emotional motifs, decorative accents',
+          collectionPromise: `A coherent sticker collection directly representing ${nicheName}.`,
+          membershipRule: `A concept is valid only when its visibly dominant primary subject directly and unmistakably represents ${nicheName}; style, mood, color, setting or an adjacent prop alone is not sufficient.`,
+          allowedPrimarySubjects: `Primary subjects that directly and unmistakably represent ${nicheName}.`,
+          supportingOnlySubjects: 'Adjacent props, settings, decorations or mood elements that do not independently pass the membership rule.',
           intentAndUse: 'Digital planning, journaling, note-taking, decorating and creative projects.',
           customerSearchBehavior: `Buyers searching for ${nicheName} themed digital stickers and transparent PNG bundles.`
       };
@@ -1588,10 +1627,9 @@ export const analyzeNicheVisuals = async (nicheName: string): Promise<NicheVisua
 
 export const generateStickerPrompts = async (niche: string, style: StylePreset, count: number = 30, analysis?: NicheVisualAnalysis): Promise<string[]> => {
   const COUNT = count;
-  const scope = getNichePromptScope(niche);
+  const scope = createNicheConceptScope(niche, analysis);
   const themeUniverse = analysis?.themeUniverse?.trim() || niche;
-  const scopedFallbackFamily = getScopedFallbackFamily(scope);
-  const fallbackFamilies = (scopedFallbackFamily || analysis?.subthemes || analysis?.safeGenerics || 'core objects, tools, accessories, symbols, environments, functional elements')
+  const fallbackFamilies = (analysis?.subthemes || analysis?.allowedPrimarySubjects || analysis?.safeGenerics || scope.allowedPrimarySubjects)
     .split(',')
     .map(value => value.trim())
     .filter(Boolean);
@@ -1606,86 +1644,111 @@ export const generateStickerPrompts = async (niche: string, style: StylePreset, 
       - STRICTLY AVOID: ${analysis.negativeKeywords}
       - BROAD THEME UNIVERSE: ${themeUniverse}
       - REQUIRED SUBJECT FAMILIES: ${analysis.subthemes || analysis.safeGenerics}
+      - COLLECTION PROMISE: ${scope.collectionPromise}
+      - MEMBERSHIP RULE: ${scope.membershipRule}
+      - ALLOWED PRIMARY SUBJECTS: ${scope.allowedPrimarySubjects}
+      - SUPPORTING-ONLY SUBJECTS: ${scope.supportingOnlySubjects}
       - Intent and Use: ${analysis.intentAndUse || 'General decoration'}
       - Customer Search Behavior: ${analysis.customerSearchBehavior || 'General sticker search'}
       `;
   }
 
-  const enforcePrimarySubjectScope = async (candidates: string[]): Promise<string[]> => {
-    if (!scope || !candidates.length) return candidates;
+  const enforceCollectionContract = async (candidates: string[]): Promise<string[]> => {
+    if (!candidates.length) return candidates;
+    let repaired = [...candidates];
+    const maxRepairRounds = 2;
 
     try {
-      const candidateList = candidates
-        .map((candidate, index) => `${index}: ${candidate}`)
-        .join('\n');
-      const audit = await generateBrainText({
-        tier: 'light',
-        prompt: `Audit these proposed sticker concepts against one strict scope rule.
+      for (let round = 0; round <= maxRepairRounds; round++) {
+        const candidateList = repaired
+          .map((candidate, index) => `${index}: ${candidate}`)
+          .join('\n');
+        const audit = await generateBrainText({
+          tier: 'light',
+          prompt: `Audit every proposed sticker concept against this collection contract.
 
-REQUIRED PRIMARY SUBJECT: ${scope.primarySubject}
-Every valid concept must visibly make that subject the main, largest visual subject. Props, food, habitat, tools, places and decorations are valid only when they visibly interact with that subject. Do not reject a valid subject just because it includes supporting details.
+PRODUCT PROMISE: ${scope.collectionPromise}
+BINARY MEMBERSHIP RULE: ${scope.membershipRule}
+VALID PRIMARY-SUBJECT SPACE: ${scope.allowedPrimarySubjects}
+SUPPORTING-ONLY SPACE: ${scope.supportingOnlySubjects}
 
-Return only the zero-based indexes that are invalid because they would generate a standalone supporting object, a setting, a prop, food, decoration or another off-scope primary subject.
+Judge the visibly dominant subject that the prompt would create. Mark a concept
+invalid if that subject fails the membership rule. Theme-adjacent mood, style,
+setting or supporting elements cannot make an invalid primary subject valid.
+Do not reject a valid concept merely because it also contains supporting detail.
+
+Return only the zero-based indexes of invalid concepts.
 
 CONCEPTS:
 ${candidateList}`,
-        schemaName: 'primary_subject_scope_audit',
-        schema: {
-          type: 'object',
-          additionalProperties: false,
-          properties: {
-            invalidIndexes: {
-              type: 'array',
-              items: { type: 'integer', minimum: 0, maximum: candidates.length - 1 },
-              maxItems: candidates.length
-            }
-          },
-          required: ['invalidIndexes']
+          schemaName: 'collection_membership_audit',
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              invalidIndexes: {
+                type: 'array',
+                items: { type: 'integer', minimum: 0, maximum: repaired.length - 1 },
+                maxItems: repaired.length
+              }
+            },
+            required: ['invalidIndexes']
+          }
+        });
+        const parsed = JSON.parse(audit.text) as { invalidIndexes: number[] };
+        const invalidIndexes = [...new Set(parsed.invalidIndexes)]
+          .filter(index => Number.isInteger(index) && index >= 0 && index < repaired.length);
+        if (!invalidIndexes.length) return repaired;
+
+        if (round === maxRepairRounds) {
+          throw new Error(`Collection contract still rejected ${invalidIndexes.length} concept(s) after ${maxRepairRounds} repair rounds.`);
         }
-      });
-      const parsed = JSON.parse(audit.text) as { invalidIndexes: number[] };
-      const invalidIndexes = [...new Set(parsed.invalidIndexes)]
-        .filter(index => Number.isInteger(index) && index >= 0 && index < candidates.length);
-      if (!invalidIndexes.length) return candidates;
 
-      const validConcepts = candidates.filter((_, index) => !invalidIndexes.includes(index)).join('\n');
-      const repair = await generateBrainText({
-        tier: 'light',
-        prompt: `Generate exactly ${invalidIndexes.length} replacement sticker concepts.
+        const validConcepts = repaired
+          .filter((_, index) => !invalidIndexes.includes(index))
+          .join('\n');
+        const repair = await generateBrainText({
+          tier: 'light',
+          prompt: `Generate exactly ${invalidIndexes.length} replacement sticker concepts that pass this collection contract.
 
-NON-NEGOTIABLE PRIMARY SUBJECT: ${scope.primarySubject}. Every replacement must make that subject the main, largest visual subject. Supporting props, food, habitat, tools, places or decoration may appear only in a visible interaction with the primary subject. Never return a standalone prop, food, place or decorative object.
+PRODUCT PROMISE: ${scope.collectionPromise}
+BINARY MEMBERSHIP RULE: ${scope.membershipRule}
+VALID PRIMARY-SUBJECT SPACE: ${scope.allowedPrimarySubjects}
+SUPPORTING-ONLY SPACE: ${scope.supportingOnlySubjects}
 
-Keep the same style and broader niche context. Do not duplicate these already valid concepts:
+Membership is more important than variety. You may reuse an allowed primary
+subject family with a genuinely different pose, action, viewpoint, expression
+or composition. Never leave the contract merely to reach the requested count.
+
+Do not duplicate these already valid concepts:
 ${validConcepts}`,
-        schemaName: 'primary_subject_scope_repairs',
-        schema: {
-          type: 'object',
-          additionalProperties: false,
-          properties: {
-            prompts: {
-              type: 'array',
-              minItems: invalidIndexes.length,
-              maxItems: invalidIndexes.length,
-              items: { type: 'string' }
-            }
-          },
-          required: ['prompts']
-        }
-      });
-      const replacements = (JSON.parse(repair.text) as { prompts: string[] }).prompts;
-      const repaired = [...candidates];
-      invalidIndexes.forEach((index, replacementIndex) => {
-        const replacement = replacements[replacementIndex]?.trim();
-        if (replacement) repaired[index] = replacement;
-      });
-      return repaired;
+          schemaName: 'collection_membership_repairs',
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              prompts: {
+                type: 'array',
+                minItems: invalidIndexes.length,
+                maxItems: invalidIndexes.length,
+                items: { type: 'string' }
+              }
+            },
+            required: ['prompts']
+          }
+        });
+        const replacements = (JSON.parse(repair.text) as { prompts: string[] }).prompts;
+        invalidIndexes.forEach((index, replacementIndex) => {
+          const replacement = replacements[replacementIndex]?.trim();
+          if (replacement) repaired[index] = replacement;
+        });
+      }
     } catch (error) {
-      // The scope instruction and deterministic fallback still apply if the
-      // inexpensive text audit is temporarily unavailable. Never block a run
-      // or spend image credits on an unbounded retry loop here.
-      console.warn('Primary-subject concept audit unavailable; using scoped prompt rules only.', error);
-      return candidates;
+      console.error('Collection membership verification failed before image generation.', error);
+      throw new Error('Concept plan failed its collection-membership check; no image generation was started.', { cause: error });
     }
+
+    return repaired;
   };
 
   // MASTER PROMPT: DYNAMIC "BEST SELLER" LOGIC
@@ -1697,33 +1760,30 @@ ${validConcepts}`,
     
     ${analysisContext}
 
-    ${getPrimarySubjectScopeInstruction(scope)}
+    ${getCollectionContractInstruction(scope)}
 
     CRITICAL RULES:
     1. **ONE PRIMARY CONCEPT**: Describe one clear standalone sticker design. A primary subject may have small supporting details, but never create a sheet or collection inside one image.
     2. **NO COLLECTIONS**: Do NOT write prompts for "sticker sheets", "sets", "packs", or "collections".
     3. **BE SPECIFIC**: Instead of "medical equipment", say "A blue stethoscope".
-    4. **UMBRELLA INTERPRETATION**: Explore the larger world only within the supplied scope. A merely related vibe is not enough; never turn a support object, setting, food, tool or decoration into a standalone sticker when the scope requires a primary subject.
-    5. **DIRECT MOTIF CAP**: At most 15% of concepts may use the exact submitted wording. This does not relax a non-negotiable primary-subject rule.
+    4. **CONTRACT FIRST**: Broaden the visual world only with primary subjects that pass the membership rule. A related vibe is not enough.
+    5. **COUNT NEVER WIDENS SCOPE**: Reuse an allowed subject family with a new pose, action, viewpoint, expression or composition rather than introducing an invalid adjacent subject.
     
     GOAL: Create a high-value sticker pack that EXACTLY matches the target aesthetic AND the customer's intent. 
     If the style is "Analog Film", generate film strips, cameras, light leaks.
     If the style is "Kawaii", generate cute characters.
     Make sure the stickers reflect the "Intent and Use" and "Customer Search Behavior" provided above.
     
-    SUBJECT DISTRIBUTION ACROSS THE WHOLE PACK:
-    - 15% DIRECT/LITERAL MOTIFS from the submitted phrase
-    - 25% CORE OBJECTS, CHARACTERS OR ICONS from the broader theme universe
-    - 20% ACTIONS, INTERACTIONS, WORKFLOWS OR SYSTEM FEATURES
-    - 15% ACCESSORIES, PLACES OR SUPPORTING ENVIRONMENT, but only as part of a valid primary subject
-    - 15% FUNCTIONAL OR DECORATIVE ELEMENTS, but never as off-theme standalone filler
-    - 10% EMOTIONAL OR TEXT-BASED DESIGNS; use TEXT: NONE for everything else
-
-    For a 100-design pack, cover at least 10 distinct subject families and do not let any family exceed 15 designs.
+    DYNAMIC COLLECTION PLAN:
+    - Build the pack only from the analysis-approved primary-subject families.
+    - Balance those families when possible, but never invent an adjacent family merely to increase variety.
+    - It is valid to revisit a primary-subject family when the visible design is materially different.
+    - Use supporting-only subjects solely to enrich a primary subject that already passes the contract.
+    - Use TEXT: NONE unless text is essential to the product promise.
 
     DESIGN RULES:
-    1. RELEVANCE: Every item must belong to the broader theme universe and obey its non-negotiable scope. Related props alone do not qualify.
-    2. VARIETY: Every concept must have a different primary subject. Do not repeat the same object, character, quote, pose, or composition.
+    1. MEMBERSHIP: Every dominant subject must independently pass the binary membership rule.
+    2. VARIETY: Every design must be visibly different, but a valid subject category may repeat with a new pose, action, viewpoint, expression or composition.
     3. SEMANTIC UNIQUENESS: Rewording an existing idea does not make it new. Each design must be visibly distinguishable at thumbnail size.
     4. STYLE LOCK: Subjects and compositions must vary, but visual medium, line treatment, palette logic, shading, texture, border treatment, and overall art direction must remain consistent across the entire pack. Never introduce a different art style as a way to create variety.
 
@@ -1733,6 +1793,7 @@ ${validConcepts}`,
     "TYPE: [Type] | SUBJECT: [Subject Description] | COMPOSITION: [Layout] | TEXT: '[Text]'"
   `;
 
+  let candidates: string[];
   try {
       const response = await generateBrainText({
         prompt,
@@ -1762,16 +1823,20 @@ ${validConcepts}`,
       while (uniquePrompts.length < COUNT) {
         const variation = uniquePrompts.length + 1;
         const family = fallbackFamilies[(variation - 1) % fallbackFamilies.length] || 'thematic object';
-        uniquePrompts.push(`TYPE: Object-Only | SUBJECT: A distinct ${family} concept from ${themeUniverse}, variation ${variation}, with a primary subject not used elsewhere | COMPOSITION: Centered isolated design | TEXT: NONE`);
+        const boundedFamily = getContractBoundFallbackFamily(scope, family);
+        uniquePrompts.push(`TYPE: Object-Only | SUBJECT: A distinct ${boundedFamily}, variation ${variation} | COMPOSITION: Centered isolated design | TEXT: NONE`);
       }
-      return enforcePrimarySubjectScope(uniquePrompts.slice(0, COUNT));
+      candidates = uniquePrompts.slice(0, COUNT);
   } catch (e) {
       console.warn(`OpenAI concept generation unavailable; using deterministic local concepts.`, e);
-      return enforcePrimarySubjectScope(Array.from({ length: COUNT }, (_, index) => {
+      candidates = Array.from({ length: COUNT }, (_, index) => {
         const family = fallbackFamilies[index % fallbackFamilies.length] || 'thematic object';
-        return `TYPE: Object-Only | SUBJECT: A distinct ${family} concept from ${themeUniverse}, variation ${index + 1} | COMPOSITION: Centered isolated design | TEXT: NONE`;
-      }));
+        const boundedFamily = getContractBoundFallbackFamily(scope, family);
+        return `TYPE: Object-Only | SUBJECT: A distinct ${boundedFamily}, variation ${index + 1} | COMPOSITION: Centered isolated design | TEXT: NONE`;
+      });
   }
+
+  return enforceCollectionContract(candidates);
 };
 
 export const generate50StickerPrompts = async (niche: string, style: StylePreset) => {

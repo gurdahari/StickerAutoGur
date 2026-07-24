@@ -37,6 +37,34 @@ test('repairs green matte-axis pixels in a narrow enclosed hole without changing
   assert.equal(pixel(data, width, 5, 6)[3], alphaBefore);
 });
 
+test('repairs a train-window residual after resampling drifts off the strict matte axis', () => {
+  const width = 15;
+  const height = 15;
+  const matte = { r: 0, g: 255, b: 59 };
+  const data = new Uint8ClampedArray(width * height * 4);
+  const residual = [104, 133, 29, 44];
+
+  for (let position = 0; position < width * height; position++) {
+    data.set([92, 63, 118, 255], position * 4);
+  }
+  for (let y = 6; y <= 8; y++) {
+    for (let x = 6; x <= 8; x++) {
+      data.set([255, 255, 255, 0], (y * width + x) * 4);
+    }
+  }
+  data.set(residual, (7 * width + 5) * 4);
+  data.set([255, 255, 255, 90], (6 * width + 5) * 4);
+  data.set([248, 247, 246, 80], (8 * width + 5) * 4);
+  const alphaBefore = pixel(data, width, 5, 7)[3];
+
+  assert.equal(countEnclosedReservedMatteAxisContamination(data, width, height, matte), 1);
+  repairEnclosedReservedMatteAxisContamination(data, width, height, matte);
+
+  assert.equal(countEnclosedReservedMatteAxisContamination(data, width, height, matte), 0);
+  assert.ok(pixel(data, width, 5, 7).slice(0, 3).every(channel => channel >= 248));
+  assert.equal(pixel(data, width, 5, 7)[3], alphaBefore);
+});
+
 test('does not alter matte-aligned colored artwork on exterior transparency', () => {
   const width = 9;
   const height = 9;

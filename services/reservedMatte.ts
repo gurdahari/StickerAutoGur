@@ -78,10 +78,9 @@ export const inspectStickerBackground = (data: Uint8ClampedArray, width: number,
 };
 
 const MATTE_CORE_DISTANCE = 48;
-const EDGE_DEPTH = 4;
-const FOREGROUND_SEARCH_RADIUS = 5;
-const MINIMUM_FOREGROUND_GAIN = 10;
-const MAXIMUM_LINE_RESIDUAL = 24;
+const TRANSITION_DEPTH = 4;
+const FOREGROUND_CORE_DISTANCE = 96;
+const FOREGROUND_SEARCH_RADIUS = 12;
 
 const pixelColorDistance = (
   red: number,
@@ -91,17 +90,14 @@ const pixelColorDistance = (
 ) => Math.hypot(red - color.r, green - color.g, blue - color.b);
 
 /**
- * Removes one verified technical matte and reconstructs its antialiased edge
- * from nearby opaque foreground colors.
+ * Converts a verified technical matte into alpha using a spatial trimap.
  *
- * The source is a flattened RGB image, so a boundary pixel is:
- *   observed = matte * (1 - coverage) + foreground * coverage
- *
- * Unlike a white-only chroma repair, the foreground sample can be black,
- * colored, or white. The function changes only a short band around verified
- * matte pixels and never scans arbitrary artwork for green/cyan hues.
+ * The technical matte is background core, pixels beyond the transition band
+ * are foreground core, and the four pixels between them receive a fixed smooth
+ * alpha ramp. Transition RGB is copied from foreground core rather than solved
+ * from a chroma-contaminated source pixel.
  */
-export const removeReservedMatteWithLocalForeground = (
+export const removeReservedMatteWithTrimap = (
   data: Uint8ClampedArray,
   width: number,
   height: number,
@@ -111,7 +107,7 @@ export const removeReservedMatteWithLocalForeground = (
   if (!pixelCount || data.length < pixelCount * 4) return 0;
 
   const source = new Uint8ClampedArray(data);
-  const mattePixel = new Uint8Array(pixelCount);
+  const matteCore = new Uint8Array(pixelCount);
   const distance = new Uint8Array(pixelCount);
   distance.fill(255);
   const queue = new Int32Array(pixelCount);
@@ -126,7 +122,7 @@ export const removeReservedMatteWithLocalForeground = (
       && pixelColorDistance(source[index], source[index + 1], source[index + 2], matte)
         <= MATTE_CORE_DISTANCE
     ) {
-      mattePixel[position] = 1;
+      matteCore[position] = 1;
       distance[position] = 0;
       queue[queueEnd++] = position;
     }
@@ -134,20 +130,10 @@ export const removeReservedMatteWithLocalForeground = (
 
   if (!queueEnd || queueEnd > pixelCount * 0.92) return 0;
 
-  for (let position = 0; position < pixelCount; position++) {
-    if (!mattePixel[position]) continue;
-    const index = position * 4;
-    data[index] = 255;
-    data[index + 1] = 255;
-    data[index + 2] = 255;
-    data[index + 3] = 0;
-    changed++;
-  }
-
   while (queueStart < queueEnd) {
     const position = queue[queueStart++];
     const currentDistance = distance[position];
-    if (currentDistance >= EDGE_DEPTH) continue;
+    if (currentDistance >= TRANSITION_DEPTH) continue;
     const x = position % width;
     const y = Math.floor(position / width);
 
@@ -167,32 +153,27 @@ export const removeReservedMatteWithLocalForeground = (
   }
 
   for (let position = 0; position < pixelCount; position++) {
-    if (distance[position] < 1 || distance[position] > EDGE_DEPTH) continue;
+    if (!matteCore[position]) continue;
     const index = position * 4;
-    if (source[index + 3] <= 8) continue;
+    data[index] = 255;
+    data[index + 1] = 255;
+    data[index + 2] = 255;
+    data[index + 3] = 0;
+    changed++;
+  }
 
+  for (let position = 0; position < pixelCount; position++) {
+    const layer = distance[position];
+    if (layer < 1 || layer > TRANSITION_DEPTH) continue;
     const x = position % width;
     const y = Math.floor(position / width);
-    const observedRed = source[index];
-    const observedGreen = source[index + 1];
-    const observedBlue = source[index + 2];
-    const observedDistance = pixelColorDistance(
-      observedRed,
-      observedGreen,
-      observedBlue,
-      matte
-    );
 
-    let best:
-      | {
-        coverage: number;
-        residual: number;
-        foregroundDistance: number;
-        red: number;
-        green: number;
-        blue: number;
-      }
-      | undefined;
+    let cleanSample = -1;
+    let cleanSpatialDistance = Number.POSITIVE_INFINITY;
+    let cleanColorDistance = -1;
+    let fallbackSample = -1;
+    let fallbackColorDistance = -1;
+    let fallbackSpatialDistance = Number.POSITIVE_INFINITY;
 
     for (let offsetY = -FOREGROUND_SEARCH_RADIUS; offsetY <= FOREGROUND_SEARCH_RADIUS; offsetY++) {
       const sampleY = y + offsetY;
@@ -201,70 +182,65 @@ export const removeReservedMatteWithLocalForeground = (
         const sampleX = x + offsetX;
         if (sampleX < 0 || sampleX >= width || (!offsetX && !offsetY)) continue;
         const samplePosition = sampleY * width + sampleX;
-        if (mattePixel[samplePosition]) continue;
+        if (matteCore[samplePosition]) continue;
         const sampleIndex = samplePosition * 4;
-        if (source[sampleIndex + 3] < 220) continue;
+        if (source[sampleIndex + 3] <= 8) continue;
 
-        const foregroundRed = source[sampleIndex];
-        const foregroundGreen = source[sampleIndex + 1];
-        const foregroundBlue = source[sampleIndex + 2];
-        const foregroundVectorRed = foregroundRed - matte.r;
-        const foregroundVectorGreen = foregroundGreen - matte.g;
-        const foregroundVectorBlue = foregroundBlue - matte.b;
-        const foregroundDistance = Math.hypot(
-          foregroundVectorRed,
-          foregroundVectorGreen,
-          foregroundVectorBlue
+        const spatialDistance = offsetX * offsetX + offsetY * offsetY;
+        const sampleColorDistance = pixelColorDistance(
+          source[sampleIndex],
+          source[sampleIndex + 1],
+          source[sampleIndex + 2],
+          matte
         );
-        if (foregroundDistance < observedDistance + MINIMUM_FOREGROUND_GAIN) continue;
-
-        const vectorLengthSquared = foregroundDistance * foregroundDistance;
-        const coverage = (
-          (observedRed - matte.r) * foregroundVectorRed
-          + (observedGreen - matte.g) * foregroundVectorGreen
-          + (observedBlue - matte.b) * foregroundVectorBlue
-        ) / Math.max(1, vectorLengthSquared);
-        if (coverage <= 0.02 || coverage >= 0.985) continue;
-
-        const residual = Math.hypot(
-          observedRed - (matte.r + coverage * foregroundVectorRed),
-          observedGreen - (matte.g + coverage * foregroundVectorGreen),
-          observedBlue - (matte.b + coverage * foregroundVectorBlue)
-        );
-        if (residual > MAXIMUM_LINE_RESIDUAL) continue;
 
         if (
-          !best
-          // A matte-blended neighbor can fit the same line perfectly, but it is
-          // only another midpoint—not the real foreground endpoint. Prefer the
-          // accepted sample farthest from the matte, then use residual as the
-          // tie-breaker.
-          || foregroundDistance > best.foregroundDistance + 1
+          sampleColorDistance > fallbackColorDistance + 1
           || (
-            Math.abs(foregroundDistance - best.foregroundDistance) <= 1
-            && residual < best.residual
+            Math.abs(sampleColorDistance - fallbackColorDistance) <= 1
+            && spatialDistance < fallbackSpatialDistance
           )
         ) {
-          best = {
-            coverage,
-            residual,
-            foregroundDistance,
-            red: foregroundRed,
-            green: foregroundGreen,
-            blue: foregroundBlue
-          };
+          fallbackSample = samplePosition;
+          fallbackColorDistance = sampleColorDistance;
+          fallbackSpatialDistance = spatialDistance;
+        }
+
+        if (
+          distance[samplePosition] === 255
+          && sampleColorDistance >= FOREGROUND_CORE_DISTANCE
+          && (
+            spatialDistance < cleanSpatialDistance
+            || (
+              spatialDistance === cleanSpatialDistance
+              && sampleColorDistance > cleanColorDistance
+            )
+          )
+        ) {
+          cleanSample = samplePosition;
+          cleanSpatialDistance = spatialDistance;
+          cleanColorDistance = sampleColorDistance;
         }
       }
     }
 
-    if (!best) continue;
-    data[index] = best.red;
-    data[index + 1] = best.green;
-    data[index + 2] = best.blue;
-    data[index + 3] = Math.min(
-      source[index + 3],
-      Math.round(best.coverage * 255)
-    );
+    const samplePosition = cleanSample >= 0
+      ? cleanSample
+      : fallbackColorDistance >= FOREGROUND_CORE_DISTANCE
+        ? fallbackSample
+        : -1;
+    const index = position * 4;
+    if (samplePosition >= 0) {
+      const sampleIndex = samplePosition * 4;
+      data[index] = source[sampleIndex];
+      data[index + 1] = source[sampleIndex + 1];
+      data[index + 2] = source[sampleIndex + 2];
+    } else {
+      data[index] = 255;
+      data[index + 1] = 255;
+      data[index + 2] = 255;
+    }
+    data[index + 3] = Math.round(((layer - 0.5) / TRANSITION_DEPTH) * 255);
     changed++;
   }
 

@@ -268,16 +268,20 @@ export const isMinorEnclosedReservedMatteAxisContamination = (
   && measurement.maxAlpha <= MAX_MINOR_MATTE_AXIS_ALPHA;
 
 /**
- * Counts post-resize matte chroma that drifted away from the exact key around
- * enclosed transparent openings. The check is limited to locally proven white
- * cutlines, so legitimate colored artwork is not treated as technical spill.
+ * Returns only blocking post-resize matte-axis contamination. A tiny amount of
+ * low-opacity fringe around a locally proven enclosed white cutline is treated
+ * as a cosmetic warning, not as a reason to buy a completely new image. Exact
+ * key contamination remains governed by the separate zero-tolerance guard.
  */
 export const countEnclosedReservedMatteAxisContamination = (
   data: Uint8ClampedArray,
   width: number,
   height: number,
   background: RgbColor
-) => measureEnclosedReservedMatteAxisContamination(data, width, height, background).pixelCount;
+) => {
+  const measurement = measureEnclosedReservedMatteAxisContamination(data, width, height, background);
+  return isMinorEnclosedReservedMatteAxisContamination(measurement) ? 0 : measurement.pixelCount;
+};
 
 /**
  * Repairs the broader signed matte-axis remainder left by canvas resampling.

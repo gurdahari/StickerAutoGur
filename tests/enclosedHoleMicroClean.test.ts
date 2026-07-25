@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { clearMinorDetachedEnclosedHoleChroma } from '../services/enclosedHoleMicroClean';
+import {
+  clearMinorDetachedEnclosedHoleChroma,
+  neutralizeNearWhiteEnclosedHoleStripResiduals
+} from '../services/enclosedHoleMicroClean';
 
 const matte = { r: 0, g: 255, b: 59 };
 const transparent = [255, 255, 255, 0];
@@ -9,6 +12,12 @@ const greenArtwork = [70, 190, 145, 255];
 
 const pixel = (data: Uint8ClampedArray, width: number, x: number, y: number) =>
   [...data.slice((y * width + x) * 4, (y * width + x) * 4 + 4)];
+
+const alphaBytes = (data: Uint8ClampedArray) => {
+  const alpha: number[] = [];
+  for (let index = 3; index < data.length; index += 4) alpha.push(data[index]);
+  return alpha;
+};
 
 const createWhiteCutlineRing = (size = 41) => {
   const data = new Uint8ClampedArray(size * size * 4);
@@ -104,4 +113,72 @@ test('requires nearby neutral-white cutline proof', () => {
 
   assert.deepEqual(result, { componentsCleared: 0, pixelsCleared: 0, effectivePixelsCleared: 0 });
   assert.deepEqual(pixel(data, width, 7, 12), before);
+});
+
+test('neutralizes a tiny non-axis tint in the enclosed white strip and preserves every alpha byte', () => {
+  const width = 41;
+  const height = 41;
+  const data = createWhiteCutlineRing(width);
+  const x = 12;
+  const y = 20;
+  const survivor = [244, 236, 240, 64];
+  data.set(survivor, (y * width + x) * 4);
+  const alphaBefore = alphaBytes(data);
+
+  const result = neutralizeNearWhiteEnclosedHoleStripResiduals(data, width, height, matte);
+
+  assert.deepEqual(result, {
+    pixelsNeutralized: 1,
+    effectivePixelsNeutralized: Number((64 / 255).toFixed(3))
+  });
+  assert.deepEqual(pixel(data, width, x, y), [244, 244, 244, 64]);
+  assert.deepEqual(alphaBytes(data), alphaBefore);
+});
+
+test('strip cleanup does not cross an opaque white barrier into colored antialiasing', () => {
+  const width = 41;
+  const height = 41;
+  const data = createWhiteCutlineRing(width);
+  const x = 9;
+  const y = 20;
+  const coloredAntialias = [184, 174, 180, 64];
+  data.set(coloredAntialias, (y * width + x) * 4);
+  const before = pixel(data, width, x, y);
+
+  const result = neutralizeNearWhiteEnclosedHoleStripResiduals(data, width, height, matte);
+
+  assert.deepEqual(result, { pixelsNeutralized: 0, effectivePixelsNeutralized: 0 });
+  assert.deepEqual(pixel(data, width, x, y), before);
+});
+
+test('strip cleanup never touches a tinted exterior transparency edge', () => {
+  const width = 41;
+  const height = 41;
+  const data = createWhiteCutlineRing(width);
+  const x = 4;
+  const y = 20;
+  const exteriorTint = [244, 236, 240, 64];
+  data.set(exteriorTint, (y * width + x) * 4);
+  const before = pixel(data, width, x, y);
+
+  const result = neutralizeNearWhiteEnclosedHoleStripResiduals(data, width, height, matte);
+
+  assert.deepEqual(result, { pixelsNeutralized: 0, effectivePixelsNeutralized: 0 });
+  assert.deepEqual(pixel(data, width, x, y), before);
+});
+
+test('strip cleanup preserves nearly opaque interior color rather than whitening uncertain artwork', () => {
+  const width = 41;
+  const height = 41;
+  const data = createWhiteCutlineRing(width);
+  const x = 12;
+  const y = 20;
+  const opaqueishDetail = [244, 236, 240, 180];
+  data.set(opaqueishDetail, (y * width + x) * 4);
+  const before = pixel(data, width, x, y);
+
+  const result = neutralizeNearWhiteEnclosedHoleStripResiduals(data, width, height, matte);
+
+  assert.deepEqual(result, { pixelsNeutralized: 0, effectivePixelsNeutralized: 0 });
+  assert.deepEqual(pixel(data, width, x, y), before);
 });

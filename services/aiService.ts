@@ -1,10 +1,6 @@
 import type { ImageSize, NicheVisualAnalysis, StylePreset } from '../types';
 import * as legacy from './aiServiceLegacy';
 import { appendStickerQualityGuidelines, STICKER_GENERATION_QUALITY_COMPACT } from './stickerQualityGuidelines';
-import {
-  applyStickerOpeningBudget,
-  getStickerOpeningGenerationInstruction
-} from './stickerOpeningPolicy';
 
 export * from './aiServiceLegacy';
 
@@ -33,21 +29,9 @@ const toDataUrl=async(url:string,maxDimension=1200):Promise<string>=>{
   const context=canvas.getContext('2d');if(!context)return raw;context.imageSmoothingEnabled=true;context.imageSmoothingQuality='high';context.drawImage(image,0,0,canvas.width,canvas.height);return canvas.toDataURL('image/png');
 };
 
-export const generateStickerPrompts=async(niche:string,style:StylePreset,count=30,analysis?:NicheVisualAnalysis)=>{
-  const prompts=await legacy.generateStickerPrompts(niche,{...style,prompt:appendStickerQualityGuidelines(style.prompt)},count,analysis);
-  return applyStickerOpeningBudget(prompts,count);
-};
-export const generateReplacementStickerPrompts=async(niche:string,style:StylePreset,count:number,existingPrompts:string[],rejectedReasons:string[],analysis?:NicheVisualAnalysis)=>{
-  const prompts=await legacy.generateReplacementStickerPrompts(niche,{...style,prompt:appendStickerQualityGuidelines(style.prompt)},count,existingPrompts,rejectedReasons,analysis);
-  return applyStickerOpeningBudget(prompts,count);
-};
-export const generateAutopilotSticker=(itemPrompt:string,stylePrompt:string,useTurbo=false,nicheContext='',analysis?:NicheVisualAnalysis)=>legacy.generateAutopilotSticker(
-  itemPrompt,
-  `${stylePrompt}\n\n${STICKER_GENERATION_QUALITY_COMPACT}\n- ${getStickerOpeningGenerationInstruction(itemPrompt)}`,
-  useTurbo,
-  nicheContext,
-  analysis
-);
+export const generateStickerPrompts=(niche:string,style:StylePreset,count=30,analysis?:NicheVisualAnalysis)=>legacy.generateStickerPrompts(niche,{...style,prompt:appendStickerQualityGuidelines(style.prompt)},count,analysis);
+export const generateReplacementStickerPrompts=(niche:string,style:StylePreset,count:number,existingPrompts:string[],rejectedReasons:string[],analysis?:NicheVisualAnalysis)=>legacy.generateReplacementStickerPrompts(niche,{...style,prompt:appendStickerQualityGuidelines(style.prompt)},count,existingPrompts,rejectedReasons,analysis);
+export const generateAutopilotSticker=(itemPrompt:string,stylePrompt:string,useTurbo=false,nicheContext='',analysis?:NicheVisualAnalysis)=>legacy.generateAutopilotSticker(itemPrompt,`${stylePrompt}\n\n${STICKER_GENERATION_QUALITY_COMPACT}`,useTurbo,nicheContext,analysis);
 
 const openAICover=async(stickerUrls:string[],niche:string,totalStickerCount:number)=>{
   const references=await Promise.all(stickerUrls.slice(0,10).map(url=>toDataUrl(url,1000)));

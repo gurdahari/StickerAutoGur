@@ -14,10 +14,27 @@ const COLORED_ARTWORK_RADIUS = 12;
 const OPAQUE_COLORED_ARTWORK_ALPHA = 250;
 const WHITE_DISTANCE_ADVANTAGE = 2;
 
+// Final survivor cleanup. These limits are intentionally much narrower than
+// the attached-fringe band above: only the first two partial-alpha pixels of an
+// enclosed hole are eligible, and alpha is never changed.
+const STRIP_MAX_HOLE_DEPTH = 2;
+const STRIP_MAX_ALPHA = 96;
+const STRIP_WHITE_DISTANCE = 2;
+const STRIP_WHITE_PROOF_RADIUS = 3;
+const STRIP_COLORED_ARTWORK_RADIUS = 6;
+const STRIP_ARTWORK_DISTANCE_MARGIN = 2;
+const STRIP_MIN_CHANNEL_SPREAD = 6;
+const STRIP_MAX_CHANNEL_SPREAD = 24;
+
 export interface EnclosedHoleMicroCleanResult {
   componentsCleared: number;
   pixelsCleared: number;
   effectivePixelsCleared: number;
+}
+
+export interface EnclosedHoleStripNeutralizeResult {
+  pixelsNeutralized: number;
+  effectivePixelsNeutralized: number;
 }
 
 const buildExteriorTransparency = (
@@ -109,6 +126,107 @@ const channelStats = (data: Uint8ClampedArray, pixelIndex: number) => {
   const minimum = Math.min(data[pixelIndex], data[pixelIndex + 1], data[pixelIndex + 2]);
   const maximum = Math.max(data[pixelIndex], data[pixelIndex + 1], data[pixelIndex + 2]);
   return { minimum, maximum, spread: maximum - minimum };
+};
+
+/**
+ * Removes the final non-axis tint survivors in the one-to-two-pixel strip next
+ * to an enclosed transparent hole. This pass deliberately does not use the
+ * reserved-matte axis: after resize/softening, the remaining tint can be a mix
+ * of white cutline and nearby art colors rather than a clean matte projection.
+ *
+ * Safety is topology-first and bounded:
+ *  - exterior transparency is never eligible;
+ *  - only depth 1-2 from enclosed transparency is scanned;
+ *  - only low/mid partial alpha is accepted;
+ *  - a strong neutral-white cutline must be nearby and closer than opaque art;
+ *  - RGB is neutralized while alpha remains byte-for-byte unchanged.
+ */
+export const neutralizeNearWhiteEnclosedHoleStripResiduals = (
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  background: RgbColor
+): EnclosedHoleStripNeutralizeResult => {
+  // The signature keeps the verified-matte context explicit even though this
+  // final survivor pass is intentionally axis-agnostic.
+  void background;
+
+  const source = new Uint8ClampedArray(data);
+  const pixelCount = width * height;
+  const exterior = buildExteriorTransparency(source, width, height);
+
+  const holeDepth = buildLimitedDistance(
+    width,
+    height,
+    STRIP_MAX_HOLE_DEPTH,
+    position => source[position * 4 + 3] <= TRANSPARENT_ALPHA && !exterior[position],
+    position => !exterior[position] && source[position * 4 + 3] < PARTIAL_BARRIER_ALPHA
+  );
+
+  const isStrongWhite = (position: number) => {
+    const pixelIndex = position * 4;
+    if (source[pixelIndex + 3] < STRONG_WHITE_ALPHA) return false;
+    const stats = channelStats(source, pixelIndex);
+    return stats.minimum >= STRONG_WHITE_MIN_CHANNEL && stats.spread <= STRONG_WHITE_MAX_SPREAD;
+  };
+
+  const whiteDistance = buildLimitedDistance(
+    width,
+    height,
+    STRIP_WHITE_PROOF_RADIUS,
+    isStrongWhite
+  );
+
+  const coloredArtworkDistance = buildLimitedDistance(
+    width,
+    height,
+    STRIP_COLORED_ARTWORK_RADIUS,
+    position => {
+      const pixelIndex = position * 4;
+      return source[pixelIndex + 3] >= OPAQUE_COLORED_ARTWORK_ALPHA && !isStrongWhite(position);
+    }
+  );
+
+  let pixelsNeutralized = 0;
+  let effectivePixelsNeutralized = 0;
+
+  for (let position = 0; position < pixelCount; position++) {
+    const depth = holeDepth[position];
+    if (!depth || depth === 255 || depth > STRIP_MAX_HOLE_DEPTH) continue;
+
+    const pixelIndex = position * 4;
+    const alpha = source[pixelIndex + 3];
+    if (alpha <= TRANSPARENT_ALPHA || alpha > STRIP_MAX_ALPHA) continue;
+
+    const nearestWhite = whiteDistance[position];
+    if (nearestWhite > STRIP_WHITE_DISTANCE) continue;
+    if (coloredArtworkDistance[position] <= nearestWhite + STRIP_ARTWORK_DISTANCE_MARGIN) continue;
+
+    const stats = channelStats(source, pixelIndex);
+    if (
+      stats.spread < STRIP_MIN_CHANNEL_SPREAD
+      || stats.spread > STRIP_MAX_CHANNEL_SPREAD
+    ) {
+      continue;
+    }
+
+    const neutral = Math.max(
+      225,
+      source[pixelIndex],
+      source[pixelIndex + 1],
+      source[pixelIndex + 2]
+    );
+    data[pixelIndex] = neutral;
+    data[pixelIndex + 1] = neutral;
+    data[pixelIndex + 2] = neutral;
+    effectivePixelsNeutralized += alpha / 255;
+    pixelsNeutralized++;
+  }
+
+  return {
+    pixelsNeutralized,
+    effectivePixelsNeutralized: Number(effectivePixelsNeutralized.toFixed(3))
+  };
 };
 
 /**

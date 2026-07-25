@@ -2,6 +2,10 @@ export type StickerOpeningDirective = 'ALLOW' | 'AVOID';
 
 const OPENING_FIELD = /(?:^|\|)\s*OPENING:\s*(ALLOW|AVOID)\s*(?=\||$)/i;
 
+// These subjects often invite enclosed transparent voids. They are not banned;
+// they simply compete for the small pack-level opening budget.
+const OPENING_PRONE_SUBJECT = /\b(?:alarm\s+clock|basket|bag|tote|purse|handbag|backpack|mug|cup|pitcher|watering\s+can|spray\s+bottle|trigger|scissors|ring|hoop|chain|frame|wreath|arch|window|handle|handled|loop|keychain|carabiner|bucket|teapot|kettle|tag|luggage\s+tag|shopping\s+cart)\b/i;
+
 /**
  * Keep enclosed openings uncommon rather than banning them completely.
  * A 10-item test run may contain at most one; a 100-item production run may
@@ -41,9 +45,9 @@ export const setStickerOpeningDirective = (
 };
 
 /**
- * Enforce the pack-level budget locally so prompt-model drift cannot turn an
- * occasional visual device into a recurring masking risk. Missing directives
- * and requests above budget become AVOID without another model call.
+ * Enforce the budget locally without another model call. Explicit ALLOW requests
+ * are honored first; otherwise naturally opening-prone concepts may consume the
+ * remaining budget. Every other concept receives an explicit AVOID directive.
  */
 export const applyStickerOpeningBudget = (
   prompts: string[],
@@ -53,11 +57,16 @@ export const applyStickerOpeningBudget = (
   let allowed = 0;
 
   return prompts.map(prompt => {
-    const requested = getStickerOpeningDirective(prompt) === 'ALLOW';
-    const directive: StickerOpeningDirective = requested && allowed < budget
-      ? 'ALLOW'
-      : 'AVOID';
+    const explicitlyAllowed = getStickerOpeningDirective(prompt) === 'ALLOW';
+    const naturallyOpeningProne = OPENING_PRONE_SUBJECT.test(prompt);
+    const mayUseOpening = allowed < budget && (explicitlyAllowed || naturallyOpeningProne);
+    const directive: StickerOpeningDirective = mayUseOpening ? 'ALLOW' : 'AVOID';
     if (directive === 'ALLOW') allowed++;
     return setStickerOpeningDirective(prompt, directive);
   });
 };
+
+export const getStickerOpeningGenerationInstruction = (prompt: string) =>
+  getStickerOpeningDirective(prompt) === 'ALLOW'
+    ? 'INTERNAL OPENING POLICY: ALLOW AT MOST ONE identity-essential enclosed opening. Keep it large, simple, clean and clearly separated from fine artwork. Do not add secondary holes, decorative gaps, tiny loops or repeated cutouts.'
+    : 'INTERNAL OPENING POLICY: AVOID enclosed openings. Build a closed, solid silhouette. Show handles, loops, arches, punch holes and ring-like parts from a side-on, overlapped or filled angle so they do not create transparent internal voids. Preserve the subject identity without internal gaps.';

@@ -1,4 +1,4 @@
-export const STICKER_QUALITY_GUIDELINE_VERSION = 'geometry-first-v1.0';
+export const STICKER_QUALITY_GUIDELINE_VERSION = 'geometry-first-v1.1-opening-budget';
 
 export const STICKER_QUALITY_SCORING = Object.freeze({
   silhouetteQuality: 25,
@@ -16,15 +16,15 @@ export const STICKER_QUALITY_CANONICAL = `
 2. Balanced composition — clear center and focal area, supporting elements, stable weight distribution, intentional negative space and natural visual flow.
 3. Good canvas usage — prominent subject, comfortable consistent margins, visual-weight centering and breathing room for the outline.
 4. Clean outer contour — smooth practical sticker shape, simplified micro-detail, identity-preserving corners and no accidental protrusions.
-5. Consistent white outline — thin, clean, accurate and visually even around curves and details while preserving intentional openings.
+5. Consistent white outline — thin, clean, accurate and visually even around curves and details while preserving only explicitly authorized openings.
 6. Clean transparent presentation — sharp alpha, no gray halo or matte contamination, no accidental holes and immediate digital usability.
-7. Clear internal geometry — believable connections, overlaps, perspective, repeated proportions and intentional openings.
+7. Clear internal geometry — believable connections, overlaps, perspective and repeated proportions. Closed silhouettes are the default; enclosed openings are exceptional and identity-essential.
 8. Thumbnail readability — silhouette, focal point, major forms, contrast and balance remain clear when reduced.
 9. Controlled detail — detail enriches the design without cluttering or weakening the primary shape.
-10. Attractive negative space — internal and external openings create clarity, rhythm and stable frames, wreaths, arches, handles and layered forms.
+10. Attractive negative space — prefer external spacing and overlap-based breathing room. Use internal openings only occasionally, never as routine decorative variety.
 11. Visual depth and contrast — cohesive color, controlled highlights/shadows and separation of major forms.
 12. Collection consistency — outline, margin, scale, rendering, texture, shadow depth, color treatment, edge sharpness and softness remain locked.
-13. Geometric variety — vary silhouette, orientation, proportions, mass distribution, composition, viewing angle, negative space and supporting placement.
+13. Geometric variety — vary silhouette, orientation, proportions, mass distribution, composition, viewing angle and supporting placement without repeatedly relying on handles, loops, arches or cutouts.
 14. Professional output — transparent PNG, minimum 1024×1024, sharp, centered, consistently margined and ready for digital or printable use.
 15. Scoring — silhouette 25%, composition 20%, outline/edges 20%, thumbnail readability 15%, internal geometry 10%, consistency 7%, subject content 3%. A simple polished sticker outranks a complex weak one.
 `.trim();
@@ -37,14 +37,14 @@ export const STICKER_QUALITY_CANONICAL = `
 export const STICKER_GENERATION_QUALITY_COMPACT = `
 GEOMETRY-FIRST STICKER QUALITY STANDARD (${STICKER_QUALITY_GUIDELINE_VERSION}):
 - Prioritize the complete visual shape over subject complexity: strong recognizable silhouette, compact cohesive mass, smooth intentional contour and balanced organic asymmetry.
-- Build a stable composition with one clear focal area, useful negative space, believable overlaps, coherent internal geometry and visually balanced weight.
+- Build a stable composition with one clear focal area, useful primarily external negative space, believable overlaps, coherent internal geometry and visually balanced weight.
 - Fill the canvas confidently while preserving comfortable, consistent margins and room for the die-cut outline; center by visual weight, not only coordinates.
-- Use one thin, smooth, consistent white die-cut outline that follows the real silhouette, preserves intentional openings and never becomes a chunky halo.
+- Use one thin, smooth, consistent white die-cut outline that follows the real silhouette, preserves only the per-item authorized opening and never becomes a chunky halo.
 - Keep the subject fully visible and readable at small marketplace-thumbnail size. Simplify edge noise and control detail so it enriches rather than weakens the silhouette.
-- Preserve physically meaningful openings and fill them with the exact reserved matte key used in all four canvas corners; never infer holes from black or other artwork colors.
+- Default to a closed solid silhouette. If the per-item opening policy is AVOID, create no enclosed transparent void. If it is ALLOW, use at most one large, simple, identity-essential opening and fill it with the exact reserved matte key used in all four canvas corners.
 - Maintain clear depth, contrast, color separation, highlights and shadows inside the artwork while keeping the external presentation shadow-free and transparency-ready.
 - Match the collection's rendering style, outline thickness, margins, subject scale, texture density, edge sharpness and color treatment.
-- Across the pack, vary silhouette, orientation, aspect ratio, visual-mass distribution and viewing angle without changing the locked art style.
+- Across the pack, vary silhouette, orientation, aspect ratio, visual-mass distribution and viewing angle without repeatedly using handles, rings, loops, arches or cutouts as the source of variety.
 - A simple polished sticker is better than a complex sticker with weak geometry.`.trim();
 
 export const STICKER_QA_RUBRIC_COMPACT = `

@@ -1,17 +1,18 @@
 import type { RgbColor } from './reservedMatte';
 
 const TRANSPARENT_ALPHA = 8;
-const MAX_SPECK_ALPHA = 112;
-const MIN_SPECK_CHROMA = 5;
-const MIN_AXIS_ALIGNMENT = 0.22;
-const MIN_AXIS_MAGNITUDE = 2.5;
-const OPAQUE_ANCHOR_ALPHA = 168;
-const OPAQUE_ANCHOR_RADIUS = 3;
-const MAX_COMPONENT_PIXELS = 320;
-const MAX_COMPONENT_EFFECTIVE_PIXELS = 40;
-const MIN_HOLE_TOUCH_RATIO = 0.2;
-const MAX_DENSE_FILL_RATIO = 0.35;
-const MAX_THIN_COMPONENT_SIZE = 8;
+const PARTIAL_BARRIER_ALPHA = 250;
+const MAX_HOLE_BAND_DEPTH = 8;
+const MIN_FRINGE_CHROMA = 5;
+const MIN_AXIS_ALIGNMENT = 0.28;
+const MIN_AXIS_MAGNITUDE = 4;
+const STRONG_WHITE_ALPHA = 168;
+const STRONG_WHITE_MIN_CHANNEL = 200;
+const STRONG_WHITE_MAX_SPREAD = 32;
+const WHITE_PROOF_RADIUS = 10;
+const COLORED_ARTWORK_RADIUS = 12;
+const OPAQUE_COLORED_ARTWORK_ALPHA = 250;
+const WHITE_DISTANCE_ADVANTAGE = 2;
 
 export interface EnclosedHoleMicroCleanResult {
   componentsCleared: number;
@@ -59,65 +60,68 @@ const buildExteriorTransparency = (
   return exterior;
 };
 
-const transparencyContact = (
-  data: Uint8ClampedArray,
-  exterior: Uint8Array,
+const buildLimitedDistance = (
   width: number,
   height: number,
-  position: number
+  maxDistance: number,
+  isSeed: (position: number) => boolean,
+  canEnter: (position: number) => boolean = () => true
 ) => {
-  const x = position % width;
-  const y = Math.floor(position / width);
-  let enclosed = false;
-  let outside = false;
+  const pixelCount = width * height;
+  const distance = new Uint8Array(pixelCount);
+  distance.fill(255);
+  const queue = new Int32Array(pixelCount);
+  let start = 0;
+  let end = 0;
 
-  for (let offsetY = -1; offsetY <= 1; offsetY++) {
-    const nextY = y + offsetY;
-    if (nextY < 0 || nextY >= height) continue;
-    for (let offsetX = -1; offsetX <= 1; offsetX++) {
-      if (!offsetX && !offsetY) continue;
-      const nextX = x + offsetX;
-      if (nextX < 0 || nextX >= width) continue;
-      const next = nextY * width + nextX;
-      if (data[next * 4 + 3] > TRANSPARENT_ALPHA) continue;
-      if (exterior[next]) outside = true;
-      else enclosed = true;
-    }
+  for (let position = 0; position < pixelCount; position++) {
+    if (!isSeed(position)) continue;
+    distance[position] = 0;
+    queue[end++] = position;
   }
 
-  return { enclosed, outside };
-};
-
-const hasOpaqueAnchor = (
-  data: Uint8ClampedArray,
-  width: number,
-  height: number,
-  positions: number[]
-) => {
-  for (const position of positions) {
+  while (start < end) {
+    const position = queue[start++];
+    const currentDistance = distance[position];
+    if (currentDistance >= maxDistance) continue;
     const x = position % width;
     const y = Math.floor(position / width);
-    for (let offsetY = -OPAQUE_ANCHOR_RADIUS; offsetY <= OPAQUE_ANCHOR_RADIUS; offsetY++) {
+
+    for (let offsetY = -1; offsetY <= 1; offsetY++) {
       const nextY = y + offsetY;
       if (nextY < 0 || nextY >= height) continue;
-      for (let offsetX = -OPAQUE_ANCHOR_RADIUS; offsetX <= OPAQUE_ANCHOR_RADIUS; offsetX++) {
+      for (let offsetX = -1; offsetX <= 1; offsetX++) {
+        if (!offsetX && !offsetY) continue;
         const nextX = x + offsetX;
         if (nextX < 0 || nextX >= width) continue;
-        if (data[(nextY * width + nextX) * 4 + 3] >= OPAQUE_ANCHOR_ALPHA) return true;
+        const next = nextY * width + nextX;
+        if (distance[next] !== 255 || !canEnter(next)) continue;
+        distance[next] = currentDistance + 1;
+        queue[end++] = next;
       }
     }
   }
-  return false;
+
+  return distance;
+};
+
+const channelStats = (data: Uint8ClampedArray, pixelIndex: number) => {
+  const minimum = Math.min(data[pixelIndex], data[pixelIndex + 1], data[pixelIndex + 2]);
+  const maximum = Math.max(data[pixelIndex], data[pixelIndex + 1], data[pixelIndex + 2]);
+  return { minimum, maximum, spread: maximum - minimum };
 };
 
 /**
- * Removes only faint, detached matte-colored traces floating inside an enclosed
- * transparent opening. This is deliberately narrower than the normal edge
- * repair: candidates must be low-alpha, matte-axis aligned, surrounded by the
- * enclosed hole and separated from any opaque artwork edge.
+ * Neutralizes the attached pink/green fringe that canvas resampling can spread
+ * several pixels into an enclosed transparent opening. Unlike the previous
+ * detached-speck pass, this walks a bounded partial-alpha band from the hole and
+ * preserves alpha, so the white cutline geometry is unchanged.
  *
- * Accepted components are made fully transparent. Hidden RGB is reset to white
- * so later resampling cannot revive a pink/green line from transparent pixels.
+ * Safety comes from intersecting three independent proofs:
+ *  - the pixel is reachable from enclosed transparency without crossing an
+ *    opaque barrier;
+ *  - its chroma lies on the verified technical matte axis (either sign);
+ *  - a strong neutral-white cutline is closer than opaque colored artwork.
  */
 export const clearMinorDetachedEnclosedHoleChroma = (
   data: Uint8ClampedArray,
@@ -128,6 +132,39 @@ export const clearMinorDetachedEnclosedHoleChroma = (
   const source = new Uint8ClampedArray(data);
   const pixelCount = width * height;
   const exterior = buildExteriorTransparency(source, width, height);
+
+  const holeDepth = buildLimitedDistance(
+    width,
+    height,
+    MAX_HOLE_BAND_DEPTH,
+    position => source[position * 4 + 3] <= TRANSPARENT_ALPHA && !exterior[position],
+    position => !exterior[position] && source[position * 4 + 3] < PARTIAL_BARRIER_ALPHA
+  );
+
+  const isStrongWhite = (position: number) => {
+    const pixelIndex = position * 4;
+    if (source[pixelIndex + 3] < STRONG_WHITE_ALPHA) return false;
+    const stats = channelStats(source, pixelIndex);
+    return stats.minimum >= STRONG_WHITE_MIN_CHANNEL && stats.spread <= STRONG_WHITE_MAX_SPREAD;
+  };
+
+  const whiteDistance = buildLimitedDistance(
+    width,
+    height,
+    WHITE_PROOF_RADIUS,
+    isStrongWhite
+  );
+
+  const coloredArtworkDistance = buildLimitedDistance(
+    width,
+    height,
+    COLORED_ARTWORK_RADIUS,
+    position => {
+      const pixelIndex = position * 4;
+      return source[pixelIndex + 3] >= OPAQUE_COLORED_ARTWORK_ALPHA && !isStrongWhite(position);
+    }
+  );
+
   const matteMean = (background.r + background.g + background.b) / 3;
   const matteChroma = [
     background.r - matteMean,
@@ -140,23 +177,25 @@ export const clearMinorDetachedEnclosedHoleChroma = (
   }
 
   const candidate = new Uint8Array(pixelCount);
+  const replacement = new Uint8Array(pixelCount);
+
   for (let position = 0; position < pixelCount; position++) {
+    const bandDepth = holeDepth[position];
+    if (!bandDepth || bandDepth === 255 || bandDepth > MAX_HOLE_BAND_DEPTH) continue;
+    if (whiteDistance[position] > WHITE_PROOF_RADIUS) continue;
+    if (whiteDistance[position] + WHITE_DISTANCE_ADVANTAGE > coloredArtworkDistance[position]) continue;
+
     const pixelIndex = position * 4;
     const alpha = source[pixelIndex + 3];
-    if (alpha <= TRANSPARENT_ALPHA || alpha > MAX_SPECK_ALPHA) continue;
+    if (alpha <= TRANSPARENT_ALPHA || alpha >= PARTIAL_BARRIER_ALPHA) continue;
 
-    const mean = (
-      source[pixelIndex]
-      + source[pixelIndex + 1]
-      + source[pixelIndex + 2]
-    ) / 3;
-    const chroma = [
-      source[pixelIndex] - mean,
-      source[pixelIndex + 1] - mean,
-      source[pixelIndex + 2] - mean
-    ];
+    const red = source[pixelIndex];
+    const green = source[pixelIndex + 1];
+    const blue = source[pixelIndex + 2];
+    const mean = (red + green + blue) / 3;
+    const chroma = [red - mean, green - mean, blue - mean];
     const chromaLength = Math.hypot(...chroma);
-    if (chromaLength < MIN_SPECK_CHROMA) continue;
+    if (chromaLength < MIN_FRINGE_CHROMA) continue;
 
     const axisProjection = chroma.reduce(
       (sum, value, channel) => sum + value * matteChroma[channel],
@@ -164,45 +203,37 @@ export const clearMinorDetachedEnclosedHoleChroma = (
     ) / matteChromaLength;
     const alignment = Math.abs(axisProjection) / chromaLength;
     if (alignment < MIN_AXIS_ALIGNMENT || Math.abs(axisProjection) < MIN_AXIS_MAGNITUDE) continue;
+
     candidate[position] = 1;
+    replacement[position] = Math.max(225, red, green, blue);
   }
 
   const visited = new Uint8Array(pixelCount);
   const queue = new Int32Array(pixelCount);
-  const accepted: number[][] = [];
+  let componentsCleared = 0;
+  let pixelsCleared = 0;
+  let effectivePixelsCleared = 0;
 
   for (let seed = 0; seed < pixelCount; seed++) {
     if (!candidate[seed] || visited[seed]) continue;
+    componentsCleared++;
     let start = 0;
     let end = 0;
     visited[seed] = 1;
     queue[end++] = seed;
-    const positions: number[] = [];
-    let alphaMass = 0;
-    let maxAlpha = 0;
-    let minX = width;
-    let minY = height;
-    let maxX = -1;
-    let maxY = -1;
-    let enclosedTouches = 0;
-    let outsideTouches = 0;
 
     while (start < end) {
       const position = queue[start++];
-      positions.push(position);
+      const pixelIndex = position * 4;
+      const neutral = replacement[position];
+      effectivePixelsCleared += source[pixelIndex + 3] / 255;
+      data[pixelIndex] = neutral;
+      data[pixelIndex + 1] = neutral;
+      data[pixelIndex + 2] = neutral;
+      pixelsCleared++;
+
       const x = position % width;
       const y = Math.floor(position / width);
-      const alpha = source[position * 4 + 3];
-      alphaMass += alpha / 255;
-      maxAlpha = Math.max(maxAlpha, alpha);
-      minX = Math.min(minX, x);
-      minY = Math.min(minY, y);
-      maxX = Math.max(maxX, x);
-      maxY = Math.max(maxY, y);
-      const contact = transparencyContact(source, exterior, width, height, position);
-      if (contact.enclosed) enclosedTouches++;
-      if (contact.outside) outsideTouches++;
-
       for (let offsetY = -1; offsetY <= 1; offsetY++) {
         const nextY = y + offsetY;
         if (nextY < 0 || nextY >= height) continue;
@@ -217,45 +248,10 @@ export const clearMinorDetachedEnclosedHoleChroma = (
         }
       }
     }
-
-    const componentWidth = maxX - minX + 1;
-    const componentHeight = maxY - minY + 1;
-    const fillRatio = positions.length / Math.max(1, componentWidth * componentHeight);
-    const thinOrSparse = Math.min(componentWidth, componentHeight) <= MAX_THIN_COMPONENT_SIZE
-      || fillRatio <= MAX_DENSE_FILL_RATIO;
-    const holeTouchRatio = enclosedTouches / positions.length;
-
-    if (
-      positions.length > MAX_COMPONENT_PIXELS
-      || alphaMass > MAX_COMPONENT_EFFECTIVE_PIXELS
-      || maxAlpha > MAX_SPECK_ALPHA
-      || outsideTouches > 0
-      || holeTouchRatio < MIN_HOLE_TOUCH_RATIO
-      || !thinOrSparse
-      || hasOpaqueAnchor(source, width, height, positions)
-    ) {
-      continue;
-    }
-
-    accepted.push(positions);
-  }
-
-  let pixelsCleared = 0;
-  let effectivePixelsCleared = 0;
-  for (const component of accepted) {
-    for (const position of component) {
-      const pixelIndex = position * 4;
-      effectivePixelsCleared += source[pixelIndex + 3] / 255;
-      data[pixelIndex] = 255;
-      data[pixelIndex + 1] = 255;
-      data[pixelIndex + 2] = 255;
-      data[pixelIndex + 3] = 0;
-      pixelsCleared++;
-    }
   }
 
   return {
-    componentsCleared: accepted.length,
+    componentsCleared,
     pixelsCleared,
     effectivePixelsCleared: Number(effectivePixelsCleared.toFixed(3))
   };

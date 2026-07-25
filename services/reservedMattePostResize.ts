@@ -3,6 +3,7 @@ import {
   clearMinorDetachedEnclosedHoleChroma,
   neutralizeNearWhiteEnclosedHoleStripResiduals
 } from './enclosedHoleMicroClean';
+import { neutralizeSmallEnclosedHoleColorIslands } from './enclosedHoleIslandNeutralizer';
 
 const TRANSPARENT_ALPHA = 8;
 const PARTIAL_ALPHA_LIMIT = 250;
@@ -309,11 +310,12 @@ export const repairEnclosedReservedMatteAxisContamination = (
     data[pixelIndex + 2] = candidate.replacementValue;
   }
 
-  // Keep the broad attached-fringe pass first. The final strip pass is much
-  // narrower and axis-agnostic, so it only sees the tiny survivors intentionally
-  // left behind by the matte-axis repair.
+  // Keep the broad attached-fringe pass first. The final strip and island
+  // passes are axis-agnostic and only see conservative survivors left behind by
+  // the matte-axis repair. Every pass preserves alpha byte-for-byte.
   clearMinorDetachedEnclosedHoleChroma(data, width, height, background);
   neutralizeNearWhiteEnclosedHoleStripResiduals(data, width, height, background);
+  neutralizeSmallEnclosedHoleColorIslands(data, width, height);
 
   return {
     detectedPixels: candidates.length,

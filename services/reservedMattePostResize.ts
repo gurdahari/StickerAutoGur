@@ -1,4 +1,5 @@
 import type { RgbColor } from './reservedMatte';
+import { clearMinorDetachedEnclosedHoleChroma } from './enclosedHoleMicroClean';
 
 const TRANSPARENT_ALPHA = 8;
 const PARTIAL_ALPHA_LIMIT = 250;
@@ -304,6 +305,11 @@ export const repairEnclosedReservedMatteAxisContamination = (
     data[pixelIndex + 1] = candidate.replacementValue;
     data[pixelIndex + 2] = candidate.replacementValue;
   }
+
+  // The strict edge repair above preserves alpha. A second, much narrower pass
+  // clears only faint detached matte-colored traces floating inside an enclosed
+  // hole, such as the tiny pink arcs visible only at extreme zoom.
+  clearMinorDetachedEnclosedHoleChroma(data, width, height, background);
 
   return {
     detectedPixels: candidates.length,

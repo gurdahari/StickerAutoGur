@@ -1,5 +1,8 @@
 import type { RgbColor } from './reservedMatte';
-import { clearMinorDetachedEnclosedHoleChroma } from './enclosedHoleMicroClean';
+import {
+  clearMinorDetachedEnclosedHoleChroma,
+  neutralizeNearWhiteEnclosedHoleStripResiduals
+} from './enclosedHoleMicroClean';
 
 const TRANSPARENT_ALPHA = 8;
 const PARTIAL_ALPHA_LIMIT = 250;
@@ -306,10 +309,11 @@ export const repairEnclosedReservedMatteAxisContamination = (
     data[pixelIndex + 2] = candidate.replacementValue;
   }
 
-  // The strict edge repair above preserves alpha. A second, much narrower pass
-  // clears only faint detached matte-colored traces floating inside an enclosed
-  // hole, such as the tiny pink arcs visible only at extreme zoom.
+  // Keep the broad attached-fringe pass first. The final strip pass is much
+  // narrower and axis-agnostic, so it only sees the tiny survivors intentionally
+  // left behind by the matte-axis repair.
   clearMinorDetachedEnclosedHoleChroma(data, width, height, background);
+  neutralizeNearWhiteEnclosedHoleStripResiduals(data, width, height, background);
 
   return {
     detectedPixels: candidates.length,

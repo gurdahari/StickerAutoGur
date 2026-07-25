@@ -17,10 +17,14 @@ export const getIntentionalOpeningBudget = (count: number) => {
   return Math.min(8, Math.max(1, Math.round(safeCount * 0.06)));
 };
 
-export const getStickerOpeningDirective = (prompt: string): StickerOpeningDirective => {
+const getExplicitStickerOpeningDirective = (prompt: string): StickerOpeningDirective | null => {
   const match = prompt.match(OPENING_FIELD);
-  return match?.[1]?.toUpperCase() === 'ALLOW' ? 'ALLOW' : 'AVOID';
+  if (!match?.[1]) return null;
+  return match[1].toUpperCase() === 'ALLOW' ? 'ALLOW' : 'AVOID';
 };
+
+export const getStickerOpeningDirective = (prompt: string): StickerOpeningDirective =>
+  getExplicitStickerOpeningDirective(prompt) || 'AVOID';
 
 export const setStickerOpeningDirective = (
   prompt: string,
@@ -47,7 +51,8 @@ export const setStickerOpeningDirective = (
 /**
  * Enforce the budget locally without another model call. Explicit ALLOW requests
  * are honored first; otherwise naturally opening-prone concepts may consume the
- * remaining budget. Every other concept receives an explicit AVOID directive.
+ * remaining budget. Explicit AVOID is never overridden. Every other concept gets
+ * an AVOID directive.
  */
 export const applyStickerOpeningBudget = (
   prompts: string[],
@@ -57,9 +62,12 @@ export const applyStickerOpeningBudget = (
   let allowed = 0;
 
   return prompts.map(prompt => {
-    const explicitlyAllowed = getStickerOpeningDirective(prompt) === 'ALLOW';
+    const explicitDirective = getExplicitStickerOpeningDirective(prompt);
     const naturallyOpeningProne = OPENING_PRONE_SUBJECT.test(prompt);
-    const mayUseOpening = allowed < budget && (explicitlyAllowed || naturallyOpeningProne);
+    const mayUseOpening = allowed < budget && (
+      explicitDirective === 'ALLOW'
+      || (explicitDirective === null && naturallyOpeningProne)
+    );
     const directive: StickerOpeningDirective = mayUseOpening ? 'ALLOW' : 'AVOID';
     if (directive === 'ALLOW') allowed++;
     return setStickerOpeningDirective(prompt, directive);
@@ -68,5 +76,5 @@ export const applyStickerOpeningBudget = (
 
 export const getStickerOpeningGenerationInstruction = (prompt: string) =>
   getStickerOpeningDirective(prompt) === 'ALLOW'
-    ? 'INTERNAL OPENING POLICY: ALLOW AT MOST ONE identity-essential enclosed opening. Keep it large, simple, clean and clearly separated from fine artwork. Do not add secondary holes, decorative gaps, tiny loops or repeated cutouts.'
+    ? 'INTERNAL OPENING POLICY: This concept is inside the small pack-level exception budget. Prefer a closed silhouette, but if subject identity genuinely requires an enclosed opening, use at most one large, simple, clean opening. Never add secondary holes, decorative gaps, tiny loops or repeated cutouts.'
     : 'INTERNAL OPENING POLICY: AVOID enclosed openings. Build a closed, solid silhouette. Show handles, loops, arches, punch holes and ring-like parts from a side-on, overlapped or filled angle so they do not create transparent internal voids. Preserve the subject identity without internal gaps.';

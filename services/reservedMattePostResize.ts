@@ -308,10 +308,16 @@ export const repairEnclosedReservedMatteAxisContamination = (
   background: RgbColor
 ) => {
   // First close only tiny isolated off-axis openings that have no symmetric or
-  // centered structural justification. The white-cutline repair runs first;
-  // the colored-stroke companion then reconstructs holes inside stems/cords.
+  // centered structural justification. The white-cutline repair runs first.
   closeIllogicalEnclosedMicroOpenings(data, width, height);
-  closeColoredStrokeMicroOpenings(data, width, height, background);
+
+  // A damaged thin stroke can have only part of its boundary available as a
+  // trusted sample. Three bounded local passes propagate the recovered artwork
+  // color across the entire same micro-opening without a provider call.
+  for (let pass = 0; pass < 3; pass++) {
+    const repaired = closeColoredStrokeMicroOpenings(data, width, height, background);
+    if (!repaired.openingsClosed) break;
+  }
 
   const candidates = findEnclosedMatteAxisResiduals(data, width, height, background);
 

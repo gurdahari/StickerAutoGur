@@ -20,26 +20,29 @@ interface StickerMatteChoice {
 const DEFAULT_BASE_URL = 'https://ark.ap-southeast.bytepluses.com/api/v3';
 let lastSuccessfulRequestAt: string | null = null;
 
+// Include subject-color priors, not only literal color words. Image models can
+// choose an obvious semantic color (green stem, cyan rain umbrella, yellow
+// daffodil) even when the prompt never spells that color out.
 const STICKER_MATTE_CHOICES: StickerMatteChoice[] = [
   {
     hex: '#00FF3B',
     label: 'electric key green',
-    avoid: /\b(green|lime|emerald|mint|forest|leaf|leaves|foliage|grass|plant|nature|frog|cactus)\b/i
+    avoid: /\b(green|lime|emerald|mint|forest|leaf|leaves|foliage|grass|plant|nature|frog|cactus|flower|floral|daffodil|sunflower|blossom|garden|stem|vine|tree|herb|vegetable|salad|avocado|broccoli)\b/i
   },
   {
     hex: '#FF00D4',
     label: 'electric key magenta',
-    avoid: /\b(pink|magenta|fuchsia|purple|violet|rose|candy|princess|unicorn|pastel)\b/i
+    avoid: /\b(pink|magenta|fuchsia|purple|violet|rose|candy|princess|unicorn|pastel|fairy|mermaid|berry|heart|love|makeup)\b/i
   },
   {
     hex: '#00E5FF',
     label: 'electric key cyan',
-    avoid: /\b(blue|cyan|aqua|turquoise|teal|ocean|water|ice|sky|snow)\b/i
+    avoid: /\b(blue|cyan|aqua|turquoise|teal|ocean|water|ice|sky|snow|rain|raindrop|umbrella|cloud|wave|pool|river|lake)\b/i
   },
   {
     hex: '#FF5A00',
     label: 'electric key orange',
-    avoid: /\b(red|orange|coral|fire|sunset|autumn|warm|gold)\b/i
+    avoid: /\b(red|orange|coral|fire|sunset|autumn|warm|gold|yellow|daffodil|sunflower|sun|flame|pumpkin|carrot)\b/i
   }
 ];
 

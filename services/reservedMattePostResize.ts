@@ -5,6 +5,7 @@ import {
 } from './enclosedHoleMicroClean';
 import { neutralizeSmallEnclosedHoleColorIslands } from './enclosedHoleIslandNeutralizer';
 import { neutralizeAcuteEnclosedHoleCornerChroma } from './acuteEnclosedHoleCornerCleaner';
+import { closeIllogicalEnclosedMicroOpenings } from './enclosedOpeningLogicRepair';
 
 const TRANSPARENT_ALPHA = 8;
 const PARTIAL_ALPHA_LIMIT = 250;
@@ -294,7 +295,7 @@ export const countEnclosedReservedMatteAxisContamination = (
  * A trusted cutline sample supplies brightness, but the output is made exactly
  * neutral before writing. Copying a slightly tinted witness can reintroduce the
  * same technical matte direction and make a clean repair fail its own check.
- * Alpha is preserved byte-for-byte, so geometry never changes.
+ * Alpha is preserved byte-for-byte for retained openings.
  */
 export const repairEnclosedReservedMatteAxisContamination = (
   data: Uint8ClampedArray,
@@ -302,6 +303,11 @@ export const repairEnclosedReservedMatteAxisContamination = (
   height: number,
   background: RgbColor
 ) => {
+  // First close only tiny isolated off-axis openings that have no symmetric or
+  // centered structural justification. This local repair does not affect large,
+  // paired or central openings and does not change QA/reject behavior.
+  closeIllogicalEnclosedMicroOpenings(data, width, height);
+
   const candidates = findEnclosedMatteAxisResiduals(data, width, height, background);
 
   for (const candidate of candidates) {
@@ -312,7 +318,8 @@ export const repairEnclosedReservedMatteAxisContamination = (
   }
 
   // Keep the broad attached-fringe pass first. The strip, island and acute-tip
-  // passes are conservative survivors-only cleanup. Every pass preserves alpha.
+  // passes are conservative survivors-only cleanup. Every retained opening pass
+  // preserves alpha byte-for-byte.
   clearMinorDetachedEnclosedHoleChroma(data, width, height, background);
   neutralizeNearWhiteEnclosedHoleStripResiduals(data, width, height, background);
   neutralizeSmallEnclosedHoleColorIslands(data, width, height);

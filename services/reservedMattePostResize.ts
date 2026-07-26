@@ -6,6 +6,10 @@ import {
 import { neutralizeSmallEnclosedHoleColorIslands } from './enclosedHoleIslandNeutralizer';
 import { neutralizeAcuteEnclosedHoleCornerChroma } from './acuteEnclosedHoleCornerCleaner';
 import { closeIllogicalEnclosedMicroOpenings } from './enclosedOpeningLogicRepair';
+import {
+  closeColoredStrokeMicroOpenings,
+  repairRetainedOpeningStrokeEdges
+} from './coloredStrokeOpeningRepair';
 
 const TRANSPARENT_ALPHA = 8;
 const PARTIAL_ALPHA_LIMIT = 250;
@@ -304,9 +308,10 @@ export const repairEnclosedReservedMatteAxisContamination = (
   background: RgbColor
 ) => {
   // First close only tiny isolated off-axis openings that have no symmetric or
-  // centered structural justification. This local repair does not affect large,
-  // paired or central openings and does not change QA/reject behavior.
+  // centered structural justification. The white-cutline repair runs first;
+  // the colored-stroke companion then reconstructs holes inside stems/cords.
   closeIllogicalEnclosedMicroOpenings(data, width, height);
+  closeColoredStrokeMicroOpenings(data, width, height, background);
 
   const candidates = findEnclosedMatteAxisResiduals(data, width, height, background);
 
@@ -317,13 +322,14 @@ export const repairEnclosedReservedMatteAxisContamination = (
     data[pixelIndex + 2] = candidate.replacementValue;
   }
 
-  // Keep the broad attached-fringe pass first. The strip, island and acute-tip
-  // passes are conservative survivors-only cleanup. Every retained opening pass
-  // preserves alpha byte-for-byte.
+  // Existing white-cutline and acute-tip repairs stay intact. The final pass
+  // handles only partial-alpha survivors on retained dark/colored openings and
+  // reconstructs RGB from a locally verified mixture sample without changing alpha.
   clearMinorDetachedEnclosedHoleChroma(data, width, height, background);
   neutralizeNearWhiteEnclosedHoleStripResiduals(data, width, height, background);
   neutralizeSmallEnclosedHoleColorIslands(data, width, height);
   neutralizeAcuteEnclosedHoleCornerChroma(data, width, height, background);
+  repairRetainedOpeningStrokeEdges(data, width, height, background);
 
   return {
     detectedPixels: candidates.length,

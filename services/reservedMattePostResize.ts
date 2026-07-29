@@ -10,6 +10,7 @@ import {
   closeColoredStrokeMicroOpenings,
   repairRetainedOpeningStrokeEdges
 } from './coloredStrokeOpeningRepair';
+import { clearRetainedOpeningInteriorDust } from './retainedOpeningInteriorDustCleaner';
 
 const TRANSPARENT_ALPHA = 8;
 const PARTIAL_ALPHA_LIMIT = 250;
@@ -328,14 +329,15 @@ export const repairEnclosedReservedMatteAxisContamination = (
     data[pixelIndex + 2] = candidate.replacementValue;
   }
 
-  // Existing white-cutline and acute-tip repairs stay intact. The final pass
-  // handles only partial-alpha survivors on retained dark/colored openings and
-  // reconstructs RGB from a locally verified mixture sample without changing alpha.
+  // Existing white-cutline and acute-tip repairs stay intact. The retained-edge
+  // reconstruction runs before the final dust pass. That final pass removes only
+  // tiny low-alpha survivors that remain visible mainly on white backgrounds.
   clearMinorDetachedEnclosedHoleChroma(data, width, height, background);
   neutralizeNearWhiteEnclosedHoleStripResiduals(data, width, height, background);
   neutralizeSmallEnclosedHoleColorIslands(data, width, height);
   neutralizeAcuteEnclosedHoleCornerChroma(data, width, height, background);
   repairRetainedOpeningStrokeEdges(data, width, height, background);
+  clearRetainedOpeningInteriorDust(data, width, height, background);
 
   return {
     detectedPixels: candidates.length,

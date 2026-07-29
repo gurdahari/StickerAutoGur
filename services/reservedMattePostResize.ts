@@ -10,7 +10,6 @@ import {
   closeColoredStrokeMicroOpenings,
   repairRetainedOpeningStrokeEdges
 } from './coloredStrokeOpeningRepair';
-import { clearDetachedOpeningHaze } from './detachedOpeningHazeCleaner';
 import { clearRetainedOpeningInteriorDust } from './retainedOpeningInteriorDustCleaner';
 
 const TRANSPARENT_ALPHA = 8;
@@ -331,15 +330,13 @@ export const repairEnclosedReservedMatteAxisContamination = (
   }
 
   // Existing white-cutline and acute-tip repairs stay intact. The retained-edge
-  // reconstruction runs before the final haze/dust passes. The detached-haze
-  // pass removes larger floating low-alpha patches; the dust pass then removes
-  // tiny survivors visible mainly on white backgrounds.
+  // reconstruction runs before the final dust pass. That final pass removes only
+  // tiny low-alpha survivors that remain visible mainly on white backgrounds.
   clearMinorDetachedEnclosedHoleChroma(data, width, height, background);
   neutralizeNearWhiteEnclosedHoleStripResiduals(data, width, height, background);
   neutralizeSmallEnclosedHoleColorIslands(data, width, height);
   neutralizeAcuteEnclosedHoleCornerChroma(data, width, height, background);
   repairRetainedOpeningStrokeEdges(data, width, height, background);
-  clearDetachedOpeningHaze(data, width, height, background);
   clearRetainedOpeningInteriorDust(data, width, height, background);
 
   return {

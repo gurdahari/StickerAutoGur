@@ -6,6 +6,11 @@ import {
 import { neutralizeSmallEnclosedHoleColorIslands } from './enclosedHoleIslandNeutralizer';
 import { neutralizeAcuteEnclosedHoleCornerChroma } from './acuteEnclosedHoleCornerCleaner';
 import { closeIllogicalEnclosedMicroOpenings } from './enclosedOpeningLogicRepair';
+import {
+  closeColoredStrokeMicroOpenings,
+  repairRetainedOpeningStrokeEdges
+} from './coloredStrokeOpeningRepair';
+import { clearRetainedOpeningInteriorDust } from './retainedOpeningInteriorDustCleaner';
 
 const TRANSPARENT_ALPHA = 8;
 const PARTIAL_ALPHA_LIMIT = 250;
@@ -304,9 +309,16 @@ export const repairEnclosedReservedMatteAxisContamination = (
   background: RgbColor
 ) => {
   // First close only tiny isolated off-axis openings that have no symmetric or
-  // centered structural justification. This local repair does not affect large,
-  // paired or central openings and does not change QA/reject behavior.
+  // centered structural justification. The white-cutline repair runs first.
   closeIllogicalEnclosedMicroOpenings(data, width, height);
+
+  // A damaged thin stroke can have only part of its boundary available as a
+  // trusted sample. Three bounded local passes propagate the recovered artwork
+  // color across the entire same micro-opening without a provider call.
+  for (let pass = 0; pass < 3; pass++) {
+    const repaired = closeColoredStrokeMicroOpenings(data, width, height, background);
+    if (!repaired.openingsClosed) break;
+  }
 
   const candidates = findEnclosedMatteAxisResiduals(data, width, height, background);
 
@@ -317,13 +329,15 @@ export const repairEnclosedReservedMatteAxisContamination = (
     data[pixelIndex + 2] = candidate.replacementValue;
   }
 
-  // Keep the broad attached-fringe pass first. The strip, island and acute-tip
-  // passes are conservative survivors-only cleanup. Every retained opening pass
-  // preserves alpha byte-for-byte.
+  // Existing white-cutline and acute-tip repairs stay intact. The retained-edge
+  // reconstruction runs before the final dust pass. That final pass removes only
+  // tiny low-alpha survivors that remain visible mainly on white backgrounds.
   clearMinorDetachedEnclosedHoleChroma(data, width, height, background);
   neutralizeNearWhiteEnclosedHoleStripResiduals(data, width, height, background);
   neutralizeSmallEnclosedHoleColorIslands(data, width, height);
   neutralizeAcuteEnclosedHoleCornerChroma(data, width, height, background);
+  repairRetainedOpeningStrokeEdges(data, width, height, background);
+  clearRetainedOpeningInteriorDust(data, width, height, background);
 
   return {
     detectedPixels: candidates.length,
